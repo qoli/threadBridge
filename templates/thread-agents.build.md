@@ -1,10 +1,10 @@
 # Thread AGENTS.md Builder
 
-Use this template when the Telegram bot asks you to update a child `AGENTS.md` for a specific creative thread.
+Use this template when the Telegram bot asks you to update a child `AGENTS.md` for a specific thread.
 
 ## Goal
 
-Write a concise, reusable `AGENTS.md` file for the current thread workspace. This file should help future Codex turns stay aligned with the thread's creative direction and workflow.
+Write a concise, reusable `AGENTS.md` file for the current thread workspace. This file should help future Codex turns stay aligned with the thread's direction and workflow.
 
 ## Source of Truth
 
@@ -30,7 +30,7 @@ Your output must include these sections:
 
 - `# Thread AGENTS.md`
 - `## Workspace Runtime Contract`
-- `## Creative Direction`
+- `## Thread Direction`
 - `## Image & Reference Handling`
 - `## Artifact Rules`
 - `## Current Priorities`
@@ -39,8 +39,8 @@ Your output must include these sections:
 
 - `Workspace Runtime Contract`
   - Preserve the fixed runtime contract, wrapper command names, and result-file expectations that make this workspace executable.
-- `Creative Direction`
-  - Capture the stable creative brief, material language, visual direction, and persistent style preferences for this thread.
+- `Thread Direction`
+  - Capture the stable brief, material language, visual direction, and persistent style preferences for this thread.
 - `Image & Reference Handling`
   - Capture how uploaded images, reference images, and follow-up text should be interpreted in this thread.
 - `Artifact Rules`

@@ -325,7 +325,7 @@ def main() -> None:
             "step2ReportedMissingPriorResult": "看不到你说的“以上结果”" in step2.final_response
             or "结果样例" in step2.final_response,
             "step2ReusedThreadIdAsInput": True,
-            "step3ReportedInsufficientContext": "does not contain enough creative information" in step3.final_response
+            "step3ReportedInsufficientContext": "does not contain enough stable information" in step3.final_response
             or "信息还不足" in step3.final_response
             or "still lacks enough information" in step3.final_response,
         },

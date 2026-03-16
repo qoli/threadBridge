@@ -3,13 +3,13 @@
 ## Purpose
 This root `AGENTS.md` is the maintainer guide for the `threadBridge` repository. It documents the repo layout, runtime boundaries, workspace lifecycle, and contributor conventions for the Telegram bot and its Codex-session binding runtime.
 
-It is not the thread-local runtime instruction file that Codex follows inside a creative workspace. That runtime contract lives in the seeded and generated workspace `AGENTS.md` files described below.
+It is not the thread-local runtime instruction file that Codex follows inside a thread workspace. That runtime contract lives in the seeded and generated workspace `AGENTS.md` files described below.
 
 ## Project Structure & Runtime Architecture
 The runtime is organized in three layers:
 
 - Telegram UI and orchestration: the Rust bot receives Telegram updates, enforces authorization, manages thread commands, streams live Codex previews, and sends results back to Telegram.
-- Workspace agent runtime by Codex CLI: the Rust runtime layer maps each Telegram creative thread to bot-local metadata under `data/`, binds it to an existing Codex session from `~/.codex`, projects the session `cwd` into `data/<workspace-id>/workspace`, and invokes Codex CLI inside that linked workspace.
+- Workspace agent runtime by Codex CLI: the Rust runtime layer maps each Telegram thread to bot-local metadata under `data/`, binds it to an existing Codex session from `~/.codex`, projects the session `cwd` into `data/<workspace-id>/workspace`, and invokes Codex CLI inside that linked workspace.
 - Tool executors: workspace-local wrapper commands call Python scripts in `tools/` to materialize prompt configs and generated image artifacts.
 
 Important repo areas:
@@ -21,7 +21,7 @@ Important repo areas:
 - `rust/src/repository.rs`: persistent workspace state for metadata, transcripts, summaries, pending image batches, and analysis artifacts.
 - `templates/`: seed assets used to initialize or maintain workspaces. `templates/AGENTS.md` is the active seed runtime contract. Other template files here are maintainer-side assets, not the primary runtime dependency.
 - `tools/`: Python executors invoked from workspace-local wrappers. `build_prompt_config.py` writes prompt artifacts; `generate_image.py` calls the image provider and stores generated outputs.
-- `data/`: runtime state. `data/main-thread/` stores the control console state. Each creative thread maps to `data/<workspace-id>/`.
+- `data/`: runtime state. `data/main-thread/` stores the control console state. Each thread maps to `data/<workspace-id>/`.
 - `docs/`: supplemental notes such as provider-specific documentation. These files support maintenance but are not the normal workspace runtime surface.
 
 Treat `target/` and most of `data/` as generated output.
@@ -31,7 +31,7 @@ There are three distinct `AGENTS.md` roles in this repo. Do not conflate them wh
 
 - Root `AGENTS.md`: this file. It explains how to maintain the repository and how the runtime is structured.
 - `templates/AGENTS.md`: the seed template copied into each new workspace. It defines the workspace runtime contract, including the stable wrapper command names and artifact expectations.
-- `data/<workspace-id>/AGENTS.md`: the child, thread-local runtime instruction file used by Codex for one creative workspace. `/new_thread` seeds it from the template, and `/update_agents_md` rewrites it from the active session context before reconnecting Codex.
+- `data/<workspace-id>/AGENTS.md`: the child, thread-local runtime instruction file used by Codex for one thread workspace. `/new_thread` seeds it from the template, and `/update_agents_md` rewrites it from the active session context before reconnecting Codex.
 
 When updating maintainer docs, describe the runtime behavior from the repo perspective. When updating workspace behavior, change the template or the child-workspace generation flow instead.
 

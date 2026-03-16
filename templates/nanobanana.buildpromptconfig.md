@@ -1,6 +1,6 @@
 # Nanobanana BuildPromptConfig Guide
 
-Use this guide when the Telegram bot asks you to build prompt config artifacts for the current creative thread.
+Use this guide when the Telegram bot asks you to build prompt config artifacts for the current thread.
 
 ## Task
 
@@ -34,7 +34,7 @@ Only use `image_inputs` that the bot explicitly provided for this run.
 
 ## Output Rules
 
-- `concept.json` is a creative brief for the thread, not a dump of fake model parameters.
+- `concept.json` is a concise brief for the thread, not a dump of fake model parameters.
 - `prompts/NNN_primary.json` is a Nanobanana-specific request config.
 - Keep `provider` as `nanobanana`.
 - `mode` must be either `text_to_image` or `image_edit`.
@@ -55,7 +55,7 @@ The following examples show the required JSON shape. They are examples of struct
 {
   "concept_id": "c_001",
   "title": "Short concept title",
-  "summary": "One concise paragraph that captures the thread's creative intent.",
+  "summary": "One concise paragraph that captures the thread's current intent.",
   "keywords": ["keyword 1", "keyword 2"],
   "style_notes": ["style note 1", "style note 2"],
   "constraints": ["constraint 1", "constraint 2"],

@@ -1,6 +1,6 @@
 # threadBridge Workflow Contract
 
-This workspace is a Codex-driven creative runtime for a Telegram thread.
+This workspace is a Codex-driven runtime for a Telegram thread.
 
 ## Core Model
 
@@ -14,7 +14,7 @@ This workspace is a Codex-driven creative runtime for a Telegram thread.
 
 - Normal thread messages continue the current Codex session.
 - For normal thread messages, resolve references like "above", "same format", or "continue that" from the active conversation first.
-- Thread images are part of the same creative context.
+- Thread images are part of the same thread context.
 - When a thread has a pending image batch, the next user text should usually be interpreted as an image-analysis request tied to that batch, not as an unrelated fresh prompt.
 - If session continuity breaks, require reconnect instead of silently starting a replacement session.
 
@@ -56,7 +56,7 @@ The request file must look like this:
   "concept": {
     "concept_id": "c_001",
     "title": "Short concept title",
-    "summary": "One concise paragraph for the current creative brief.",
+    "summary": "One concise paragraph for the current thread brief.",
     "keywords": ["keyword 1", "keyword 2"],
     "style_notes": ["style note 1", "style note 2"],
     "constraints": ["constraint 1", "constraint 2"],
@@ -136,7 +136,7 @@ The request file must look like this:
 
 ## Artifact Workflow
 
-- `concept.json` is the workspace creative brief.
+- `concept.json` is the workspace brief.
 - `prompts/*.json` are Nanobanana request configs derived from the session.
 - `tool_results/*.json` stores wrapper result metadata for the bot runtime.
 - `tool_results/telegram_outbox.json` stores queued Telegram UI items waiting for bot delivery.

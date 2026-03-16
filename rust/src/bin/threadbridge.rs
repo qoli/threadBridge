@@ -36,9 +36,9 @@ use tracing::{error, info, warn};
 #[derive(Clone, BotCommands)]
 #[command(rename_rule = "snake_case")]
 enum Command {
-    #[command(description = "Show commands for the control chat and creative threads")]
+    #[command(description = "Show commands for the control chat and bound threads")]
     Start,
-    #[command(description = "Create a new creative thread")]
+    #[command(description = "Create a new thread")]
     NewThread,
     #[command(description = "List recent Codex sessions from the local Codex home")]
     ListSessions,
@@ -605,7 +605,7 @@ fn format_session_list_text(
     for session in sessions {
         lines.push(format!("- `{}`  {}", session.id, session.title.trim()));
     }
-    lines.push("Bind one in a creative thread with /bind_session <session_id>.".to_owned());
+    lines.push("Bind one in a thread with /bind_session <session_id>.".to_owned());
     lines.join("\n")
 }
 
@@ -922,9 +922,9 @@ async fn run_command(bot: &Bot, msg: &Message, command: Command, state: &AppStat
     match command {
         Command::Start => {
             let text = if is_control_chat(msg) {
-                "Control console.\nUse /new_thread to create a creative thread."
+                "Control console.\nUse /new_thread to create a thread."
             } else {
-                "Creative thread.\nUse /bind_session <session_id> after you pick a Codex session."
+                "Thread workspace.\nUse /bind_session <session_id> after you pick a Codex session."
             };
             send_scoped_message(bot, msg.chat.id, msg.thread_id, text).await?;
         }
@@ -989,7 +989,7 @@ async fn run_command(bot: &Bot, msg: &Message, command: Command, state: &AppStat
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /bind_session <session_id> inside a creative thread.",
+                    "Use /bind_session <session_id> inside a thread.",
                 )
                 .await?;
                 return Ok(());
@@ -1123,7 +1123,7 @@ async fn run_command(bot: &Bot, msg: &Message, command: Command, state: &AppStat
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /reconnect_codex inside a creative thread.",
+                    "Use /reconnect_codex inside a thread.",
                 )
                 .await?;
                 return Ok(());
@@ -1214,7 +1214,7 @@ async fn run_command(bot: &Bot, msg: &Message, command: Command, state: &AppStat
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /generate_title inside a creative thread.",
+                    "Use /generate_title inside a thread.",
                 )
                 .await?;
                 return Ok(());
@@ -1314,7 +1314,7 @@ async fn run_command(bot: &Bot, msg: &Message, command: Command, state: &AppStat
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /summarize_thread inside a creative thread.",
+                    "Use /summarize_thread inside a thread.",
                 )
                 .await?;
                 return Ok(());
@@ -1405,7 +1405,7 @@ async fn run_command(bot: &Bot, msg: &Message, command: Command, state: &AppStat
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /archive_thread inside a creative thread.",
+                    "Use /archive_thread inside a thread.",
                 )
                 .await?;
                 return Ok(());
@@ -1428,7 +1428,7 @@ async fn run_command(bot: &Bot, msg: &Message, command: Command, state: &AppStat
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /build_prompt_config inside a creative thread.",
+                    "Use /build_prompt_config inside a thread.",
                 )
                 .await?;
                 return Ok(());
@@ -1519,7 +1519,7 @@ async fn run_command(bot: &Bot, msg: &Message, command: Command, state: &AppStat
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /generate_image inside a creative thread.",
+                    "Use /generate_image inside a thread.",
                 )
                 .await?;
                 return Ok(());
@@ -1611,7 +1611,7 @@ async fn run_command(bot: &Bot, msg: &Message, command: Command, state: &AppStat
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /update_agents_md inside a creative thread.",
+                    "Use /update_agents_md inside a thread.",
                 )
                 .await?;
                 return Ok(());
@@ -2141,7 +2141,7 @@ async fn run_callback_query(bot: &Bot, query: &CallbackQuery, state: &AppState) 
             let batch_id = parts.get(1).copied().unwrap_or_default();
             let Some(thread_id) = message.thread_id else {
                 bot.answer_callback_query(query.id.clone())
-                    .text("This button only works inside a creative thread.")
+                    .text("This button only works inside a thread.")
                     .show_alert(true)
                     .await?;
                 return Ok(());

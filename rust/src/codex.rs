@@ -8,8 +8,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{debug, error, info};
 
-const WORKSPACE_READY_PROMPT: &str = "You are initializing a Telegram creative workspace. Read the current workspace AGENTS.md and reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
-const WORKSPACE_RECONNECT_PROMPT: &str = "You are reconnecting an existing Telegram creative workspace session. Read the current workspace AGENTS.md and reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
+const WORKSPACE_READY_PROMPT: &str = "You are initializing a Telegram thread workspace. Read the current workspace AGENTS.md and reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
+const WORKSPACE_RECONNECT_PROMPT: &str = "You are reconnecting an existing Telegram thread workspace session. Read the current workspace AGENTS.md and reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexWorkspace {
@@ -478,7 +478,7 @@ impl CodexRunner {
         existing_thread_id: &str,
     ) -> Result<CodexRunResult> {
         let prompt = [
-            "Use this workspace runtime to generate images for the current creative thread.",
+            "Use this workspace runtime to generate images for the current thread.",
             "Read and follow the current workspace AGENTS.md.",
             "Use the local wrapper command ./bin/generate_image for API execution and output materialization.",
             "By default, use the latest prompt config unless the current session clearly requires a different one.",
@@ -496,7 +496,7 @@ impl CodexRunner {
         target_path: &Path,
     ) -> Result<CodexRunResult> {
         let prompt = [
-            "Based on our Telegram creative thread so far, update the child AGENTS.md for this exact thread workspace.".to_owned(),
+            "Based on our Telegram thread so far, update the child AGENTS.md for this exact thread workspace.".to_owned(),
             format!(
                 "Read the existing AGENTS.md at {} first if it already exists, then preserve any still-valid stable rules while rewriting it from the latest session context.",
                 target_path.display()
@@ -519,7 +519,7 @@ impl CodexRunner {
         existing_thread_id: &str,
     ) -> Result<CodexRunResult> {
         let prompt = [
-            "Write a concise restore recap for this Telegram creative thread.",
+            "Write a concise restore recap for this Telegram thread.",
             "Rules:",
             "- Base the recap on our session so far.",
             "- Focus on what we already explored, key decisions, existing artifacts, and the most useful next step.",
