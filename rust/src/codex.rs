@@ -12,8 +12,6 @@ use tracing::{debug, info, warn};
 
 const APP_SERVER_CLIENT_NAME: &str = "threadbridge";
 const APP_SERVER_CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const APP_SERVER_READY_PROMPT_PREFIX: &str =
-    "Follow the workspace AGENTS.md, including any threadBridge-managed runtime appendix.";
 const WORKSPACE_READY_PROMPT: &str = "Read and follow the workspace AGENTS.md, including the threadBridge appendix if present, then reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
 
 #[derive(Debug, Clone, Serialize)]
@@ -308,14 +306,6 @@ impl CodexRunner {
         Self { model }
     }
 
-    fn build_prompt_text(prompt: &str) -> String {
-        if prompt.trim().is_empty() {
-            APP_SERVER_READY_PROMPT_PREFIX.to_owned()
-        } else {
-            format!("{APP_SERVER_READY_PROMPT_PREFIX}\n\n{prompt}")
-        }
-    }
-
     fn normalize_input(input: &[CodexInputItem]) -> Vec<Value> {
         let mut texts = Vec::new();
         let mut payload = Vec::new();
@@ -337,7 +327,7 @@ impl CodexRunner {
                 0,
                 json!({
                     "type": "text",
-                    "text": Self::build_prompt_text(&texts.join("\n\n")),
+                    "text": texts.join("\n\n"),
                     "text_elements": [],
                 }),
             );
@@ -849,10 +839,7 @@ fn normalize_item(item: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        APP_SERVER_READY_PROMPT_PREFIX, CodexInputItem, CodexRunner, CodexWorkspace, Value, json,
-        normalize_item,
-    };
+    use super::{CodexInputItem, CodexRunner, CodexWorkspace, Value, json, normalize_item};
     use std::path::PathBuf;
 
     fn workspace() -> CodexWorkspace {
@@ -862,16 +849,14 @@ mod tests {
     }
 
     #[test]
-    fn normalize_input_inserts_workspace_instruction_prefix() {
+    fn normalize_input_keeps_text_unchanged() {
         let payload = CodexRunner::normalize_input(&[CodexInputItem::Text {
             text: "hello".to_owned(),
         }]);
         assert_eq!(payload.len(), 1);
         assert_eq!(payload[0]["type"], "text");
         assert_eq!(payload[0]["text_elements"], json!([]));
-        let text = payload[0]["text"].as_str().unwrap();
-        assert!(text.contains(APP_SERVER_READY_PROMPT_PREFIX));
-        assert!(text.ends_with("hello"));
+        assert_eq!(payload[0]["text"], "hello");
     }
 
     #[test]
