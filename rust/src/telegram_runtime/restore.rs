@@ -1,8 +1,7 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use teloxide::payloads::setters::*;
 use teloxide::types::{CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup};
 
-use super::preview::TypingHeartbeat;
 use super::*;
 
 pub(crate) const CALLBACK_RESTORE_PICK: &str = "restore_pick";
@@ -104,78 +103,23 @@ pub(crate) async fn restore_thread(
         return Ok(());
     }
 
-    let session = state
-        .repository
-        .read_session_binding(&thread_record)
-        .await?;
-    let Some(existing_thread_id) = usable_bound_session_id(session.as_ref()) else {
-        bot.answer_callback_query(query.id.clone())
-            .text(session_binding_hint(session.as_ref()))
-            .show_alert(true)
-            .await?;
-        return Ok(());
-    };
-    let workspace_path = ensure_bound_workspace_runtime(
-        state,
-        &thread_record,
-        session.as_ref().context("missing session binding")?,
-    )
-    .await?;
-
-    let typing = TypingHeartbeat::start(bot.clone(), message.chat.id, None);
-    let recap = state
-        .codex
-        .generate_restore_recap_from_session(
-            &CodexWorkspace {
-                agents_path: thread_record.agents_path(),
-                working_directory: workspace_path.clone(),
-            },
-            existing_thread_id,
-        )
-        .await;
-    typing.stop().await;
-    let recap = match recap {
-        Ok(recap) => recap,
-        Err(error) => {
-            let record = state
-                .repository
-                .mark_session_binding_broken(thread_record, error.to_string())
-                .await?;
-            let _ = record;
-            bot.answer_callback_query(query.id.clone())
-                .text("Restore failed because the bound Codex session could not be resumed. Use /bind_session <session_id>.")
-                .show_alert(true)
-                .await?;
-            return Ok(());
-        }
-    };
-    let restored_record = state
-        .repository
-        .mark_session_binding_verified(thread_record)
-        .await?;
     let topic = bot
         .create_forum_topic(
             message.chat.id,
             restored_thread_title(
-                restored_record.metadata.title.as_deref(),
-                restored_record.metadata.message_thread_id,
+                thread_record.metadata.title.as_deref(),
+                thread_record.metadata.message_thread_id,
             ),
         )
         .await?;
     let restored_record = state
         .repository
         .restore_thread(
-            restored_record,
+            thread_record,
             thread_id_to_i32(topic.thread_id),
             topic.name.clone(),
         )
         .await?;
-    let _ = ensure_bound_workspace_runtime(
-        state,
-        &restored_record,
-        session.as_ref().context("missing session binding")?,
-    )
-    .await?;
     state
         .repository
         .append_log(
@@ -203,14 +147,7 @@ pub(crate) async fn restore_thread(
         bot,
         message.chat.id,
         Some(topic.thread_id),
-        format!(
-            "This thread has been restored from archive.\n\nHere is a recap of our work so far:\n{}",
-            if recap.final_response.trim().is_empty() {
-                "This thread was restored from archive, but Codex did not return a recap."
-            } else {
-                recap.final_response.trim()
-            }
-        ),
+        "This thread has been restored from archive.",
     )
     .await?;
     let (text, markup) = render_restore_page(state, message.chat.id.0, offset).await?;

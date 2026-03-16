@@ -12,7 +12,7 @@ use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
 use super::*;
 
 pub(crate) const CALLBACK_IMAGE_BATCH_ANALYZE: &str = "image_batch_analyze";
-const TELEGRAM_OUTBOX_FILE: &str = "tool_results/telegram_outbox.json";
+const TELEGRAM_OUTBOX_FILE: &str = ".threadbridge/tool_results/telegram_outbox.json";
 
 #[derive(Clone)]
 pub(crate) struct IncomingImage {
@@ -135,10 +135,9 @@ async fn read_file_or_none(path: impl Into<PathBuf>) -> Result<Option<String>> {
 }
 
 pub(crate) async fn read_telegram_outbox(
-    record: &ThreadRecord,
+    workspace_path: &std::path::Path,
 ) -> Result<Option<crate::tool_results::TelegramOutbox>> {
-    let Some(result_text) =
-        read_file_or_none(record.linked_workspace_path().join(TELEGRAM_OUTBOX_FILE)).await?
+    let Some(result_text) = read_file_or_none(workspace_path.join(TELEGRAM_OUTBOX_FILE)).await?
     else {
         return Ok(None);
     };
@@ -154,8 +153,8 @@ async fn remove_file_if_exists(path: impl Into<PathBuf>) -> Result<()> {
     }
 }
 
-fn resolve_workspace_file_path(record: &ThreadRecord, relative_path: &str) -> PathBuf {
-    record.linked_workspace_path().join(relative_path)
+fn resolve_workspace_file_path(workspace_path: &std::path::Path, relative_path: &str) -> PathBuf {
+    workspace_path.join(relative_path)
 }
 
 pub(crate) async fn dispatch_workspace_telegram_outbox(
@@ -164,11 +163,16 @@ pub(crate) async fn dispatch_workspace_telegram_outbox(
     record: &ThreadRecord,
     thread_id: ThreadId,
 ) -> Result<()> {
-    let Some(outbox) = read_telegram_outbox(record).await? else {
+    let session = state.repository.read_session_binding(record).await?;
+    let Some(binding) = session.as_ref() else {
+        return Ok(());
+    };
+    let workspace_path = workspace_path_from_binding(binding)?;
+    let Some(outbox) = read_telegram_outbox(&workspace_path).await? else {
         return Ok(());
     };
     if outbox.items.is_empty() {
-        remove_file_if_exists(record.linked_workspace_path().join(TELEGRAM_OUTBOX_FILE)).await?;
+        remove_file_if_exists(workspace_path.join(TELEGRAM_OUTBOX_FILE)).await?;
         return Ok(());
     }
 
@@ -187,7 +191,7 @@ pub(crate) async fn dispatch_workspace_telegram_outbox(
                 let request = bot
                     .send_photo(
                         ChatId(record.metadata.chat_id),
-                        InputFile::file(resolve_workspace_file_path(record, path)),
+                        InputFile::file(resolve_workspace_file_path(&workspace_path, path)),
                     )
                     .message_thread_id(thread_id);
                 if let Some(caption) = caption {
@@ -200,7 +204,7 @@ pub(crate) async fn dispatch_workspace_telegram_outbox(
                 let request = bot
                     .send_document(
                         ChatId(record.metadata.chat_id),
-                        InputFile::file(resolve_workspace_file_path(record, path)),
+                        InputFile::file(resolve_workspace_file_path(&workspace_path, path)),
                     )
                     .message_thread_id(thread_id);
                 if let Some(caption) = caption {
@@ -212,7 +216,7 @@ pub(crate) async fn dispatch_workspace_telegram_outbox(
         }
     }
 
-    remove_file_if_exists(record.linked_workspace_path().join(TELEGRAM_OUTBOX_FILE)).await?;
+    remove_file_if_exists(workspace_path.join(TELEGRAM_OUTBOX_FILE)).await?;
     state
         .repository
         .append_log(
@@ -260,12 +264,9 @@ pub(crate) async fn queue_image_for_thread(
         .await?;
         return Ok(());
     }
-    let _ = ensure_bound_workspace_runtime(
-        state,
-        &record,
-        session.as_ref().context("missing session binding")?,
-    )
-    .await?;
+    let _ =
+        ensure_bound_workspace_runtime(state, session.as_ref().context("missing session binding")?)
+            .await?;
     let pending = state
         .repository
         .get_or_create_pending_image_batch(&record)
@@ -346,12 +347,9 @@ pub(crate) async fn analyze_pending_image_batch(
         }
         return Ok(());
     };
-    let workspace_path = ensure_bound_workspace_runtime(
-        state,
-        &record,
-        session.as_ref().context("missing session binding")?,
-    )
-    .await?;
+    let workspace_path =
+        ensure_bound_workspace_runtime(state, session.as_ref().context("missing session binding")?)
+            .await?;
     let Some(batch) = state.repository.read_pending_image_batch(&record).await? else {
         return Ok(());
     };
@@ -394,7 +392,6 @@ pub(crate) async fn analyze_pending_image_batch(
         .codex
         .run_locked_with_events(
             &CodexWorkspace {
-                agents_path: record.agents_path(),
                 working_directory: workspace_path,
             },
             existing_thread_id,

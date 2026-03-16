@@ -259,7 +259,7 @@ def main() -> None:
     load_repo_env(repo_root)
 
     workspace_dir = Path.cwd()
-    tool_results_dir = workspace_dir / "tool_results"
+    tool_results_dir = workspace_dir / ".threadbridge" / "tool_results"
     tool_results_dir.mkdir(parents=True, exist_ok=True)
     prompt_path = resolve_prompt_path(workspace_dir, args.prompt_path)
     prompt = validate_prompt(prompt_path)

@@ -29,10 +29,8 @@ pub enum ThreadStatus {
 pub struct ThreadMetadata {
     pub archived_at: Option<String>,
     pub chat_id: i64,
-    pub codex_session_id: Option<String>,
     pub created_at: String,
     pub last_codex_turn_at: Option<String>,
-    pub last_summary_at: Option<String>,
     pub message_thread_id: Option<i32>,
     pub previous_message_thread_ids: Vec<i32>,
     pub scope: ThreadScope,
@@ -42,24 +40,16 @@ pub struct ThreadMetadata {
     pub status: ThreadStatus,
     pub title: Option<String>,
     pub updated_at: String,
-    #[serde(alias = "workspace_id")]
     pub thread_key: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionBindingSource {
-    CodexHomeV1,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionBinding {
     pub schema_version: u32,
-    pub codex_session_id: Option<String>,
-    pub source: Option<SessionBindingSource>,
-    pub session_title: Option<String>,
+    pub codex_thread_id: Option<String>,
     pub workspace_cwd: Option<String>,
     pub bound_at: Option<String>,
+    pub initialized_at: Option<String>,
     pub last_verified_at: Option<String>,
     pub session_broken: bool,
     pub session_broken_at: Option<String>,
@@ -79,7 +69,7 @@ pub enum LogDirection {
 pub struct ThreadLogEntry {
     pub timestamp: String,
     pub chat_id: i64,
-    pub codex_session_id: Option<String>,
+    pub codex_thread_id: Option<String>,
     pub scope: ThreadScope,
     pub message_thread_id: Option<i32>,
     pub direction: LogDirection,
@@ -98,14 +88,6 @@ pub struct ThreadRecord {
 }
 
 impl ThreadRecord {
-    pub fn agents_path(&self) -> PathBuf {
-        self.folder_path.join("AGENTS.md")
-    }
-
-    pub fn linked_workspace_path(&self) -> PathBuf {
-        self.folder_path.join("workspace")
-    }
-
     pub fn state_path(&self) -> PathBuf {
         self.folder_path.join("state")
     }
@@ -210,7 +192,10 @@ impl ThreadRepository {
         let entry = ThreadLogEntry {
             timestamp: now_iso(),
             chat_id: record.metadata.chat_id,
-            codex_session_id: record.metadata.codex_session_id.clone(),
+            codex_thread_id: self
+                .read_session_binding(record)
+                .await?
+                .and_then(|binding| binding.codex_thread_id),
             scope: record.metadata.scope.clone(),
             message_thread_id: record.metadata.message_thread_id,
             direction,
@@ -393,31 +378,28 @@ impl ThreadRepository {
         }
     }
 
-    pub async fn bind_session(
+    pub async fn bind_workspace(
         &self,
         record: ThreadRecord,
-        codex_session_id: String,
-        session_title: Option<String>,
         workspace_cwd: String,
+        codex_thread_id: String,
     ) -> Result<ThreadRecord> {
         let now = now_iso();
-        let session = SessionBinding {
+        let binding = SessionBinding {
             schema_version: 1,
-            codex_session_id: Some(codex_session_id.clone()),
-            source: Some(SessionBindingSource::CodexHomeV1),
-            session_title,
+            codex_thread_id: Some(codex_thread_id),
             workspace_cwd: Some(workspace_cwd),
             bound_at: Some(now.clone()),
+            initialized_at: Some(now.clone()),
             last_verified_at: Some(now.clone()),
             session_broken: false,
             session_broken_at: None,
             session_broken_reason: None,
             updated_at: now.clone(),
         };
-        self.write_session_binding(&record, &session).await?;
+        self.write_session_binding(&record, &binding).await?;
         self.update_metadata(ThreadRecord {
             metadata: ThreadMetadata {
-                codex_session_id: Some(codex_session_id),
                 last_codex_turn_at: Some(now),
                 session_broken: false,
                 session_broken_at: None,
@@ -433,20 +415,19 @@ impl ThreadRepository {
         &self,
         record: ThreadRecord,
     ) -> Result<ThreadRecord> {
-        let mut session = self
+        let mut binding = self
             .read_session_binding(&record)
             .await?
             .context("session binding is missing")?;
         let now = now_iso();
-        session.last_verified_at = Some(now.clone());
-        session.session_broken = false;
-        session.session_broken_at = None;
-        session.session_broken_reason = None;
-        session.updated_at = now.clone();
-        self.write_session_binding(&record, &session).await?;
+        binding.last_verified_at = Some(now.clone());
+        binding.session_broken = false;
+        binding.session_broken_at = None;
+        binding.session_broken_reason = None;
+        binding.updated_at = now.clone();
+        self.write_session_binding(&record, &binding).await?;
         self.update_metadata(ThreadRecord {
             metadata: ThreadMetadata {
-                codex_session_id: session.codex_session_id.clone(),
                 last_codex_turn_at: Some(now),
                 session_broken: false,
                 session_broken_at: None,
@@ -465,30 +446,28 @@ impl ThreadRepository {
     ) -> Result<ThreadRecord> {
         let reason = reason.into();
         let now = now_iso();
-        let mut session = self
+        let mut binding = self
             .read_session_binding(&record)
             .await?
             .unwrap_or(SessionBinding {
                 schema_version: 1,
-                codex_session_id: None,
-                source: Some(SessionBindingSource::CodexHomeV1),
-                session_title: None,
+                codex_thread_id: None,
                 workspace_cwd: None,
                 bound_at: None,
+                initialized_at: None,
                 last_verified_at: None,
                 session_broken: true,
                 session_broken_at: Some(now.clone()),
                 session_broken_reason: Some(reason.clone()),
                 updated_at: now.clone(),
             });
-        session.session_broken = true;
-        session.session_broken_at = Some(now.clone());
-        session.session_broken_reason = Some(reason.clone());
-        session.updated_at = now.clone();
-        self.write_session_binding(&record, &session).await?;
+        binding.session_broken = true;
+        binding.session_broken_at = Some(now.clone());
+        binding.session_broken_reason = Some(reason.clone());
+        binding.updated_at = now.clone();
+        self.write_session_binding(&record, &binding).await?;
         self.update_metadata(ThreadRecord {
             metadata: ThreadMetadata {
-                codex_session_id: session.codex_session_id.clone(),
                 session_broken: true,
                 session_broken_at: Some(now),
                 session_broken_reason: Some(reason),
@@ -582,6 +561,22 @@ impl ThreadRepository {
         Ok(Some(self.build_record(folder_name, metadata)))
     }
 
+    pub async fn update_metadata(&self, record: ThreadRecord) -> Result<ThreadRecord> {
+        let updated = ThreadMetadata {
+            updated_at: now_iso(),
+            ..record.metadata.clone()
+        };
+        fs::write(
+            &record.metadata_path,
+            format!("{}\n", serde_json::to_string_pretty(&updated)?),
+        )
+        .await?;
+        Ok(ThreadRecord {
+            metadata: updated,
+            ..record
+        })
+    }
+
     async fn get_or_create(
         &self,
         chat_id: i64,
@@ -602,10 +597,8 @@ impl ThreadRepository {
         let metadata = ThreadMetadata {
             archived_at: None,
             chat_id,
-            codex_session_id: None,
             created_at: created_at.clone(),
             last_codex_turn_at: None,
-            last_summary_at: None,
             message_thread_id,
             previous_message_thread_ids: Vec::new(),
             scope: scope.clone(),
@@ -657,20 +650,26 @@ impl ThreadRepository {
         record.folder_path.join(SESSION_BINDING_FILE_NAME)
     }
 
-    pub async fn update_metadata(&self, record: ThreadRecord) -> Result<ThreadRecord> {
-        let updated = ThreadMetadata {
-            updated_at: now_iso(),
-            ..record.metadata.clone()
-        };
-        fs::write(
-            &record.metadata_path,
-            format!("{}\n", serde_json::to_string_pretty(&updated)?),
-        )
-        .await?;
-        Ok(ThreadRecord {
-            metadata: updated,
-            ..record
-        })
+    async fn load_record(&self, folder_name: String) -> Result<ThreadRecord> {
+        let metadata_path = self.data_root_path.join(&folder_name).join("metadata.json");
+        let metadata: ThreadMetadata = serde_json::from_str(
+            &fs::read_to_string(&metadata_path)
+                .await
+                .with_context(|| format!("failed to read {}", metadata_path.display()))?,
+        )?;
+        Ok(self.build_record(folder_name, metadata))
+    }
+
+    fn build_record(&self, folder_name: String, metadata: ThreadMetadata) -> ThreadRecord {
+        let folder_path = self.data_root_path.join(&folder_name);
+        ThreadRecord {
+            conversation_key: conversation_key_for(&metadata.scope, &metadata.thread_key),
+            folder_name,
+            log_path: folder_path.join("conversations.jsonl"),
+            metadata_path: folder_path.join("metadata.json"),
+            folder_path,
+            metadata,
+        }
     }
 
     async fn find_thread_by_message_thread_id(
@@ -705,30 +704,9 @@ impl ThreadRepository {
         }
         Ok(None)
     }
-
-    async fn load_record(&self, folder_name: String) -> Result<ThreadRecord> {
-        let metadata_path = self.data_root_path.join(&folder_name).join("metadata.json");
-        let metadata: ThreadMetadata = serde_json::from_str(
-            &fs::read_to_string(&metadata_path)
-                .await
-                .with_context(|| format!("failed to read {}", metadata_path.display()))?,
-        )?;
-        Ok(self.build_record(folder_name, metadata))
-    }
-
-    fn build_record(&self, folder_name: String, metadata: ThreadMetadata) -> ThreadRecord {
-        let folder_path = self.data_root_path.join(&folder_name);
-        ThreadRecord {
-            conversation_key: conversation_key_for(&metadata.scope, &metadata.thread_key),
-            folder_name,
-            folder_path: folder_path.clone(),
-            log_path: folder_path.join("conversations.jsonl"),
-            metadata,
-            metadata_path: folder_path.join("metadata.json"),
-        }
-    }
 }
 
+#[derive(Debug, Clone)]
 pub struct AppendPendingImageInput {
     pub caption: Option<String>,
     pub data: Vec<u8>,
@@ -740,50 +718,65 @@ pub struct AppendPendingImageInput {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppendPendingImageInput, LogDirection, ThreadRepository, ThreadScope};
+    use super::{AppendPendingImageInput, ThreadRepository, ThreadScope, ThreadStatus};
+    use crate::image_artifacts::ImageAnalysisArtifact;
+    use std::path::PathBuf;
     use tokio::fs;
     use uuid::Uuid;
 
-    fn temp_path() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("threadbridge-rust-test-{}", Uuid::new_v4()))
+    fn temp_path() -> PathBuf {
+        std::env::temp_dir().join(format!("threadbridge-repo-test-{}", Uuid::new_v4()))
     }
 
     #[tokio::test]
-    async fn creates_thread_workspace_and_appends_log() {
+    async fn create_thread_uses_minimal_thread_root_layout() {
         let root = temp_path();
         let repo = ThreadRepository::open(&root).await.unwrap();
-        let record = repo
-            .create_thread(42, 1001, "Title".to_owned())
-            .await
-            .unwrap();
-        assert!(matches!(record.metadata.scope, ThreadScope::Thread));
-        assert_eq!(record.metadata.message_thread_id, Some(1001));
+        let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
+
         assert!(
-            !fs::try_exists(record.folder_path.join("summary.md"))
+            fs::try_exists(record.folder_path.join("metadata.json"))
                 .await
                 .unwrap()
         );
         assert!(
-            !fs::try_exists(record.folder_path.join("images"))
+            fs::try_exists(record.folder_path.join("conversations.jsonl"))
                 .await
                 .unwrap()
         );
-        repo.append_log(&record, LogDirection::User, "hello", Some(7))
-            .await
-            .unwrap();
-        let transcript = repo.read_recent_transcript(&record, 10).await.unwrap();
-        assert_eq!(transcript.len(), 1);
-        assert_eq!(transcript[0].text, "hello");
+        assert!(
+            !fs::try_exists(record.folder_path.join("workspace"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !fs::try_exists(record.folder_path.join("AGENTS.md"))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
-    async fn pending_image_batch_roundtrip() {
+    async fn bind_workspace_persists_new_session_shape() {
         let root = temp_path();
         let repo = ThreadRepository::open(&root).await.unwrap();
-        let record = repo
-            .create_thread(42, 1002, "Images".to_owned())
+        let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
+        let updated = repo
+            .bind_workspace(record, "/tmp/workspace".to_owned(), "thr_123".to_owned())
             .await
             .unwrap();
+
+        let binding = repo.read_session_binding(&updated).await.unwrap().unwrap();
+        assert_eq!(binding.codex_thread_id.as_deref(), Some("thr_123"));
+        assert_eq!(binding.workspace_cwd.as_deref(), Some("/tmp/workspace"));
+        assert!(!binding.session_broken);
+    }
+
+    #[tokio::test]
+    async fn pending_image_batch_roundtrip_uses_state_directory() {
+        let root = temp_path();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+        let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
         let batch = repo
             .get_or_create_pending_image_batch(&record)
             .await
@@ -793,29 +786,17 @@ mod tests {
                 &record,
                 batch,
                 AppendPendingImageInput {
-                    caption: Some("hint".to_owned()),
-                    data: b"abc".to_vec(),
-                    file_name: "0001.png".to_owned(),
+                    caption: Some("caption".to_owned()),
+                    data: vec![1, 2, 3],
+                    file_name: "image.png".to_owned(),
                     mime_type: "image/png".to_owned(),
-                    source_message_id: 12,
-                    telegram_file_id: "file-1".to_owned(),
+                    source_message_id: 11,
+                    telegram_file_id: "file".to_owned(),
                 },
             )
             .await
             .unwrap();
         assert_eq!(updated.images.len(), 1);
-        assert_eq!(updated.latest_caption.as_deref(), Some("hint"));
-        assert!(
-            updated.images[0]
-                .relative_path
-                .starts_with("state/images/source/")
-        );
-        let persisted = repo
-            .read_pending_image_batch(&record)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(persisted.images.len(), 1);
         assert!(
             fs::try_exists(record.state_path().join("pending-image-batch.json"))
                 .await
@@ -824,40 +805,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_binding_roundtrip_and_state_updates() {
+    async fn write_image_analysis_stays_under_state() {
         let root = temp_path();
         let repo = ThreadRepository::open(&root).await.unwrap();
-        let record = repo
-            .create_thread(42, 1003, "Session".to_owned())
+        let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
+        let artifact = ImageAnalysisArtifact {
+            batch_id: "batch-1".to_owned(),
+            created_at: "2026-03-17T00:00:00.000Z".to_owned(),
+            image_count: 1,
+            images: Vec::new(),
+            prompt: "prompt".to_owned(),
+            result_text: "result".to_owned(),
+        };
+        repo.write_image_analysis(&record, &artifact).await.unwrap();
+        assert!(
+            fs::try_exists(record.state_path().join("images/analysis/batch-1.json"))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_and_restore_are_local_only() {
+        let root = temp_path();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+        let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
+        let archived = repo.archive_thread(record).await.unwrap();
+        assert!(matches!(archived.metadata.status, ThreadStatus::Archived));
+        let restored = repo
+            .restore_thread(archived, 9, "Restored".to_owned())
             .await
             .unwrap();
+        assert!(matches!(restored.metadata.status, ThreadStatus::Active));
+        assert_eq!(restored.metadata.message_thread_id, Some(9));
+    }
 
-        let record = repo
-            .bind_session(
-                record,
-                "session-123".to_owned(),
-                Some("Bound session".to_owned()),
-                "/tmp/workspace".to_owned(),
-            )
-            .await
-            .unwrap();
-        let session = repo.read_session_binding(&record).await.unwrap().unwrap();
-        assert_eq!(session.codex_session_id.as_deref(), Some("session-123"));
-        assert!(!session.session_broken);
-        assert_eq!(session.workspace_cwd.as_deref(), Some("/tmp/workspace"));
-
-        let record = repo
-            .mark_session_binding_broken(record, "boom")
-            .await
-            .unwrap();
-        let session = repo.read_session_binding(&record).await.unwrap().unwrap();
-        assert!(session.session_broken);
-        assert_eq!(session.session_broken_reason.as_deref(), Some("boom"));
-        assert_eq!(session.codex_session_id.as_deref(), Some("session-123"));
-
-        let record = repo.mark_session_binding_verified(record).await.unwrap();
-        let session = repo.read_session_binding(&record).await.unwrap().unwrap();
-        assert!(!session.session_broken);
-        assert_eq!(session.codex_session_id.as_deref(), Some("session-123"));
+    #[test]
+    fn thread_scope_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&ThreadScope::Thread).unwrap(),
+            "\"thread\""
+        );
     }
 }

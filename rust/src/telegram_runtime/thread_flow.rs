@@ -1,6 +1,7 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use teloxide::payloads::setters::*;
 use tokio::sync::Mutex;
 
@@ -8,6 +9,47 @@ use super::media::{self, dispatch_workspace_telegram_outbox};
 use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
 use super::restore;
 use super::*;
+
+fn workspace_for_codex(path: PathBuf) -> CodexWorkspace {
+    CodexWorkspace {
+        working_directory: path,
+    }
+}
+
+async fn resolve_workspace_argument(raw: &str) -> Result<PathBuf> {
+    let input = PathBuf::from(raw.trim());
+    if !input.is_absolute() {
+        bail!("Workspace path must be absolute.");
+    }
+    let metadata = tokio::fs::metadata(&input)
+        .await
+        .with_context(|| format!("workspace path does not exist: {}", input.display()))?;
+    if !metadata.is_dir() {
+        bail!("Workspace path must point to a directory.");
+    }
+    Ok(input.canonicalize().unwrap_or(input))
+}
+
+async fn start_fresh_binding(
+    state: &AppState,
+    record: ThreadRecord,
+    workspace_path: PathBuf,
+) -> Result<ThreadRecord> {
+    ensure_workspace_runtime(
+        &state.config.runtime.codex_working_directory,
+        &state.seed_template_path,
+        &workspace_path,
+    )
+    .await?;
+    let binding = state
+        .codex
+        .start_thread(&workspace_for_codex(workspace_path))
+        .await?;
+    state
+        .repository
+        .bind_workspace(record, binding.cwd, binding.thread_id)
+        .await
+}
 
 pub(crate) async fn run_command(
     bot: &Bot,
@@ -18,9 +60,9 @@ pub(crate) async fn run_command(
     match command {
         Command::Start => {
             let text = if is_control_chat(msg) {
-                "Control console.\nUse /new_thread to create a thread."
+                "Control console.\nUse /new_thread to create a Telegram thread."
             } else {
-                "Thread workspace.\nUse /bind_session <session_id> after you pick a Codex session."
+                "Thread workspace.\nUse /bind_workspace <absolute-path> to attach a project."
             };
             send_scoped_message(bot, msg.chat.id, msg.thread_id, text).await?;
         }
@@ -57,7 +99,7 @@ pub(crate) async fn run_command(
                 .append_log(
                     &record,
                     LogDirection::System,
-                    "Telegram thread created. Awaiting Codex session binding.",
+                    "Telegram thread created. Awaiting workspace binding.",
                     None,
                 )
                 .await?;
@@ -65,37 +107,27 @@ pub(crate) async fn run_command(
                 bot,
                 msg.chat.id,
                 Some(topic.thread_id),
-                "Thread created.\n\nUse /list_sessions to inspect local Codex sessions, then /bind_session <session_id> in this thread.",
+                "Thread created.\n\nUse /bind_workspace <absolute-path> in this thread.",
             )
             .await?;
         }
-        Command::ListSessions => {
-            let sessions = state.codex_home.list_recent_sessions(8)?;
-            send_scoped_message(
-                bot,
-                msg.chat.id,
-                msg.thread_id,
-                format_session_list_text(&sessions),
-            )
-            .await?;
-        }
-        Command::BindSession => {
+        Command::BindWorkspace => {
             if is_control_chat(msg) {
                 send_scoped_message(
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /bind_session <session_id> inside a thread.",
+                    "Use /bind_workspace <absolute-path> inside a thread.",
                 )
                 .await?;
                 return Ok(());
             }
-            let Some(session_id) = command_argument_text(msg, "bind_session") else {
+            let Some(argument) = command_argument_text(msg, "bind_workspace") else {
                 send_scoped_message(
                     bot,
                     msg.chat.id,
                     msg.thread_id,
-                    "Usage: /bind_session <session_id>",
+                    "Usage: /bind_workspace <absolute-path>",
                 )
                 .await?;
                 return Ok(());
@@ -115,64 +147,22 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             }
-            let resolved = match state.codex_home.resolve_session(session_id)? {
-                Some(session) => session,
-                None => {
-                    send_scoped_message(
-                        bot,
-                        msg.chat.id,
-                        Some(thread_id),
-                        format!("Codex session not found: `{session_id}`"),
-                    )
-                    .await?;
-                    return Ok(());
-                }
-            };
-            let workspace_path = record.linked_workspace_path();
-            ensure_linked_workspace_runtime(
-                &state.config.runtime.codex_working_directory,
-                &state.seed_template_path,
-                &record.folder_path,
-                &workspace_path,
-                &resolved.cwd,
-            )
-            .await?;
+
+            let workspace_path = resolve_workspace_argument(argument).await?;
             let typing = TypingHeartbeat::start(bot.clone(), msg.chat.id, Some(thread_id));
-            let verification = state
-                .codex
-                .reconnect_session(
-                    &CodexWorkspace {
-                        agents_path: record.agents_path(),
-                        working_directory: workspace_path.clone(),
-                    },
-                    &resolved.id,
-                )
-                .await;
+            let result = start_fresh_binding(state, record.clone(), workspace_path.clone()).await;
             typing.stop().await;
-            let record = state
-                .repository
-                .bind_session(
-                    record,
-                    resolved.id.clone(),
-                    Some(resolved.title.clone()),
-                    resolved.cwd.display().to_string(),
-                )
-                .await?;
-            match verification {
-                Ok(_) => {
-                    let record = state
-                        .repository
-                        .mark_session_binding_verified(record)
-                        .await?;
+
+            match result {
+                Ok(record) => {
                     state
                         .repository
                         .append_log(
                             &record,
                             LogDirection::System,
                             format!(
-                                "Bound Telegram thread to Codex session {} ({})",
-                                resolved.id,
-                                resolved.cwd.display()
+                                "Bound Telegram thread to workspace {} and started a fresh Codex thread.",
+                                workspace_path.display()
                             ),
                             None,
                         )
@@ -181,25 +171,64 @@ pub(crate) async fn run_command(
                         bot,
                         msg.chat.id,
                         Some(thread_id),
-                        format!(
-                            "Bound to Codex session `{}`.\nWorkspace: `{}`",
-                            resolved.id,
-                            resolved.cwd.display()
-                        ),
+                        format!("Bound workspace: `{}`", workspace_path.display()),
                     )
                     .await?;
                 }
                 Err(error) => {
-                    let record = state
-                        .repository
-                        .mark_session_binding_broken(record, error.to_string())
-                        .await?;
+                    send_scoped_message(
+                        bot,
+                        msg.chat.id,
+                        Some(thread_id),
+                        format!("Workspace bind failed: {error}"),
+                    )
+                    .await?;
+                }
+            }
+        }
+        Command::ResetCodexSession => {
+            if is_control_chat(msg) {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    None,
+                    "Use /reset_codex_session inside a thread.",
+                )
+                .await?;
+                return Ok(());
+            }
+            let thread_id = msg.thread_id.context("thread message missing thread id")?;
+            let record = state
+                .repository
+                .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
+                .await?;
+            let session = state.repository.read_session_binding(&record).await?;
+            let Some(binding) = session.as_ref() else {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "This thread is not bound yet. Use /bind_workspace <absolute-path>.",
+                )
+                .await?;
+                return Ok(());
+            };
+            let workspace_path = workspace_path_from_binding(binding)?;
+            let typing = TypingHeartbeat::start(bot.clone(), msg.chat.id, Some(thread_id));
+            let result = start_fresh_binding(state, record.clone(), workspace_path.clone()).await;
+            typing.stop().await;
+
+            match result {
+                Ok(record) => {
                     state
                         .repository
                         .append_log(
                             &record,
                             LogDirection::System,
-                            format!("Codex session bind verification failed: {error}"),
+                            format!(
+                                "Reset Codex session for workspace {}.",
+                                workspace_path.display()
+                            ),
                             None,
                         )
                         .await?;
@@ -207,9 +236,20 @@ pub(crate) async fn run_command(
                         bot,
                         msg.chat.id,
                         Some(thread_id),
-                        format!(
-                            "Session was linked but verification failed.\nUse /reconnect_codex to retry or /bind_session <session_id> to attach another one.\n\nError: {error}"
-                        ),
+                        "Started a fresh Codex session for this workspace.",
+                    )
+                    .await?;
+                }
+                Err(error) => {
+                    let _ = state
+                        .repository
+                        .mark_session_binding_broken(record, error.to_string())
+                        .await?;
+                    send_scoped_message(
+                        bot,
+                        msg.chat.id,
+                        Some(thread_id),
+                        format!("Reset failed: {error}"),
                     )
                     .await?;
                 }
@@ -242,26 +282,18 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             };
-            let workspace_path = ensure_bound_workspace_runtime(
-                state,
-                &record,
-                session.as_ref().context("missing session binding")?,
-            )
-            .await?;
+            let workspace_path =
+                ensure_bound_workspace_runtime(state, session.as_ref().context("missing binding")?)
+                    .await?;
             let typing = TypingHeartbeat::start(bot.clone(), msg.chat.id, Some(thread_id));
             let reconnect = state
                 .codex
-                .reconnect_session(
-                    &CodexWorkspace {
-                        agents_path: record.agents_path(),
-                        working_directory: workspace_path,
-                    },
-                    existing_thread_id,
-                )
+                .reconnect_session(&workspace_for_codex(workspace_path), existing_thread_id)
                 .await;
             typing.stop().await;
+
             match reconnect {
-                Ok(_) => {
+                Ok(()) => {
                     let updated = state
                         .repository
                         .mark_session_binding_verified(record)
@@ -271,7 +303,7 @@ pub(crate) async fn run_command(
                         .append_log(
                             &updated,
                             LogDirection::System,
-                            "Codex session revalidated using the bound session id.",
+                            "Codex session revalidated for the current workspace binding.",
                             None,
                         )
                         .await?;
@@ -288,20 +320,12 @@ pub(crate) async fn run_command(
                         .repository
                         .mark_session_binding_broken(record, error.to_string())
                         .await?;
-                    state
-                        .repository
-                        .append_log(
-                            &updated,
-                            LogDirection::System,
-                            format!("Codex reconnect failed: {error}"),
-                            None,
-                        )
-                        .await?;
+                    let _ = updated;
                     send_scoped_message(
                         bot,
                         msg.chat.id,
                         Some(thread_id),
-                        "Codex session revalidation failed. Use /bind_session <session_id> to reattach or /reconnect_codex to retry the current one.",
+                        "Codex session revalidation failed. Use /reset_codex_session to start a fresh one or /reconnect_codex to retry.",
                     )
                     .await?;
                 }
@@ -344,42 +368,37 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             };
-            let workspace_path = ensure_bound_workspace_runtime(
-                state,
-                &record,
-                session.as_ref().context("missing session binding")?,
-            )
-            .await?;
+            let workspace_path =
+                ensure_bound_workspace_runtime(state, session.as_ref().context("missing binding")?)
+                    .await?;
             let typing = TypingHeartbeat::start(bot.clone(), msg.chat.id, Some(thread_id));
             let result = state
                 .codex
                 .generate_thread_title_from_session(
-                    &CodexWorkspace {
-                        agents_path: record.agents_path(),
-                        working_directory: workspace_path,
-                    },
+                    &workspace_for_codex(workspace_path),
                     existing_thread_id,
                 )
                 .await;
             typing.stop().await;
+
             let result = match result {
                 Ok(result) => result,
                 Err(error) => {
-                    let record = state
+                    let _ = state
                         .repository
                         .mark_session_binding_broken(record, error.to_string())
                         .await?;
-                    let _ = record;
                     send_scoped_message(
                         bot,
                         msg.chat.id,
                         Some(thread_id),
-                        "Codex session is unavailable. Use /reconnect_codex or /bind_session <session_id>.",
+                        "Codex session is unavailable. Use /reconnect_codex or /reset_codex_session.",
                     )
                     .await?;
                     return Ok(());
                 }
             };
+
             let mut updated = state
                 .repository
                 .mark_session_binding_verified(record)
@@ -494,12 +513,8 @@ pub(crate) async fn run_text_message(
         .await?;
         return Ok(());
     };
-    let workspace_path = ensure_bound_workspace_runtime(
-        state,
-        &record,
-        session.as_ref().context("missing session binding")?,
-    )
-    .await?;
+    let workspace_path =
+        ensure_bound_workspace_runtime(state, session.as_ref().context("missing binding")?).await?;
 
     if let Some(batch) = state.repository.read_pending_image_batch(&record).await? {
         if !batch.images.is_empty() {
@@ -550,10 +565,7 @@ pub(crate) async fn run_text_message(
     let result = state
         .codex
         .run_locked_prompt_with_events(
-            &CodexWorkspace {
-                agents_path: record.agents_path(),
-                working_directory: workspace_path,
-            },
+            &workspace_for_codex(workspace_path),
             existing_thread_id,
             text,
             |event| {
@@ -600,16 +612,15 @@ pub(crate) async fn run_text_message(
             dispatch_workspace_telegram_outbox(bot, state, &record, thread_id).await?;
         }
         Err(error) => {
-            record = state
+            let _ = state
                 .repository
                 .mark_session_binding_broken(record, error.to_string())
                 .await?;
-            let _ = record;
             send_scoped_message(
                 bot,
                 msg.chat.id,
                 Some(thread_id),
-                "Codex session is unavailable. Use /reconnect_codex to retry or /bind_session <session_id> to attach another one.",
+                "Codex session is unavailable. Use /reconnect_codex to retry or /reset_codex_session to start a fresh one.",
             )
             .await?;
         }

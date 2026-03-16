@@ -16,8 +16,8 @@ STEP_TWO_PROMPT = "卢梭的内容，也按照以上结果帮我解读和摘取�
 STEP_THREE_PROMPT = "\n".join(
     [
         "Use this workspace runtime to build the next prompt config artifacts.",
-        "Read and follow the authoritative thread runtime instructions at ../AGENTS.md.",
-        "Use the local wrapper command ./bin/build_prompt_config for any file materialization work.",
+        "Read and follow the workspace AGENTS.md, including the threadBridge managed appendix.",
+        "Use the local wrapper command ./.threadbridge/bin/build_prompt_config for any file materialization work.",
         "Base all semantic decisions on the current Codex session context.",
         "If the session still lacks enough information, ask follow-up questions in this thread and do not run the tool.",
     ]
@@ -41,18 +41,18 @@ def fail(message: str) -> None:
     raise SystemExit(message)
 
 
-def ensure_workspace_runtime(thread_root: Path, workspace_path: Path, template_path: Path) -> None:
-    thread_root.mkdir(parents=True, exist_ok=True)
+def ensure_workspace_runtime(workspace_path: Path, template_path: Path) -> None:
     workspace_path.mkdir(parents=True, exist_ok=True)
-    (workspace_path / "tool_requests").mkdir(parents=True, exist_ok=True)
-    (workspace_path / "bin").mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(template_path, thread_root / "AGENTS.md")
+    runtime_dir = workspace_path / ".threadbridge"
+    (runtime_dir / "tool_requests").mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "bin").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(template_path, workspace_path / "AGENTS.md")
 
-    build_wrapper = workspace_path / "bin" / "build_prompt_config"
+    build_wrapper = runtime_dir / "bin" / "build_prompt_config"
     build_wrapper.write_text("#!/bin/sh\necho \"stub build_prompt_config\"\n", encoding="utf-8")
     build_wrapper.chmod(0o755)
 
-    image_wrapper = workspace_path / "bin" / "generate_image"
+    image_wrapper = runtime_dir / "bin" / "generate_image"
     image_wrapper.write_text("#!/bin/sh\necho \"stub generate_image\"\n", encoding="utf-8")
     image_wrapper.chmod(0o755)
 
@@ -255,7 +255,7 @@ def main() -> None:
     template_path = repo_root / "templates" / "AGENTS.md"
     if not template_path.exists():
         fail(f"Missing template AGENTS.md: {template_path}")
-    ensure_workspace_runtime(run_dir, workspace_path, template_path)
+    ensure_workspace_runtime(workspace_path, template_path)
 
     step1 = run_step(
         args=build_fresh_args(workspace_path, STEP_ONE_PROMPT, args.profile),

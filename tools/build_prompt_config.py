@@ -161,8 +161,9 @@ def main() -> None:
     args = parser.parse_args()
 
     workspace_dir = Path.cwd()
-    tool_requests_dir = workspace_dir / "tool_requests"
-    tool_results_dir = workspace_dir / "tool_results"
+    runtime_dir = workspace_dir / ".threadbridge"
+    tool_requests_dir = runtime_dir / "tool_requests"
+    tool_results_dir = runtime_dir / "tool_results"
     tool_requests_dir.mkdir(parents=True, exist_ok=True)
     tool_results_dir.mkdir(parents=True, exist_ok=True)
     request_path = tool_requests_dir / "build_prompt_config.request.json"

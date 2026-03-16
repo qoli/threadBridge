@@ -8,7 +8,6 @@ use teloxide::utils::command::BotCommands;
 use tracing::error;
 
 pub(crate) use crate::codex::{CodexInputItem, CodexRunner, CodexThreadEvent, CodexWorkspace};
-pub(crate) use crate::codex_home::{CodexHome, CodexSessionSummary};
 pub(crate) use crate::config::AppConfig;
 pub(crate) use crate::image_artifacts::{
     ImageAnalysisArtifact, ImageAnalysisImage, build_image_analysis_prompt,
@@ -19,7 +18,7 @@ pub(crate) use crate::repository::{
     ThreadStatus,
 };
 pub(crate) use crate::tool_results::{TelegramOutboxItem, parse_telegram_outbox};
-pub(crate) use crate::workspace::{ensure_linked_workspace_runtime, validate_seed_template};
+pub(crate) use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 
 mod media;
 pub mod preview;
@@ -31,12 +30,12 @@ mod thread_flow;
 pub enum Command {
     #[command(description = "Show commands for the control chat and bound threads")]
     Start,
-    #[command(description = "Create a new thread")]
+    #[command(description = "Create a new Telegram thread")]
     NewThread,
-    #[command(description = "List recent Codex sessions from the local Codex home")]
-    ListSessions,
-    #[command(description = "Bind this Telegram thread to an existing Codex session id")]
-    BindSession,
+    #[command(description = "Bind this Telegram thread to a workspace path")]
+    BindWorkspace,
+    #[command(description = "Reset the current thread to a fresh Codex session")]
+    ResetCodexSession,
     #[command(description = "Generate a title for the current thread from chat history")]
     GenerateTitle,
     #[command(description = "Archive the current thread")]
@@ -52,14 +51,12 @@ pub struct AppState {
     pub(crate) config: AppConfig,
     pub(crate) repository: ThreadRepository,
     pub(crate) codex: CodexRunner,
-    pub(crate) codex_home: CodexHome,
     pub(crate) seed_template_path: PathBuf,
 }
 
 impl AppState {
     pub async fn new(config: AppConfig) -> Result<Self> {
         let repository = ThreadRepository::open(&config.runtime.data_root_path).await?;
-        let codex_home = CodexHome::discover()?;
         let seed_template_path = validate_seed_template(
             &config
                 .runtime
@@ -69,7 +66,6 @@ impl AppState {
         )?;
         Ok(Self {
             codex: CodexRunner::new(config.runtime.codex_model.clone()),
-            codex_home,
             repository,
             seed_template_path,
             config,
@@ -258,17 +254,26 @@ pub(crate) async fn send_scoped_message(
 pub(crate) fn usable_bound_session_id(session: Option<&SessionBinding>) -> Option<&str> {
     session
         .filter(|session| !session.session_broken)
-        .and_then(|session| session.codex_session_id.as_deref())
+        .and_then(|session| session.codex_thread_id.as_deref())
+}
+
+pub(crate) fn workspace_path_from_binding(session: &SessionBinding) -> Result<PathBuf> {
+    let workspace = session
+        .workspace_cwd
+        .as_deref()
+        .context("session binding is missing workspace_cwd")?;
+    Ok(PathBuf::from(workspace))
 }
 
 pub(crate) fn session_binding_hint(session: Option<&SessionBinding>) -> &'static str {
     match session {
         Some(session) if session.session_broken => {
-            "This thread's bound Codex session is invalid. Use /reconnect_codex to revalidate it or /bind_session <session_id> to attach another one."
+            "This thread's Codex session is invalid. Use /reconnect_codex to verify it again or /reset_codex_session to start a fresh one for the same workspace."
         }
-        _ => {
-            "This thread is not bound to a Codex session. Use /list_sessions, then /bind_session <session_id>."
+        Some(_) => {
+            "This thread is missing a usable Codex thread id. Use /reset_codex_session to start a fresh one."
         }
+        None => "This thread is not bound to a workspace yet. Use /bind_workspace <absolute-path>.",
     }
 }
 
@@ -283,39 +288,16 @@ pub(crate) fn command_argument_text<'a>(msg: &'a Message, command_name: &str) ->
     }
 }
 
-pub(crate) fn format_session_list_text(sessions: &[CodexSessionSummary]) -> String {
-    if sessions.is_empty() {
-        return "No recent Codex sessions were found in ~/.codex.".to_owned();
-    }
-
-    let mut lines = vec!["Recent Codex sessions:".to_owned()];
-    for session in sessions {
-        lines.push(format!("- `{}`  {}", session.id, session.title.trim()));
-    }
-    lines.push("Bind one in a thread with /bind_session <session_id>.".to_owned());
-    lines.join("\n")
-}
-
 pub(crate) async fn ensure_bound_workspace_runtime(
     state: &AppState,
-    record: &ThreadRecord,
     binding: &SessionBinding,
 ) -> Result<PathBuf> {
-    let session_id = binding
-        .codex_session_id
-        .as_deref()
-        .context("session binding is missing a Codex session id")?;
-    let resolved = state
-        .codex_home
-        .resolve_session(session_id)?
-        .with_context(|| format!("Codex session not found in ~/.codex: {session_id}"))?;
-    ensure_linked_workspace_runtime(
+    let workspace = workspace_path_from_binding(binding)?;
+    ensure_workspace_runtime(
         &state.config.runtime.codex_working_directory,
         &state.seed_template_path,
-        &record.folder_path,
-        &record.linked_workspace_path(),
-        &resolved.cwd,
+        &workspace,
     )
     .await?;
-    Ok(record.linked_workspace_path())
+    Ok(workspace)
 }
