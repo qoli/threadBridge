@@ -426,24 +426,6 @@ impl CodexRunner {
             .await
     }
 
-    pub async fn summarize_thread_from_session(
-        &self,
-        workspace: &CodexWorkspace,
-        existing_thread_id: &str,
-    ) -> Result<CodexRunResult> {
-        let prompt = [
-            "Summarize our conversation so far.",
-            "Rules:",
-            "- Focus on user goals, key decisions, unfinished work, and important facts.",
-            "- Keep the summary concise but useful.",
-            "- Use the same language as the conversation when possible.",
-            "- Return plain text only.",
-        ]
-        .join("\n");
-        self.run_locked_prompt(workspace, existing_thread_id, &prompt)
-            .await
-    }
-
     pub async fn reconnect_session(
         &self,
         workspace: &CodexWorkspace,
@@ -453,64 +435,6 @@ impl CodexRunner {
             .run_locked_prompt(workspace, existing_thread_id, WORKSPACE_RECONNECT_PROMPT)
             .await?;
         self.ensure_ready_response(result, "workspace reconnect")
-    }
-
-    pub async fn build_prompt_config(
-        &self,
-        workspace: &CodexWorkspace,
-        existing_thread_id: &str,
-    ) -> Result<CodexRunResult> {
-        let prompt = [
-            "Use this workspace runtime to build the next prompt config artifacts.",
-            "Read and follow the current workspace AGENTS.md.",
-            "Use the local wrapper command ./bin/build_prompt_config for any file materialization work.",
-            "Base all semantic decisions on the current Codex session context.",
-            "If the session still lacks enough information, ask follow-up questions in this thread and do not run the tool.",
-        ]
-        .join("\n");
-        self.run_locked_prompt(workspace, existing_thread_id, &prompt)
-            .await
-    }
-
-    pub async fn generate_image(
-        &self,
-        workspace: &CodexWorkspace,
-        existing_thread_id: &str,
-    ) -> Result<CodexRunResult> {
-        let prompt = [
-            "Use this workspace runtime to generate images for the current thread.",
-            "Read and follow the current workspace AGENTS.md.",
-            "Use the local wrapper command ./bin/generate_image for API execution and output materialization.",
-            "By default, use the latest prompt config unless the current session clearly requires a different one.",
-            "If the workspace is missing a usable prompt config or other required inputs, ask follow-up questions in this thread and do not run the tool.",
-        ]
-        .join("\n");
-        self.run_locked_prompt(workspace, existing_thread_id, &prompt)
-            .await
-    }
-
-    pub async fn update_agents_md(
-        &self,
-        workspace: &CodexWorkspace,
-        existing_thread_id: &str,
-        target_path: &Path,
-    ) -> Result<CodexRunResult> {
-        let prompt = [
-            "Based on our Telegram thread so far, update the child AGENTS.md for this exact thread workspace.".to_owned(),
-            format!(
-                "Read the existing AGENTS.md at {} first if it already exists, then preserve any still-valid stable rules while rewriting it from the latest session context.",
-                target_path.display()
-            ),
-            format!("Write or rewrite the thread-local AGENTS.md at: {}", target_path.display()),
-            "Preserve the workspace runtime contract section and the wrapper commands ./bin/build_prompt_config and ./bin/generate_image.".to_owned(),
-            "Keep the embedded build_prompt_config prompt guide inside the workspace runtime contract so future turns stay fully workspace-local.".to_owned(),
-            "This file should capture stable thread-specific instructions for future turns, not a transcript recap.".to_owned(),
-            "Write the Markdown file directly in the workspace.".to_owned(),
-            "If the current session still lacks enough stable information, ask the user follow-up questions in this thread and do not write or modify the target file.".to_owned(),
-        ]
-        .join("\n");
-        self.run_locked_prompt(workspace, existing_thread_id, &prompt)
-            .await
     }
 
     pub async fn generate_restore_recap_from_session(

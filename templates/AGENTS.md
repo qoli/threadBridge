@@ -30,7 +30,7 @@ This workspace is a Codex-driven runtime for a Telegram thread.
 
 ### `./bin/build_prompt_config`
 
-- Use this command when the user asks for `/build_prompt_config`.
+- Use this command when the current thread needs to build or refresh prompt artifacts.
 - Before running it, decide from the current session whether there is enough information to build prompt artifacts.
 - If information is still missing, ask follow-up questions in the thread and do not run the tool.
 - If information is sufficient:
@@ -94,7 +94,7 @@ The request file must look like this:
 
 ### `./bin/generate_image`
 
-- Use this command when the user asks for `/generate_image`.
+- Use this command when the current thread needs to generate images from the current workspace artifacts.
 - By default, use the latest prompt config in `prompts/` unless the session clearly requires another one.
 - If the workspace still lacks a usable prompt config or required image inputs, ask follow-up questions in the thread and do not run the tool.
 - After a successful run, inspect `tool_results/generate_image.result.json`.

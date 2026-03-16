@@ -18,10 +18,7 @@ pub(crate) use crate::repository::{
     AppendPendingImageInput, LogDirection, SessionBinding, ThreadRecord, ThreadRepository,
     ThreadStatus,
 };
-pub(crate) use crate::tool_results::{
-    TelegramOutboxItem, parse_build_prompt_config_tool_result, parse_generate_image_tool_result,
-    parse_telegram_outbox,
-};
+pub(crate) use crate::tool_results::{TelegramOutboxItem, parse_telegram_outbox};
 pub(crate) use crate::workspace::{ensure_linked_workspace_runtime, validate_seed_template};
 
 mod media;
@@ -42,18 +39,10 @@ pub enum Command {
     BindSession,
     #[command(description = "Generate a title for the current thread from chat history")]
     GenerateTitle,
-    #[command(description = "Summarize the current conversation using Codex")]
-    SummarizeThread,
     #[command(description = "Archive the current thread")]
     ArchiveThread,
     #[command(description = "Show archived threads and restore one interactively")]
     RestoreThread,
-    #[command(description = "Build concept.json and prompt configs for the current thread")]
-    BuildPromptConfig,
-    #[command(description = "Generate images from the current thread workspace")]
-    GenerateImage,
-    #[command(description = "Update the current thread AGENTS.md from session context")]
-    UpdateAgentsMd,
     #[command(description = "Revalidate the current bound Codex session for this thread")]
     ReconnectCodex,
 }
@@ -90,14 +79,6 @@ impl AppState {
 
 pub fn command_list() -> Vec<BotCommand> {
     Command::bot_commands()
-        .into_iter()
-        .filter(|command| {
-            !matches!(
-                command.command.as_str(),
-                "build_prompt_config" | "generate_image"
-            )
-        })
-        .collect()
 }
 
 pub async fn handle_command(

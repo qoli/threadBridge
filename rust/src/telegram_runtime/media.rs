@@ -12,8 +12,6 @@ use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
 use super::*;
 
 pub(crate) const CALLBACK_IMAGE_BATCH_ANALYZE: &str = "image_batch_analyze";
-const BUILD_PROMPT_RESULT_FILE: &str = "tool_results/build_prompt_config.result.json";
-const GENERATE_IMAGE_RESULT_FILE: &str = "tool_results/generate_image.result.json";
 const TELEGRAM_OUTBOX_FILE: &str = "tool_results/telegram_outbox.json";
 
 #[derive(Clone)]
@@ -136,29 +134,6 @@ async fn read_file_or_none(path: impl Into<PathBuf>) -> Result<Option<String>> {
     }
 }
 
-pub(crate) async fn read_build_prompt_result(
-    record: &ThreadRecord,
-) -> Result<Option<(String, String)>> {
-    let Some(result_text) =
-        read_file_or_none(record.folder_path.join(BUILD_PROMPT_RESULT_FILE)).await?
-    else {
-        return Ok(None);
-    };
-    let result = parse_build_prompt_config_tool_result(&result_text)?;
-    Ok(Some((result.concept_path, result.prompt_path)))
-}
-
-pub(crate) async fn read_generate_image_result(
-    record: &ThreadRecord,
-) -> Result<Option<crate::tool_results::GenerateImageToolResult>> {
-    let Some(result_text) =
-        read_file_or_none(record.folder_path.join(GENERATE_IMAGE_RESULT_FILE)).await?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(parse_generate_image_tool_result(&result_text)?))
-}
-
 pub(crate) async fn read_telegram_outbox(
     record: &ThreadRecord,
 ) -> Result<Option<crate::tool_results::TelegramOutbox>> {
@@ -250,30 +225,6 @@ pub(crate) async fn dispatch_workspace_telegram_outbox(
             None,
         )
         .await?;
-    Ok(())
-}
-
-pub(crate) async fn send_generated_images(
-    bot: &Bot,
-    record: &ThreadRecord,
-    thread_id: ThreadId,
-    image_paths: &[String],
-    summary: &str,
-) -> Result<()> {
-    for (index, relative_path) in image_paths.iter().enumerate() {
-        let absolute_path = record.folder_path.join(relative_path);
-        let request = bot
-            .send_photo(
-                ChatId(record.metadata.chat_id),
-                InputFile::file(absolute_path),
-            )
-            .message_thread_id(thread_id);
-        if index == 0 {
-            request.caption(summary.to_owned()).await?;
-        } else {
-            request.await?;
-        }
-    }
     Ok(())
 }
 

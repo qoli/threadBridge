@@ -14,7 +14,7 @@ The runtime is organized in three layers:
 
 Important repo areas:
 
-- `rust/src/bin/threadbridge.rs`: Telegram bot entrypoint and command handling for `/new_thread`, `/list_sessions`, `/bind_session`, `/build_prompt_config`, `/generate_image`, `/update_agents_md`, image analysis, archive, restore, and reconnect flows.
+- `rust/src/bin/threadbridge.rs`: Telegram bot entrypoint and command handling for `/new_thread`, `/list_sessions`, `/bind_session`, image analysis, archive, restore, and reconnect flows.
 - `rust/src/codex.rs`: Codex CLI wrapper that starts or resumes sessions with `codex exec`, streams JSON events, and exposes the maintainer-facing runtime operations.
 - `rust/src/codex_home.rs`: integration layer that reads Codex session metadata from the local `~/.codex` home.
 - `rust/src/workspace.rs`: workspace bootstrap logic that seeds child `AGENTS.md`, creates workspace-local wrapper scripts in `bin/`, and keeps the runtime contract section in sync.
@@ -31,7 +31,7 @@ There are three distinct `AGENTS.md` roles in this repo. Do not conflate them wh
 
 - Root `AGENTS.md`: this file. It explains how to maintain the repository and how the runtime is structured.
 - `templates/AGENTS.md`: the seed template copied into each new workspace. It defines the workspace runtime contract, including the stable wrapper command names and artifact expectations.
-- `data/<thread-key>/AGENTS.md`: the child, thread-local runtime instruction file used by Codex for one thread workspace. `/new_thread` seeds it from the template, and `/update_agents_md` rewrites it from the active session context before reconnecting Codex.
+- `data/<thread-key>/AGENTS.md`: the child, thread-local runtime instruction file used by Codex for one thread workspace. `/new_thread` seeds it from the template, and later maintenance should update it through repo-side template or workspace-generation changes rather than Telegram slash commands.
 
 When updating maintainer docs, describe the runtime behavior from the repo perspective. When updating workspace behavior, change the template or the child-workspace generation flow instead.
 
@@ -44,9 +44,6 @@ From a maintainer perspective, the lifecycle is:
 - `/list_sessions` reads recent Codex sessions from the local `~/.codex` home.
 - `/bind_session` attaches a Telegram thread to an existing Codex session and ensures `data/<thread-key>/workspace` points to that session `cwd`.
 - Normal thread messages append to the workspace transcript and run Codex in the workspace directory. The bot resumes the saved Codex thread when possible instead of replaying long transcripts.
-- `/build_prompt_config` asks Codex to read the workspace `AGENTS.md`, prepare `tool_requests/build_prompt_config.request.json`, run `./bin/build_prompt_config`, and then inspect `tool_results/build_prompt_config.result.json`.
-- `/generate_image` asks Codex to read the workspace `AGENTS.md`, run `./bin/generate_image`, and then return generated images from the workspace back to Telegram.
-- `/update_agents_md` asks Codex to rewrite the child `AGENTS.md` from the current session context, then reconnects Codex so future turns use the updated workspace instructions.
 - Uploaded images are stored in the workspace, accumulated into a pending batch, and then analyzed by Codex vision in the same workspace context when the user triggers analysis or sends a follow-up text.
 - If Codex session continuity breaks, the bot marks that binding as disconnected and requires `/reconnect_codex` or `/bind_session` instead of silently creating a replacement session.
 
