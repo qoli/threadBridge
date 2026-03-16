@@ -52,19 +52,20 @@ fn build_wrapper_script(tool_file_name: &str, repo_root: &Path) -> String {
     .join("\n")
 }
 
-pub async fn ensure_workspace_runtime(
-    repo_root: &Path,
+pub async fn ensure_thread_agents(
     seed_template_path: &Path,
-    workspace_path: &Path,
+    thread_root_path: &Path,
 ) -> Result<()> {
-    fs::create_dir_all(workspace_path).await.with_context(|| {
-        format!(
-            "failed to create workspace directory: {}",
-            workspace_path.display()
-        )
-    })?;
+    fs::create_dir_all(thread_root_path)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to create thread runtime directory: {}",
+                thread_root_path.display()
+            )
+        })?;
 
-    let agents_path = workspace_path.join("AGENTS.md");
+    let agents_path = thread_root_path.join("AGENTS.md");
     let seed_agents_text = fs::read_to_string(seed_template_path)
         .await
         .with_context(|| {
@@ -98,6 +99,17 @@ pub async fn ensure_workspace_runtime(
         }
     }
 
+    Ok(())
+}
+
+pub async fn ensure_workspace_runtime(repo_root: &Path, workspace_path: &Path) -> Result<()> {
+    fs::create_dir_all(workspace_path).await.with_context(|| {
+        format!(
+            "failed to create workspace directory: {}",
+            workspace_path.display()
+        )
+    })?;
+
     let bin_dir = workspace_path.join("bin");
     let tool_requests_dir = workspace_path.join("tool_requests");
     fs::create_dir_all(&bin_dir).await?;
@@ -128,9 +140,12 @@ pub async fn ensure_workspace_runtime(
 pub async fn ensure_linked_workspace_runtime(
     repo_root: &Path,
     seed_template_path: &Path,
+    thread_root_path: &Path,
     linked_workspace_path: &Path,
     target_workspace_path: &Path,
 ) -> Result<()> {
+    ensure_thread_agents(seed_template_path, thread_root_path).await?;
+
     let parent = linked_workspace_path.parent().ok_or_else(|| {
         anyhow::anyhow!(
             "workspace link path has no parent: {}",
@@ -185,7 +200,7 @@ pub async fn ensure_linked_workspace_runtime(
         }
     }
 
-    ensure_workspace_runtime(repo_root, seed_template_path, linked_workspace_path).await
+    ensure_workspace_runtime(repo_root, linked_workspace_path).await
 }
 
 pub fn validate_seed_template(seed_template_path: &Path) -> Result<PathBuf> {
@@ -196,4 +211,55 @@ pub fn validate_seed_template(seed_template_path: &Path) -> Result<PathBuf> {
         );
     }
     Ok(seed_template_path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ensure_thread_agents, ensure_workspace_runtime};
+    use std::path::PathBuf;
+    use tokio::fs;
+    use uuid::Uuid;
+
+    fn temp_path() -> PathBuf {
+        std::env::temp_dir().join(format!("threadbridge-workspace-test-{}", Uuid::new_v4()))
+    }
+
+    #[tokio::test]
+    async fn thread_agents_are_seeded_at_thread_root() {
+        let root = temp_path();
+        let thread_root = root.join("thread");
+        let template = root.join("template.md");
+        fs::create_dir_all(&root).await.unwrap();
+        fs::write(
+            &template,
+            "# Thread Runtime\n\n## Workspace Runtime Contract\n\n- wrapper\n",
+        )
+        .await
+        .unwrap();
+
+        ensure_thread_agents(&template, &thread_root).await.unwrap();
+
+        let seeded = fs::read_to_string(thread_root.join("AGENTS.md"))
+            .await
+            .unwrap();
+        assert!(seeded.contains("## Workspace Runtime Contract"));
+    }
+
+    #[tokio::test]
+    async fn workspace_runtime_creates_wrappers_without_agents_file() {
+        let root = temp_path();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&root).await.unwrap();
+
+        ensure_workspace_runtime(PathBuf::from("/repo").as_path(), &workspace)
+            .await
+            .unwrap();
+
+        assert!(
+            fs::try_exists(workspace.join("bin/build_prompt_config"))
+                .await
+                .unwrap()
+        );
+        assert!(!fs::try_exists(workspace.join("AGENTS.md")).await.unwrap());
+    }
 }

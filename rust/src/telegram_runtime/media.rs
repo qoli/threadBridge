@@ -138,7 +138,7 @@ pub(crate) async fn read_telegram_outbox(
     record: &ThreadRecord,
 ) -> Result<Option<crate::tool_results::TelegramOutbox>> {
     let Some(result_text) =
-        read_file_or_none(record.folder_path.join(TELEGRAM_OUTBOX_FILE)).await?
+        read_file_or_none(record.linked_workspace_path().join(TELEGRAM_OUTBOX_FILE)).await?
     else {
         return Ok(None);
     };
@@ -155,7 +155,7 @@ async fn remove_file_if_exists(path: impl Into<PathBuf>) -> Result<()> {
 }
 
 fn resolve_workspace_file_path(record: &ThreadRecord, relative_path: &str) -> PathBuf {
-    record.folder_path.join(relative_path)
+    record.linked_workspace_path().join(relative_path)
 }
 
 pub(crate) async fn dispatch_workspace_telegram_outbox(
@@ -168,7 +168,7 @@ pub(crate) async fn dispatch_workspace_telegram_outbox(
         return Ok(());
     };
     if outbox.items.is_empty() {
-        remove_file_if_exists(record.folder_path.join(TELEGRAM_OUTBOX_FILE)).await?;
+        remove_file_if_exists(record.linked_workspace_path().join(TELEGRAM_OUTBOX_FILE)).await?;
         return Ok(());
     }
 
@@ -212,7 +212,7 @@ pub(crate) async fn dispatch_workspace_telegram_outbox(
         }
     }
 
-    remove_file_if_exists(record.folder_path.join(TELEGRAM_OUTBOX_FILE)).await?;
+    remove_file_if_exists(record.linked_workspace_path().join(TELEGRAM_OUTBOX_FILE)).await?;
     state
         .repository
         .append_log(
@@ -394,6 +394,7 @@ pub(crate) async fn analyze_pending_image_batch(
         .codex
         .run_locked_with_events(
             &CodexWorkspace {
+                agents_path: record.agents_path(),
                 working_directory: workspace_path,
             },
             existing_thread_id,

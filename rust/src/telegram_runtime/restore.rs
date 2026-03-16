@@ -127,6 +127,7 @@ pub(crate) async fn restore_thread(
         .codex
         .generate_restore_recap_from_session(
             &CodexWorkspace {
+                agents_path: thread_record.agents_path(),
                 working_directory: workspace_path.clone(),
             },
             existing_thread_id,

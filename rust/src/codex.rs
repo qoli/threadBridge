@@ -8,11 +8,12 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{debug, error, info};
 
-const WORKSPACE_READY_PROMPT: &str = "You are initializing a Telegram thread workspace. Read the current workspace AGENTS.md and reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
-const WORKSPACE_RECONNECT_PROMPT: &str = "You are reconnecting an existing Telegram thread workspace session. Read the current workspace AGENTS.md and reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
+const WORKSPACE_READY_PROMPT: &str = "You are initializing a Telegram thread workspace. Read and follow the authoritative thread runtime instructions, then reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
+const WORKSPACE_RECONNECT_PROMPT: &str = "You are reconnecting an existing Telegram thread workspace session. Read and follow the authoritative thread runtime instructions, then reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexWorkspace {
+    pub agents_path: PathBuf,
     pub working_directory: PathBuf,
 }
 
@@ -134,7 +135,23 @@ impl CodexRunner {
         args
     }
 
-    fn normalize_input(input: &[CodexInputItem]) -> (String, Vec<String>) {
+    fn build_prompt_text(workspace: &CodexWorkspace, prompt: &str) -> String {
+        [
+            format!(
+                "Before acting, read and follow the authoritative thread runtime instructions at: {}",
+                workspace.agents_path.display()
+            ),
+            "The current working directory is the bound session workspace. Any project-local instructions there may also apply, but the thread runtime file above is the thread-specific control surface.".to_owned(),
+            String::new(),
+            prompt.to_owned(),
+        ]
+        .join("\n")
+    }
+
+    fn normalize_input(
+        workspace: &CodexWorkspace,
+        input: &[CodexInputItem],
+    ) -> (String, Vec<String>) {
         let mut prompt_parts = Vec::new();
         let mut image_paths = Vec::new();
         for item in input {
@@ -143,7 +160,10 @@ impl CodexRunner {
                 CodexInputItem::LocalImage { path } => image_paths.push(path.clone()),
             }
         }
-        (prompt_parts.join("\n\n"), image_paths)
+        (
+            Self::build_prompt_text(workspace, &prompt_parts.join("\n\n")),
+            image_paths,
+        )
     }
 
     pub async fn run_with_events<F, Fut>(
@@ -157,7 +177,7 @@ impl CodexRunner {
         F: FnMut(CodexThreadEvent) -> Fut,
         Fut: Future<Output = ()>,
     {
-        let (prompt, image_paths) = Self::normalize_input(&input);
+        let (prompt, image_paths) = Self::normalize_input(workspace, &input);
         let selected_factory = if existing_thread_id.is_some() {
             "resumeThread"
         } else {
@@ -459,8 +479,15 @@ impl CodexRunner {
 
 #[cfg(test)]
 mod tests {
-    use super::{CodexInputItem, CodexRunResult, CodexRunner};
-    use std::path::Path;
+    use super::{CodexInputItem, CodexRunResult, CodexRunner, CodexWorkspace};
+    use std::path::{Path, PathBuf};
+
+    fn workspace() -> CodexWorkspace {
+        CodexWorkspace {
+            agents_path: PathBuf::from("/tmp/thread/AGENTS.md"),
+            working_directory: PathBuf::from("/tmp/workspace"),
+        }
+    }
 
     fn run_result(thread_id: &str, changed: bool) -> CodexRunResult {
         CodexRunResult {
@@ -537,19 +564,30 @@ mod tests {
 
     #[test]
     fn normalize_input_splits_prompt_and_images() {
-        let (prompt, image_paths) = CodexRunner::normalize_input(&[
-            CodexInputItem::Text {
-                text: "one".to_owned(),
-            },
-            CodexInputItem::LocalImage {
-                path: "/tmp/1.png".to_owned(),
-            },
-            CodexInputItem::Text {
-                text: "two".to_owned(),
-            },
-        ]);
-        assert_eq!(prompt, "one\n\ntwo");
+        let (prompt, image_paths) = CodexRunner::normalize_input(
+            &workspace(),
+            &[
+                CodexInputItem::Text {
+                    text: "one".to_owned(),
+                },
+                CodexInputItem::LocalImage {
+                    path: "/tmp/1.png".to_owned(),
+                },
+                CodexInputItem::Text {
+                    text: "two".to_owned(),
+                },
+            ],
+        );
+        assert!(prompt.contains("/tmp/thread/AGENTS.md"));
+        assert!(prompt.ends_with("one\n\ntwo"));
         assert_eq!(image_paths, vec!["/tmp/1.png".to_owned()]);
+    }
+
+    #[test]
+    fn build_prompt_text_mentions_thread_agents_path() {
+        let prompt = CodexRunner::build_prompt_text(&workspace(), "hello");
+        assert!(prompt.contains("/tmp/thread/AGENTS.md"));
+        assert!(prompt.ends_with("hello"));
     }
 
     #[test]

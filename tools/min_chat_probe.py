@@ -32,11 +32,12 @@ def fail(message: str) -> None:
     raise SystemExit(message)
 
 
-def ensure_workspace_runtime(workspace_path: Path, template_path: Path) -> None:
+def ensure_workspace_runtime(thread_root: Path, workspace_path: Path, template_path: Path) -> None:
+    thread_root.mkdir(parents=True, exist_ok=True)
     workspace_path.mkdir(parents=True, exist_ok=True)
     (workspace_path / "tool_requests").mkdir(parents=True, exist_ok=True)
     (workspace_path / "bin").mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(template_path, workspace_path / "AGENTS.md")
+    shutil.copyfile(template_path, thread_root / "AGENTS.md")
 
     for name in ("build_prompt_config", "generate_image"):
         wrapper = workspace_path / "bin" / name
@@ -204,7 +205,7 @@ def main() -> None:
     template_path = repo_root / "templates" / "AGENTS.md"
     if not template_path.exists():
         fail(f"Missing template AGENTS.md: {template_path}")
-    ensure_workspace_runtime(workspace_path, template_path)
+    ensure_workspace_runtime(probe_root, workspace_path, template_path)
 
     turns: list[TurnResult] = []
     existing_thread_id: Optional[str] = None

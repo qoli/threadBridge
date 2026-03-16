@@ -132,6 +132,7 @@ pub(crate) async fn run_command(
             ensure_linked_workspace_runtime(
                 &state.config.runtime.codex_working_directory,
                 &state.seed_template_path,
+                &record.folder_path,
                 &workspace_path,
                 &resolved.cwd,
             )
@@ -141,6 +142,7 @@ pub(crate) async fn run_command(
                 .codex
                 .reconnect_session(
                     &CodexWorkspace {
+                        agents_path: record.agents_path(),
                         working_directory: workspace_path.clone(),
                     },
                     &resolved.id,
@@ -251,6 +253,7 @@ pub(crate) async fn run_command(
                 .codex
                 .reconnect_session(
                     &CodexWorkspace {
+                        agents_path: record.agents_path(),
                         working_directory: workspace_path,
                     },
                     existing_thread_id,
@@ -352,6 +355,7 @@ pub(crate) async fn run_command(
                 .codex
                 .generate_thread_title_from_session(
                     &CodexWorkspace {
+                        agents_path: record.agents_path(),
                         working_directory: workspace_path,
                     },
                     existing_thread_id,
@@ -547,6 +551,7 @@ pub(crate) async fn run_text_message(
         .codex
         .run_locked_prompt_with_events(
             &CodexWorkspace {
+                agents_path: record.agents_path(),
                 working_directory: workspace_path,
             },
             existing_thread_id,

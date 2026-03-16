@@ -4,7 +4,7 @@ Use this template when the Telegram bot asks you to update a child `AGENTS.md` f
 
 ## Goal
 
-Write a concise, reusable `AGENTS.md` file for the current thread workspace. This file should help future Codex turns stay aligned with the thread's direction and workflow.
+Write a concise, reusable `AGENTS.md` file for the current thread runtime root. This file should help future Codex turns stay aligned with the thread's direction, runtime topology, and workflow.
 
 ## Source of Truth
 
@@ -15,7 +15,7 @@ Write a concise, reusable `AGENTS.md` file for the current thread workspace. Thi
 ## Writing Rules
 
 - If the target `AGENTS.md` already exists, read it first and preserve any stable instructions that are still valid.
-- Preserve the `## Workspace Runtime Contract` section exactly, including the embedded build prompt guide and the wrapper commands `./bin/build_prompt_config` and `./bin/generate_image`.
+- Preserve the `## Workspace Runtime Contract` section exactly, including the embedded build prompt guide and the wrapper commands `./bin/build_prompt_config`, `./bin/generate_image`, and `./bin/send_telegram_media`.
 - Write Markdown directly to the target `AGENTS.md` path.
 - Rewrite the full file from the latest session context instead of patching it incrementally.
 - Keep the file concise and operational. Prefer bullets over long prose.
@@ -23,12 +23,14 @@ Write a concise, reusable `AGENTS.md` file for the current thread workspace. Thi
 - Omit unknown preferences rather than inventing them.
 - If the session still lacks enough stable information, ask the user follow-up questions in the thread and do not write or modify the file.
 - Do not depend on repo-level templates or docs for normal thread operation.
+- Explain the thread/runtime structure from the perspective of `data/<thread-key>/AGENTS.md`, not from the perspective of the bound repo.
 
 ## Required Sections
 
 Your output must include these sections:
 
 - `# Thread AGENTS.md`
+- `## Runtime Topology`
 - `## Workspace Runtime Contract`
 - `## Thread Direction`
 - `## Image & Reference Handling`
@@ -37,6 +39,10 @@ Your output must include these sections:
 
 ## Section Intent
 
+- `Runtime Topology`
+  - Explain that this file lives in `data/<thread-key>/`.
+  - Explain that `workspace/` is a symlink to the bound session `cwd`.
+  - Explain that `state/` is the thread-local runtime state area.
 - `Workspace Runtime Contract`
   - Preserve the fixed runtime contract, wrapper command names, and result-file expectations that make this workspace executable.
 - `Thread Direction`
@@ -50,6 +56,6 @@ Your output must include these sections:
 
 ## Scope Reminder
 
-- This is a child `AGENTS.md` for one `data/<thread-key>/` workspace.
-- Keep the thread runtime workspace-local and self-contained.
+- This is a child `AGENTS.md` for one `data/<thread-key>/` runtime root.
+- Keep the thread runtime self-contained without overwriting the bound repo's own `AGENTS.md`.
 - Do not include generic contributor-guide content.

@@ -3,7 +3,9 @@ use serde::Serialize;
 use threadbridge_rust::codex::{CodexRunner, CodexWorkspace};
 use threadbridge_rust::config::load_runtime_config;
 use threadbridge_rust::logging::init_json_logs;
-use threadbridge_rust::workspace::{ensure_workspace_runtime, validate_seed_template};
+use threadbridge_rust::workspace::{
+    ensure_thread_agents, ensure_workspace_runtime, validate_seed_template,
+};
 use tokio::fs;
 use uuid::Uuid;
 
@@ -48,10 +50,12 @@ async fn main() -> Result<()> {
     let _guard = init_json_logs(&probe_root.join("events.jsonl"))?;
     let template =
         validate_seed_template(&runtime.codex_working_directory.join("templates/AGENTS.md"))?;
-    ensure_workspace_runtime(&runtime.codex_working_directory, &template, &workspace_path).await?;
+    ensure_thread_agents(&template, &probe_root).await?;
+    ensure_workspace_runtime(&runtime.codex_working_directory, &workspace_path).await?;
 
     let runner = CodexRunner::new(runtime.codex_model.clone());
     let workspace = CodexWorkspace {
+        agents_path: probe_root.join("AGENTS.md"),
         working_directory: workspace_path.clone(),
     };
 

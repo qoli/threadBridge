@@ -1,36 +1,43 @@
-# threadBridge Workflow Contract
+# threadBridge Thread Runtime
 
-This workspace is a Codex-driven runtime for a Telegram thread.
+This file is the thread-local runtime contract for one Telegram thread.
 
 ## Core Model
 
-- Treat this workspace as the stable working unit.
-- Treat the linked Telegram thread as the current UI container for this workspace.
-- Treat the linked Codex session as the current agent continuity for this workspace.
-- Use the existing Codex session context as the source of truth. Do not rebuild long transcript replays unless a workflow explicitly requires it.
-- Keep this runtime workspace-local. Do not rely on repo-level templates, docs, or implementation files for normal thread operation.
+- Treat this file as the authoritative thread-level instruction surface.
+- The current working directory may be a bound project workspace with its own project instructions. Follow both layers without overwriting project-local conventions.
+- Use the existing Codex session context as the main source of truth. Do not rebuild long transcript replays unless a workflow explicitly requires it.
+- Keep thread-specific control state separate from the bound project unless a tool contract explicitly writes into the workspace.
 
-## Creative Thread Behavior
+## Runtime Topology
+
+- This file lives at `data/<thread-key>/AGENTS.md`.
+- `data/<thread-key>/workspace` is a symlink to the bound Codex session `cwd`.
+- The bot/runtime may execute Codex with the bound workspace as the current working directory even though this file lives one level above it.
+- `data/<thread-key>/state/` is the thread-local runtime state area for bot-owned artifacts such as pending image batches and image-analysis inputs/results.
+- When the runtime tells you to read this file, treat it as the thread-specific operating contract. Do not rewrite or replace the bound project's own `AGENTS.md`.
+
+## Conversation Behavior
 
 - Normal thread messages continue the current Codex session.
-- For normal thread messages, resolve references like "above", "same format", or "continue that" from the active conversation first.
-- Thread images are part of the same thread context.
-- When a thread has a pending image batch, the next user text should usually be interpreted as an image-analysis request tied to that batch, not as an unrelated fresh prompt.
+- Resolve references like "above", "same format", or "continue that" from the active conversation first.
 - If session continuity breaks, require reconnect instead of silently starting a replacement session.
+- Treat uploaded thread images as part of the same thread context.
+- When a thread has a pending image batch, the next user text usually clarifies or triggers analysis for that batch rather than starting an unrelated fresh task.
 
 ## Workspace Runtime Contract
 
-- The local wrapper commands in this workspace are:
+- When your current working directory is the bound workspace, the local wrapper commands are:
   - `./bin/build_prompt_config`
   - `./bin/generate_image`
   - `./bin/send_telegram_media`
 - Keep these wrapper command names stable.
 - Do not remove this section when updating a child `AGENTS.md`.
-- Treat this section as self-contained. The wrappers are the public runtime surface; their internal repo-level implementation is not part of the normal chat workflow.
+- Treat this section as self-contained. The wrappers are the public runtime surface; their repo-level implementation details are not part of the normal chat workflow.
 
 ### `./bin/build_prompt_config`
 
-- Use this command when the current thread needs to build or refresh prompt artifacts.
+- Use this command when the current thread needs to build or refresh prompt artifacts in the bound workspace.
 - Before running it, decide from the current session whether there is enough information to build prompt artifacts.
 - If information is still missing, ask follow-up questions in the thread and do not run the tool.
 - If information is sufficient:
@@ -47,7 +54,7 @@ This workspace is a Codex-driven runtime for a Telegram thread.
   - `Keep + Change + How/Style + Constraints`
 - The `instruction` must be a final provider-ready prompt, not a question to the user.
 - Do not invent diffusion-style fields or hidden model settings.
-- Only reference source images that actually exist in this workspace.
+- Only reference source images that actually exist in the bound workspace.
 
 The request file must look like this:
 
@@ -134,18 +141,28 @@ The request file must look like this:
 }
 ```
 
-## Artifact Workflow
+## Artifact Boundaries
 
-- `concept.json` is the workspace brief.
-- `prompts/*.json` are Nanobanana request configs derived from the session.
-- `tool_results/*.json` stores wrapper result metadata for the bot runtime.
-- `tool_results/telegram_outbox.json` stores queued Telegram UI items waiting for bot delivery.
-- `images/source/` stores user-provided source images.
-- `images/analysis/` stores image-analysis artifacts.
-- `images/generated/` stores image-generation runs, request payloads, response payloads, and output images.
+- Thread root owns:
+  - `metadata.json`
+  - `conversations.jsonl`
+  - `session-binding.json`
+  - `state/`
+- Bound workspace owns:
+  - `bin/`
+  - `tool_requests/`
+  - `tool_results/`
+  - `concept.json`
+  - `prompts/*.json`
+  - `images/generated/`
+- Thread runtime state owns:
+  - `state/pending-image-batch.json`
+  - `state/images/source/`
+  - `state/images/analysis/`
 
 ## Implementation Discipline
 
-- Keep ordinary thread behavior grounded in the current session and workspace-local artifacts.
+- Keep ordinary thread behavior grounded in the current session and the actual artifacts on disk.
+- Do not overwrite or redefine project-local instructions in the bound workspace.
 - Do not reintroduce diffusion-style placeholder parameters for Nanobanana configs.
 - Prefer concise, reusable workflow rules over per-turn chat summaries.

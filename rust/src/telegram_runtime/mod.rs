@@ -312,6 +312,7 @@ pub(crate) async fn ensure_bound_workspace_runtime(
     ensure_linked_workspace_runtime(
         &state.config.runtime.codex_working_directory,
         &state.seed_template_path,
+        &record.folder_path,
         &record.linked_workspace_path(),
         &resolved.cwd,
     )

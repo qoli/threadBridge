@@ -95,12 +95,19 @@ pub struct ThreadRecord {
     pub log_path: PathBuf,
     pub metadata: ThreadMetadata,
     pub metadata_path: PathBuf,
-    pub summary_path: PathBuf,
 }
 
 impl ThreadRecord {
+    pub fn agents_path(&self) -> PathBuf {
+        self.folder_path.join("AGENTS.md")
+    }
+
     pub fn linked_workspace_path(&self) -> PathBuf {
         self.folder_path.join("workspace")
+    }
+
+    pub fn state_path(&self) -> PathBuf {
+        self.folder_path.join("state")
     }
 }
 
@@ -224,7 +231,7 @@ impl ThreadRepository {
         &self,
         record: &ThreadRecord,
     ) -> Result<Option<PendingImageBatch>> {
-        let path = record.folder_path.join("pending-image-batch.json");
+        let path = record.state_path().join("pending-image-batch.json");
         if !fs::try_exists(&path).await? {
             return Ok(None);
         }
@@ -263,7 +270,7 @@ impl ThreadRepository {
         input: AppendPendingImageInput,
     ) -> Result<PendingImageBatch> {
         let batch_dir = record
-            .folder_path
+            .state_path()
             .join("images")
             .join("source")
             .join(&batch.batch_id);
@@ -315,7 +322,7 @@ impl ThreadRepository {
     }
 
     pub async fn clear_pending_image_batch(&self, record: &ThreadRecord) -> Result<()> {
-        let path = record.folder_path.join("pending-image-batch.json");
+        let path = record.state_path().join("pending-image-batch.json");
         if fs::try_exists(&path).await? {
             fs::remove_file(path).await?;
         }
@@ -328,7 +335,7 @@ impl ThreadRepository {
         artifact: &ImageAnalysisArtifact,
     ) -> Result<()> {
         let path = record
-            .folder_path
+            .state_path()
             .join("images")
             .join("analysis")
             .join(format!("{}.json", artifact.batch_id));
@@ -372,22 +379,6 @@ impl ThreadRepository {
             return Ok(entries);
         }
         Ok(entries.split_off(entries.len() - limit))
-    }
-
-    pub async fn write_summary(
-        &self,
-        record: ThreadRecord,
-        summary: impl Into<String>,
-    ) -> Result<ThreadRecord> {
-        fs::write(&record.summary_path, format!("{}\n", summary.into().trim())).await?;
-        self.update_metadata(ThreadRecord {
-            metadata: ThreadMetadata {
-                last_summary_at: Some(now_iso()),
-                ..record.metadata.clone()
-            },
-            ..record
-        })
-        .await
     }
 
     pub async fn read_session_binding(
@@ -633,9 +624,6 @@ impl ThreadRepository {
         )
         .await?;
         fs::write(&record.log_path, "").await?;
-        fs::write(&record.summary_path, "").await?;
-        fs::create_dir_all(folder_path.join("images").join("source")).await?;
-        fs::create_dir_all(folder_path.join("images").join("analysis")).await?;
         Ok(record)
     }
 
@@ -644,7 +632,9 @@ impl ThreadRepository {
         record: &ThreadRecord,
         batch: &PendingImageBatch,
     ) -> Result<()> {
-        let path = record.folder_path.join("pending-image-batch.json");
+        let state_dir = record.state_path();
+        fs::create_dir_all(&state_dir).await?;
+        let path = state_dir.join("pending-image-batch.json");
         fs::write(path, format!("{}\n", serde_json::to_string_pretty(batch)?)).await?;
         Ok(())
     }
@@ -735,7 +725,6 @@ impl ThreadRepository {
             log_path: folder_path.join("conversations.jsonl"),
             metadata,
             metadata_path: folder_path.join("metadata.json"),
-            summary_path: folder_path.join("summary.md"),
         }
     }
 }
@@ -752,6 +741,7 @@ pub struct AppendPendingImageInput {
 #[cfg(test)]
 mod tests {
     use super::{AppendPendingImageInput, LogDirection, ThreadRepository, ThreadScope};
+    use tokio::fs;
     use uuid::Uuid;
 
     fn temp_path() -> std::path::PathBuf {
@@ -768,6 +758,16 @@ mod tests {
             .unwrap();
         assert!(matches!(record.metadata.scope, ThreadScope::Thread));
         assert_eq!(record.metadata.message_thread_id, Some(1001));
+        assert!(
+            !fs::try_exists(record.folder_path.join("summary.md"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !fs::try_exists(record.folder_path.join("images"))
+                .await
+                .unwrap()
+        );
         repo.append_log(&record, LogDirection::User, "hello", Some(7))
             .await
             .unwrap();
@@ -805,12 +805,22 @@ mod tests {
             .unwrap();
         assert_eq!(updated.images.len(), 1);
         assert_eq!(updated.latest_caption.as_deref(), Some("hint"));
+        assert!(
+            updated.images[0]
+                .relative_path
+                .starts_with("state/images/source/")
+        );
         let persisted = repo
             .read_pending_image_batch(&record)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(persisted.images.len(), 1);
+        assert!(
+            fs::try_exists(record.state_path().join("pending-image-batch.json"))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
