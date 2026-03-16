@@ -14,6 +14,7 @@ const APP_SERVER_CLIENT_NAME: &str = "threadbridge";
 const APP_SERVER_CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const APP_SERVER_READY_PROMPT_PREFIX: &str =
     "Follow the workspace AGENTS.md, including any threadBridge-managed runtime appendix.";
+const WORKSPACE_READY_PROMPT: &str = "Read and follow the workspace AGENTS.md, including the threadBridge appendix if present, then reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexWorkspace {
@@ -426,6 +427,17 @@ impl CodexRunner {
             .await?;
         let binding = Self::parse_binding(&result)?;
         Self::ensure_workspace_cwd(workspace, &binding)?;
+        let ready = self
+            .run_turn_on_client(
+                &mut client,
+                &binding,
+                vec![CodexInputItem::Text {
+                    text: WORKSPACE_READY_PROMPT.to_owned(),
+                }],
+                |_| async {},
+            )
+            .await?;
+        self.ensure_ready_response(&ready, "workspace initialization")?;
         Ok(binding)
     }
 
@@ -495,77 +507,9 @@ impl CodexRunner {
             thread_id: binding.thread_id.clone(),
         })
         .await;
-
-        let request_id = client
-            .send_request(
-                "turn/start",
-                Self::build_turn_start_params(&binding.thread_id, &input),
-            )
+        let final_response = self
+            .run_turn_on_client(&mut client, &binding, input, on_event)
             .await?;
-
-        let mut request_acked = false;
-        let mut turn_completed = false;
-        let mut final_response = String::new();
-        let mut latest_agent_message_by_id: HashMap<String, String> = HashMap::new();
-
-        while !(request_acked && turn_completed) {
-            match client.read_message().await? {
-                RpcMessage::Response { id, .. } if id == request_id => {
-                    request_acked = true;
-                }
-                RpcMessage::Error { id, message, data } if id == request_id => {
-                    let details = data.map(|value| value.to_string()).unwrap_or_default();
-                    if details.is_empty() {
-                        bail!("turn/start failed: {message}");
-                    }
-                    bail!("turn/start failed: {message} ({details})");
-                }
-                RpcMessage::Notification { method, params } => {
-                    if let Some(event) = Self::map_notification(
-                        &method,
-                        params.unwrap_or(Value::Null),
-                        &mut latest_agent_message_by_id,
-                    )? {
-                        match &event {
-                            CodexThreadEvent::ItemStarted { item } => {
-                                log_item_event("started", item)
-                            }
-                            CodexThreadEvent::ItemCompleted { item } => {
-                                log_item_event("completed", item);
-                                if item.get("type").and_then(Value::as_str) == Some("agent_message")
-                                {
-                                    if let Some(text) = item.get("text").and_then(Value::as_str) {
-                                        final_response = text.to_owned();
-                                    }
-                                }
-                            }
-                            CodexThreadEvent::ItemUpdated { item } => {
-                                if item.get("type").and_then(Value::as_str) == Some("agent_message")
-                                {
-                                    if let Some(text) = item.get("text").and_then(Value::as_str) {
-                                        final_response = text.to_owned();
-                                    }
-                                }
-                            }
-                            CodexThreadEvent::TurnCompleted { .. } => {
-                                turn_completed = true;
-                            }
-                            CodexThreadEvent::TurnFailed { .. } => {
-                                turn_completed = true;
-                            }
-                            CodexThreadEvent::Error { .. }
-                            | CodexThreadEvent::TurnStarted
-                            | CodexThreadEvent::ThreadStarted { .. } => {}
-                        }
-                        on_event(event).await;
-                    }
-                }
-                RpcMessage::Request { id, method, .. } => {
-                    client.reject_server_request(id, &method).await?;
-                }
-                RpcMessage::Response { .. } | RpcMessage::Error { .. } => {}
-            }
-        }
 
         Ok(CodexRunResult {
             final_response,
@@ -772,6 +716,101 @@ impl CodexRunner {
             );
         }
         Ok(result)
+    }
+
+    async fn run_turn_on_client<F, Fut>(
+        &self,
+        client: &mut AppServerClient,
+        binding: &CodexThreadBinding,
+        input: Vec<CodexInputItem>,
+        mut on_event: F,
+    ) -> Result<String>
+    where
+        F: FnMut(CodexThreadEvent) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        let request_id = client
+            .send_request(
+                "turn/start",
+                Self::build_turn_start_params(&binding.thread_id, &input),
+            )
+            .await?;
+
+        let mut request_acked = false;
+        let mut turn_completed = false;
+        let mut final_response = String::new();
+        let mut latest_agent_message_by_id: HashMap<String, String> = HashMap::new();
+
+        while !(request_acked && turn_completed) {
+            match client.read_message().await? {
+                RpcMessage::Response { id, .. } if id == request_id => {
+                    request_acked = true;
+                }
+                RpcMessage::Error { id, message, data } if id == request_id => {
+                    let details = data.map(|value| value.to_string()).unwrap_or_default();
+                    if details.is_empty() {
+                        bail!("turn/start failed: {message}");
+                    }
+                    bail!("turn/start failed: {message} ({details})");
+                }
+                RpcMessage::Notification { method, params } => {
+                    if let Some(event) = Self::map_notification(
+                        &method,
+                        params.unwrap_or(Value::Null),
+                        &mut latest_agent_message_by_id,
+                    )? {
+                        match &event {
+                            CodexThreadEvent::ItemStarted { item } => {
+                                log_item_event("started", item)
+                            }
+                            CodexThreadEvent::ItemCompleted { item } => {
+                                log_item_event("completed", item);
+                                if item.get("type").and_then(Value::as_str) == Some("agent_message")
+                                {
+                                    if let Some(text) = item.get("text").and_then(Value::as_str) {
+                                        final_response = text.to_owned();
+                                    }
+                                }
+                            }
+                            CodexThreadEvent::ItemUpdated { item } => {
+                                if item.get("type").and_then(Value::as_str) == Some("agent_message")
+                                {
+                                    if let Some(text) = item.get("text").and_then(Value::as_str) {
+                                        final_response = text.to_owned();
+                                    }
+                                }
+                            }
+                            CodexThreadEvent::TurnCompleted { .. } => {
+                                turn_completed = true;
+                            }
+                            CodexThreadEvent::TurnFailed { error } => {
+                                turn_completed = true;
+                                if !error.is_null() {
+                                    final_response = error.to_string();
+                                }
+                            }
+                            CodexThreadEvent::Error { .. }
+                            | CodexThreadEvent::TurnStarted
+                            | CodexThreadEvent::ThreadStarted { .. } => {}
+                        }
+                        on_event(event).await;
+                    }
+                }
+                RpcMessage::Request { id, method } => {
+                    client.reject_server_request(id, &method).await?;
+                }
+                RpcMessage::Response { .. } | RpcMessage::Error { .. } => {}
+            }
+        }
+
+        Ok(final_response)
+    }
+
+    fn ensure_ready_response(&self, response: &str, context: &str) -> Result<()> {
+        if response.trim() != "READY" {
+            bail!("{context} did not return READY: {}", response.trim());
+        }
+        Ok(())
     }
 }
 

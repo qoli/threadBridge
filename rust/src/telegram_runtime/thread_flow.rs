@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use teloxide::payloads::setters::*;
 use tokio::sync::Mutex;
+use tracing::{error, info};
 
 use super::media::{self, dispatch_workspace_telegram_outbox};
 use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
@@ -516,6 +517,16 @@ pub(crate) async fn run_text_message(
     let workspace_path =
         ensure_bound_workspace_runtime(state, session.as_ref().context("missing binding")?).await?;
 
+    info!(
+        event = "telegram.thread.message.received",
+        thread_key = %record.metadata.thread_key,
+        chat_id = record.metadata.chat_id,
+        message_thread_id = record.metadata.message_thread_id.unwrap_or_default(),
+        codex_thread_id = existing_thread_id,
+        text = text,
+        "received thread text message"
+    );
+
     if let Some(batch) = state.repository.read_pending_image_batch(&record).await? {
         if !batch.images.is_empty() {
             state
@@ -612,9 +623,27 @@ pub(crate) async fn run_text_message(
             dispatch_workspace_telegram_outbox(bot, state, &record, thread_id).await?;
         }
         Err(error) => {
-            let _ = state
+            error!(
+                event = "telegram.thread.message.codex_failed",
+                thread_key = %record.metadata.thread_key,
+                chat_id = record.metadata.chat_id,
+                message_thread_id = record.metadata.message_thread_id.unwrap_or_default(),
+                codex_thread_id = existing_thread_id,
+                error = %error,
+                "codex turn failed for thread message"
+            );
+            let record = state
                 .repository
                 .mark_session_binding_broken(record, error.to_string())
+                .await?;
+            state
+                .repository
+                .append_log(
+                    &record,
+                    LogDirection::System,
+                    format!("Codex turn failed: {error}"),
+                    None,
+                )
                 .await?;
             send_scoped_message(
                 bot,

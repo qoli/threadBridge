@@ -7,6 +7,7 @@ use teloxide::types::{
     CallbackQueryId, FileId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, ThreadId,
 };
 use tokio::sync::Mutex;
+use tracing::{error, info};
 
 use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
 use super::*;
@@ -271,6 +272,15 @@ pub(crate) async fn queue_image_for_thread(
         .repository
         .get_or_create_pending_image_batch(&record)
         .await?;
+    info!(
+        event = "telegram.thread.image.received",
+        thread_key = %record.metadata.thread_key,
+        chat_id = record.metadata.chat_id,
+        message_thread_id = record.metadata.message_thread_id.unwrap_or_default(),
+        batch_id = %pending.batch_id,
+        file_name = %image.file_name,
+        "received image for thread batch"
+    );
     let data = download_telegram_file(state, bot, image.file_id.clone()).await?;
     let updated = state
         .repository
@@ -407,13 +417,31 @@ pub(crate) async fn analyze_pending_image_batch(
     let result = match result {
         Ok(result) => result,
         Err(error) => {
+            error!(
+                event = "telegram.thread.image_analysis.codex_failed",
+                thread_key = %record.metadata.thread_key,
+                chat_id = record.metadata.chat_id,
+                message_thread_id = record.metadata.message_thread_id.unwrap_or_default(),
+                codex_thread_id = existing_thread_id,
+                batch_id = %batch.batch_id,
+                error = %error,
+                "codex image analysis failed"
+            );
             preview_heartbeat.stop().await;
             typing.stop().await;
             let record = state
                 .repository
                 .mark_session_binding_broken(record, error.to_string())
                 .await?;
-            let _ = record;
+            state
+                .repository
+                .append_log(
+                    &record,
+                    LogDirection::System,
+                    format!("Codex image analysis failed: {error}"),
+                    None,
+                )
+                .await?;
             return Err(error);
         }
     };
