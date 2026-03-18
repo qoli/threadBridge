@@ -459,6 +459,7 @@ pub(crate) async fn run_command(
             }
             let (text, markup) = restore::render_restore_page(state, msg.chat.id.0, 0).await?;
             bot.send_message(msg.chat.id, text)
+                .link_preview_options(disabled_link_preview_options())
                 .reply_markup(markup)
                 .await?;
         }

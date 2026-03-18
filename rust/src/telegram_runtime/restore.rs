@@ -152,6 +152,7 @@ pub(crate) async fn restore_thread(
     .await?;
     let (text, markup) = render_restore_page(state, message.chat.id.0, offset).await?;
     bot.edit_message_text(message.chat.id, message.id, text)
+        .link_preview_options(disabled_link_preview_options())
         .reply_markup(markup)
         .await?;
     Ok(())

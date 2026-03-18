@@ -1,5 +1,36 @@
 # Telegram Markdown 適配草稿
 
+## 目前進度
+
+這份 Plan 已經不是純草稿，`v1` 的核心路徑已部分落地到程式碼。
+
+目前已實作：
+
+- 最終 assistant 回覆已集中到 Telegram 專用入口
+  - [`rust/src/telegram_runtime/final_reply.rs`](/Volumes/Data/Github/threadBridge/rust/src/telegram_runtime/final_reply.rs)
+- 內部使用 `pulldown-cmark` 解析 Markdown，並輸出 Telegram `HTML parse mode`
+- HTML 發送失敗時，會自動 fallback 到純文字
+- 超過單則訊息限制時，會改走 notice + `reply.md` attachment
+- Markdown link 目前統一改寫成 `code` 樣式 label，而不是保留 Telegram link
+- 所有主要 bot 文字送信路徑目前都明確關閉 link preview
+- 目前會將最後一組 final reply 的 raw markdown 與 intermediate html dump 到：
+  - `/Volumes/Data/Github/threadBridge/tmp/final-reply-last.md`
+  - `/Volumes/Data/Github/threadBridge/tmp/final-reply-last.html`
+
+目前已明確不做或已回退的部分：
+
+- 不再做自動的 file-bullet 兩行重排與全角空格 continuation indent
+  - 先前嘗試過，但對一般清單與 inline code 命中太寬，不夠安全
+- preview draft 仍然不是同一套 renderer
+- 非 final reply surface 仍未完全統一到同一個 rich-text 中間表示
+
+目前尚未完成的項目：
+
+- preview / draft 是否要共用 renderer
+- 是否要建立更明確的中間表示，而不是目前 renderer 內部直接輸出 HTML
+- block quote / 更複雜 nested list / 更多 Telegram-specific layout 重建策略
+- 是否要把 debug dump、probe、preview exporter 收斂成正式診斷工具鏈
+
 ## 問題
 
 `threadBridge` 的最終輸出，目前大多直接把文字送回 Telegram。
@@ -149,6 +180,13 @@
 - 初期追求穩定
 - 不追求 Telegram 裡的完整 Markdown 表現力
 
+以目前程式碼來看，已經做出的實際決策是：
+
+- parse mode 採用 `HTML`，不是 `MarkdownV2`
+- final reply 優先穩定送出，再談完整表現力
+- fallback 與 attachment 路徑都已經存在
+- path / local file references 與普通 URL 不再嘗試保留 Telegram link 呈現
+
 ## 與現有功能的關係
 
 這個適配層不只影響普通 assistant 回覆，也會影響：
@@ -160,6 +198,18 @@
 - 未來 Web App 中可能重放的消息內容
 
 所以它不應該只是某一個 helper，而應該是一個比較明確的 renderer 邏輯。
+
+目前已實際影響的範圍只有：
+
+- final assistant reply
+- image analysis 的 final assistant reply 路徑
+
+目前尚未納入同一套 renderer 的範圍：
+
+- preview draft
+- 一般系統提示
+- restore / reconnect / reset 等文案本身的 rich-text 適配
+- workspace outbox 產出的文字內容
 
 ## 可能的實作位置
 
@@ -186,9 +236,18 @@
 - 是否要保留 assistant 原始輸出，以便 debug renderer 問題？
 - 失敗時是否自動 fallback 到純文字模式？
 
+其中幾個問題目前已經有程式碼答案：
+
+- `MarkdownV2` 還是 `HTML`
+  - 目前已選 `HTML`
+- 是否保留 assistant 原始輸出做 debug
+  - 目前已保留最後一組 dump 到 `tmp/`
+- 是否自動 fallback 到純文字
+  - 目前已實作
+
 ## 建議的下一步
 
-1. 先列出目前 threadBridge 最常見的輸出結構。
-2. 決定 Telegram 初版 renderer 的最小支援集合。
-3. 加一層安全 fallback：格式化失敗時自動退回純文字。
-4. 把 renderer 收斂成 Telegram runtime 的單一入口，不要分散在各個 message call site。
+1. 決定 preview draft 是否也要接到同一套 renderer，或明確維持分離。
+2. 重新評估是否真的需要一個顯式中間表示，而不是持續在 renderer 內部直接輸出 HTML。
+3. 針對真實 `data/` 樣本持續收斂 Telegram-specific 排版問題，特別是 nested list、長 bullet、block quote。
+4. 視需要把 probe / html preview / final dump 收斂成更正式的診斷面。

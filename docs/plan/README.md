@@ -14,6 +14,7 @@
   - 用 Telegram Web App 補上 Codex 執行觀測面
 - [telegram-markdown-adaptation.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md)
   - 討論如何讓 threadBridge 的輸出穩定適配 Telegram markdown 表示
+  - 目前已部分實作：final assistant reply 已有 Telegram HTML renderer、plain-text fallback、attachment fallback
 - [optional-agents-injection.md](/Volumes/Data/Github/threadBridge/docs/plan/optional-agents-injection.md)
   - 討論將 workspace `AGENTS.md` appendix 注入改成可選能力
 - [runtime-transport-abstraction.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-transport-abstraction.md)
@@ -23,4 +24,9 @@
 - [telegram-adapter-migration.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-adapter-migration.md)
   - 規劃如何把現有 Telegram bot 重構成一個 adapter，而不是整個產品邊界
 
-這些文件目前都是草稿，不代表已經定案或已經實作。
+這些文件大多仍是草稿，不代表已經完全定案或完整實作。
+
+目前相對進度最高的是：
+
+- [telegram-markdown-adaptation.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md)
+  - 已有部分程式碼落地，尤其是 final assistant reply 的 Telegram renderer 路徑

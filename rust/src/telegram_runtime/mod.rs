@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use teloxide::prelude::*;
 use teloxide::requests::Requester;
-use teloxide::types::{BotCommand, CallbackQuery, ThreadId};
+use teloxide::types::{BotCommand, CallbackQuery, LinkPreviewOptions, ThreadId};
 use teloxide::utils::command::BotCommands;
 use tracing::error;
 
@@ -201,6 +201,7 @@ async fn run_callback_query(bot: &Bot, query: &CallbackQuery, state: &AppState) 
             let (text, markup) =
                 restore::render_restore_page(state, message.chat.id.0, offset).await?;
             bot.edit_message_text(message.chat.id, message.id, text)
+                .link_preview_options(disabled_link_preview_options())
                 .reply_markup(markup)
                 .await?;
             bot.answer_callback_query(query.id.clone()).await?;
@@ -245,10 +246,22 @@ pub(crate) async fn send_scoped_message(
     text: impl Into<String>,
 ) -> ResponseResult<Message> {
     let text = text.into();
-    let request = bot.send_message(chat_id, text);
+    let request = bot
+        .send_message(chat_id, text)
+        .link_preview_options(disabled_link_preview_options());
     match thread_id {
         Some(thread_id) => request.message_thread_id(thread_id).await,
         None => request.await,
+    }
+}
+
+pub(crate) fn disabled_link_preview_options() -> LinkPreviewOptions {
+    LinkPreviewOptions {
+        is_disabled: true,
+        url: None,
+        prefer_small_media: false,
+        prefer_large_media: false,
+        show_above_text: false,
     }
 }
 

@@ -1,0 +1,12 @@
+從你這張圖看，這個欄位要填的是 Python 執行檔路徑，不是資料夾。畫面下方也直接舉例了：<code>/opt/homebrew/bin/python3</code>。
+
+<b>你可以先試這幾個常見路徑：</b>
+
+- <code>/opt/homebrew/bin/python3</code>（Apple Silicon Mac 最常見）
+- <code>/usr/local/bin/python3</code>（Intel Mac 常見）
+- 如果你用虛擬環境，通常會是 <code>.../.venv/bin/python3</code>
+
+最穩的方法是在 Terminal 輸入：
+<code>which python3</code>
+
+它回傳的完整路徑，就是你要填進 <code>Python Path</code> 的值。

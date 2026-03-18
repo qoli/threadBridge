@@ -109,6 +109,7 @@ async fn upsert_pending_image_batch_message(
                 teloxide::types::MessageId(control_message_id),
                 text.clone(),
             )
+            .link_preview_options(disabled_link_preview_options())
             .reply_markup(markup.clone())
             .await
             .is_ok()
@@ -118,6 +119,7 @@ async fn upsert_pending_image_batch_message(
     }
     let message = bot
         .send_message(chat_id, text)
+        .link_preview_options(disabled_link_preview_options())
         .message_thread_id(thread_id)
         .reply_markup(markup)
         .await?;

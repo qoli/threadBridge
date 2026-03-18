@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
 use teloxide::payloads::setters::*;
-use teloxide::types::{ChatId, InputFile, LinkPreviewOptions, Message, ParseMode, ThreadId};
+use teloxide::types::{ChatId, InputFile, Message, ParseMode, ThreadId};
 use tokio::fs;
 use tracing::{info, warn};
 
@@ -173,7 +173,7 @@ async fn send_html_message(
     let request = bot
         .send_message(chat_id, text)
         .parse_mode(ParseMode::Html)
-        .link_preview_options(disabled_link_preview_options());
+        .link_preview_options(super::disabled_link_preview_options());
     let message = match thread_id {
         Some(thread_id) => request.message_thread_id(thread_id).await?,
         None => request.await?,
@@ -189,7 +189,7 @@ async fn send_plain_text_message(
 ) -> Result<Message> {
     let request = bot
         .send_message(chat_id, text)
-        .link_preview_options(disabled_link_preview_options());
+        .link_preview_options(super::disabled_link_preview_options());
     let message = match thread_id {
         Some(thread_id) => request.message_thread_id(thread_id).await?,
         None => request.await?,
@@ -269,16 +269,6 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     }
     let truncated: String = text.chars().take(max_chars.saturating_sub(3)).collect();
     format!("{truncated}...")
-}
-
-fn disabled_link_preview_options() -> LinkPreviewOptions {
-    LinkPreviewOptions {
-        is_disabled: true,
-        url: None,
-        prefer_small_media: false,
-        prefer_large_media: false,
-        show_above_text: false,
-    }
 }
 
 async fn write_debug_reply_dump(raw_markdown: &str, rendered_html: &str) {
