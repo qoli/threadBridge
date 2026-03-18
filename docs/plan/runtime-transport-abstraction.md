@@ -1,5 +1,16 @@
 # Runtime / Transport 抽象化草稿
 
+## 目前進度
+
+這份文檔目前仍是草稿，尚未正式開始重構。
+
+目前已有一些前置跡象：
+
+- workspace status 與 title watcher 已經開始把 Telegram UI 和 runtime 狀態分開
+- final reply renderer 已經有比較清楚的 Telegram 表示層
+
+但整體上 `threadBridge` 目前仍然是 Telegram-first 結構。
+
 ## 問題
 
 目前 `threadBridge` 的產品邊界仍然偏向：

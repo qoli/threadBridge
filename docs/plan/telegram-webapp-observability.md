@@ -1,5 +1,22 @@
 # Telegram Web App 觀測面草稿
 
+## 目前進度
+
+這份文檔目前仍是草稿，尚未開始實作 Web App。
+
+目前已經有的前置能力：
+
+- bot-local `data/`
+- debug log
+- workspace shared status
+- Telegram topic title 狀態同步
+
+目前仍缺：
+
+- Web App UI
+- thread / turn / tool timeline 展示
+- 正式對外的觀測 API
+
 ## 問題
 
 `threadBridge` 現在最大的實際痛點之一，不只是「如何執行」，而是「如何觀測」。

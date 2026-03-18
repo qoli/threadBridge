@@ -1,5 +1,24 @@
 # Message Queue And Status Delivery 草稿
 
+## 目前進度
+
+這份文檔目前仍是設計草稿，沒有完整落地。
+
+目前代碼裡已存在的相關能力：
+
+- preview draft
+- final assistant reply
+- plain system / control message
+- restore page message edit
+- media batch control message edit
+- workspace outbox deliver
+
+目前尚未實作這份文檔想要的內容：
+
+- 顯式 outbound delivery lane 模型
+- persistent outbound queue
+- 正式的 content / draft / status / edit delivery 規格
+
 ## 問題
 
 `threadBridge` 現在已經有多條 Telegram 送信 surface：

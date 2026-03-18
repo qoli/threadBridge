@@ -1,5 +1,16 @@
 # 可選 AGENTS 注入草稿
 
+## 目前進度
+
+這份文檔目前仍是草稿，尚未開始實作。
+
+目前實際行為仍然是：
+
+- `/bind_workspace` 會安裝 `.threadbridge/`
+- `/bind_workspace` 會同步更新 workspace `AGENTS.md` 的 managed appendix
+
+也就是說，目前還沒有 `tools only` 或 `no injection` 模式。
+
 ## 問題
 
 目前 `threadBridge` 在綁定 workspace 時，會把 managed appendix 寫進目標 workspace 的 `AGENTS.md`。

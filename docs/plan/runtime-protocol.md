@@ -1,5 +1,15 @@
 # Runtime 協議草稿
 
+## 目前進度
+
+這份文檔目前仍是純草稿，尚未成為代碼中的正式協議層。
+
+目前代碼狀態：
+
+- 仍以 Telegram bot 為主要入口
+- 仍沒有 transport-neutral 的正式 runtime protocol
+- 只有部分 runtime 語義已經隱含在現有 Rust 模組內
+
 ## 問題
 
 如果 `threadBridge` 要從「Telegram bot」轉成「透明協議層 + 多前端 adapter」，只說抽象分層還不夠。

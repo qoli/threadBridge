@@ -1,5 +1,16 @@
 # Telegram Adapter 遷移草稿
 
+## 目前進度
+
+這份文檔目前仍是草稿，尚未正式進入遷移階段。
+
+目前已有少量前置收斂：
+
+- final reply renderer 已有較清楚的 Telegram 專用邊界
+- topic title watcher / busy gate 開始把平台表現和狀態來源分開
+
+但整體架構仍未完成 Telegram adapter 化。
+
 ## 問題
 
 如果方向是把 `threadBridge` 變成透明協議層，那目前最大的實際問題不是理論，而是：

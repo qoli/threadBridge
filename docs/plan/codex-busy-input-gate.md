@@ -1,5 +1,22 @@
 # Codex 執行中阻止新輸入
 
+## 目前進度
+
+這份 Plan 的 `v1` 已經部分落地，不再是純草稿。
+
+目前已實作：
+
+- Telegram 文字訊息 busy gate
+- 圖片保存後延後分析的 busy gate
+- `/new`、`/reconnect_codex`、已綁定 thread 的 `/bind_workspace` 受 busy 狀態保護
+- busy 狀態已經不只看 bot 本身，也會讀 workspace shared status
+
+目前尚未實作：
+
+- 顯式 queue 模型
+- 更完整的 `runtime-state-machine` 對齊
+- Web App 觀測面上的正式狀態展示
+
 ## 背景
 
 現在同一個 Telegram thread 在 Codex 尚未完成當前 turn 時，仍然可以繼續收到新的文字或圖片輸入。

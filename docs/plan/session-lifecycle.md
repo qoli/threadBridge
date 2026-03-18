@@ -1,5 +1,22 @@
 # Session 生命週期草稿
 
+## 目前進度
+
+這份文檔已部分落地，但仍不是完整主規格。
+
+目前已實作：
+
+- `/new_thread`
+- `/bind_workspace <absolute-path>`
+- `/new`
+- `/reconnect_codex`
+- `session-binding.json` 持久化 Telegram thread / workspace / Codex thread 關聯
+
+目前尚未完成：
+
+- 與 `runtime-state-machine` 的正式對齊
+- 更清晰的 runtime 層抽象，而不是由 Telegram flow 直接承載主要生命週期
+
 ## 問題
 
 `threadBridge` 最早的模型比較接近：

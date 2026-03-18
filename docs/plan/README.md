@@ -1,52 +1,73 @@
-# 計劃草稿
+# Plan Index
 
-這個目錄用來放 `threadBridge` 後續工作的設計草稿。
+這個目錄用來放 `threadBridge` 的設計草稿、已落地方案與後續重構方向。
 
-目前包含：
+## 閱讀方式
+
+- 先看「已落地 / 部分落地 / 純草稿」區分，不要把所有文件都當成同一成熟度。
+- 再看「主規格」與「依賴關係」。
+- 單篇文檔內的 `目前進度` 是這次整理後的最新狀態註記。
+
+## 已落地
+
+- [codex-cli-telegram-status-sync-hooks.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-cli-telegram-status-sync-hooks.md)
+  - 已完成 v1
+  - Bash wrapper、Codex hooks、notify、workspace shared status、topic title watcher、busy gate 都已落地
+
+## 部分落地
+
+- [telegram-markdown-adaptation.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md)
+  - final reply 的 Telegram HTML renderer、plain-text fallback、attachment fallback 已落地
+- [codex-busy-input-gate.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md)
+  - v1 忙碌閘控已落地
+  - 但 queue 模型與更完整的狀態語義仍未收斂
+- [topic-title-status.md](/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md)
+  - 已落地 `workspace/title + cli/bot/broken suffix`
+  - context ratio 仍未實作
+- [session-lifecycle.md](/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md)
+  - `/new_thread`、`/bind_workspace`、`/new`、`/reconnect_codex` 的基本生命週期已存在
+  - 更完整的 runtime 主模型仍待收斂
+
+## 純草稿
 
 - [runtime-state-machine.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-state-machine.md)
-  - `threadBridge` 狀態語義的主規格
-  - 統一定義 `lifecycle_status`、`binding_status`、`run_status`
-- [session-lifecycle.md](/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md)
-  - 重新定義現在的 session / thread / workspace 綁定模型
-  - 後續應引用 `runtime-state-machine` 的狀態語義
-- [codex-busy-input-gate.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md)
-  - 討論 Codex 執行中時，如何阻止同一 Telegram thread 繼續送入新輸入
-  - 後續應引用 `runtime-state-machine` 的 `run_status`
-- [codex-cli-telegram-status-sync-hooks.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-cli-telegram-status-sync-hooks.md)
-  - 用 Bash wrapper、Codex hooks、notify 把本地 CLI 狀態同步回 Telegram
-  - 定義共享 workspace status surface 與 topic title / busy gate 的整合
-- [topic-title-status.md](/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md)
-  - 討論如何把 Telegram topic title 當成工作狀態欄
-  - 後續應引用 `runtime-state-machine` 的狀態軸
+  - 狀態語義主規格草稿
 - [message-queue-and-status-delivery.md](/Volumes/Data/Github/threadBridge/docs/plan/message-queue-and-status-delivery.md)
-  - Telegram adapter 的 outbound delivery v1 規格
-  - 只處理 preview / final / status / edit 送信邊界，不處理 input queue
+  - Telegram outbound delivery 主規格草稿
 - [telegram-webapp-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md)
-  - 用 Telegram Web App 補上 Codex 執行觀測面
-- [telegram-markdown-adaptation.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md)
-  - 討論如何讓 threadBridge 的輸出穩定適配 Telegram markdown 表示
-  - 目前已部分實作：final assistant reply 已有 Telegram HTML renderer、plain-text fallback、attachment fallback
+  - Telegram Web App 觀測面草稿
 - [optional-agents-injection.md](/Volumes/Data/Github/threadBridge/docs/plan/optional-agents-injection.md)
-  - 討論將 workspace `AGENTS.md` appendix 注入改成可選能力
+  - appendix 注入可選化草稿
 - [runtime-transport-abstraction.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-transport-abstraction.md)
-  - 將 threadBridge 收斂為核心 runtime 與可插拔 transport adapter
+  - core runtime / adapter 抽象化草稿
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
-  - 定義 core runtime 與 Telegram / custom app 之間的透明事件協議
-  - 後續若定義 `ThreadStateView`，應對齊 `runtime-state-machine`
+  - runtime 協議草稿
 - [telegram-adapter-migration.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-adapter-migration.md)
-  - 規劃如何把現有 Telegram bot 重構成一個 adapter，而不是整個產品邊界
+  - Telegram adapter 遷移草稿
 
-這些文件大多仍是草稿，不代表已經完全定案或完整實作。
+## 主規格
 
-目前可以先按下面的主從關係理解：
+- [runtime-state-machine.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-state-machine.md)
+  - 目標是未來的狀態語義主規格
+- [message-queue-and-status-delivery.md](/Volumes/Data/Github/threadBridge/docs/plan/message-queue-and-status-delivery.md)
+  - 目標是 Telegram delivery 主規格
 
-- `runtime-state-machine.md`
-  - 狀態語義主規格
-- `message-queue-and-status-delivery.md`
-  - Telegram delivery 主規格
+目前這兩份都還沒有變成實際代碼的唯一 source of truth。
 
-目前相對進度最高的是：
+## 依賴關係
 
-- [telegram-markdown-adaptation.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md)
-  - 已有部分程式碼落地，尤其是 final assistant reply 的 Telegram renderer 路徑
+- `session-lifecycle`
+  - 描述 thread / workspace / Codex thread 的生命週期
+- `codex-busy-input-gate`
+  - 描述 turn 互斥與 busy gate
+- `codex-cli-telegram-status-sync-hooks`
+  - 把本地 CLI 狀態接到同一份 busy / title 模型
+- `topic-title-status`
+  - 描述 title 應承載哪些狀態
+- `runtime-state-machine`
+  - 最終應把上面幾份文件的狀態語義統一
+
+## 備註
+
+- 這個目錄現在同時包含已落地方案和未實作草稿，不能只看標題判斷成熟度。
+- 如果某份文檔和代碼有衝突，先以代碼為準，再回來更新該文檔。

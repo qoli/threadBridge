@@ -1,5 +1,22 @@
 # Topic Title 狀態欄草稿
 
+## 目前進度
+
+這份 Plan 已部分落地。
+
+目前已實作：
+
+- title 基底優先使用 thread title
+- 若 thread title 缺失，回退到 workspace basename
+- suffix 目前支持 `· cli`、`· bot`、`· broken`
+- background watcher 會在共享 workspace status 變化時更新 title
+
+目前尚未實作：
+
+- context ratio / ctx%
+- 更細緻的 title 節流與觀測規格
+- 更完整地對齊 `runtime-state-machine`
+
 ## 問題
 
 現在的 Telegram topic title 比較像單純的人類可讀名稱，沒有承載太多 runtime 狀態。

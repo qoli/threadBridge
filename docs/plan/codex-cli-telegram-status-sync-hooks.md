@@ -1,5 +1,26 @@
 # Codex CLI / Telegram 狀態同步: Bash + Codex Hooks
 
+## 目前進度
+
+這份 Plan 的 `v1` 已完成並已落地到代碼。
+
+目前已實作：
+
+- `/bind_workspace` 安裝 `.threadbridge/state/codex-sync/`
+- 安裝 `.threadbridge/shell/codex-sync.bash`
+- 安裝 `.threadbridge/bin/codex_sync_event`
+- 安裝 `.threadbridge/bin/codex_sync_notify`
+- 安裝受管的 `.codex/hooks.json`
+- Telegram background watcher 讀取 shared status 並更新 topic title
+- Telegram busy gate 會阻止和本地 CLI 衝突的新 turn
+- bot 自己發起的文字 / 圖片分析也寫入同一份 shared status
+
+目前仍有邊界：
+
+- 只支持 Bash
+- 只追蹤已 source wrapper 的本地 `codex`
+- 不支持同一 workspace 的多個並發本地 CLI session
+
 ## 背景
 
 現在 `threadBridge` 只能感知由 Telegram bot 自己發起的 Codex turn。

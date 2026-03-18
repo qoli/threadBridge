@@ -1,5 +1,20 @@
 # Runtime State Machine 草稿
 
+## 目前進度
+
+這份文檔目前仍是主規格草稿，尚未完全落地。
+
+目前部分已在代碼中可見的狀態語義：
+
+- `active` / `archived`
+- `healthy` / `broken` / `unbound` 的 session 綁定語義
+- workspace shared status 裡的 `idle` / `shell_active` / `turn_running` / `turn_finalizing`
+
+目前尚未完成的部分：
+
+- 把這份文檔變成唯一 source of truth
+- 讓其他 plan 和實際代碼全面引用同一套 canonical state axes
+
 ## 問題
 
 `threadBridge` 現在已經有多份跟 thread 狀態有關的草稿：
