@@ -190,13 +190,7 @@ pub(crate) async fn run_command(
         }
         Command::New => {
             if is_control_chat(msg) {
-                send_scoped_message(
-                    bot,
-                    msg.chat.id,
-                    None,
-                    "Use /new inside a thread.",
-                )
-                .await?;
+                send_scoped_message(bot, msg.chat.id, None, "Use /new inside a thread.").await?;
                 return Ok(());
             }
             let thread_id = msg.thread_id.context("thread message missing thread id")?;

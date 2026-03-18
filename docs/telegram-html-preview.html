@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Telegram HTML Preview</title>
+  <style>
+    :root {
+      --bg: #eef3f7;
+      --panel: #ffffff;
+      --panel-muted: #f7f9fb;
+      --border: #d7e1ea;
+      --text: #173042;
+      --muted: #60778a;
+      --accent: #2a8ed9;
+      --bubble: #ffffff;
+      --bubble-out: #dff4ff;
+      --code-bg: #0f2231;
+      --code-text: #dbeaf4;
+      --shadow: 0 18px 40px rgba(21, 53, 79, 0.08);
+      --radius: 18px;
+      --mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+      --sans: "SF Pro Text", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(42, 142, 217, 0.08), transparent 32%),
+        linear-gradient(180deg, #f7fbff 0%, var(--bg) 100%);
+    }
+    .page {
+      width: min(1400px, calc(100vw - 32px));
+      margin: 24px auto 80px;
+    }
+    .hero {
+      background: rgba(255,255,255,0.88);
+      backdrop-filter: blur(14px);
+      border: 1px solid rgba(215, 225, 234, 0.9);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      padding: 28px;
+      margin-bottom: 24px;
+    }
+    .hero h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 4vw, 42px);
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+    }
+    .hero p {
+      margin: 0 0 14px;
+      max-width: 980px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.65;
+    }
+    .summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .summary span {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border);
+      background: var(--panel-muted);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .sample {
+      background: rgba(255,255,255,0.92);
+      border: 1px solid rgba(215, 225, 234, 0.92);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .sample-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .sample h2 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: -0.02em;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 10px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--panel-muted);
+      border: 1px solid var(--border);
+    }
+    .pill.mode-html { background: #eaf6ff; color: #0f5a92; border-color: #b8ddf8; }
+    .pill.mode-plain { background: #fff4de; color: #8f5c00; border-color: #ead1a0; }
+    .pill.mode-attachment { background: #f3ebff; color: #6a3ab2; border-color: #d8c4ff; }
+    .pill.synthetic { background: #fff1ec; color: #9a4a22; border-color: #f0c6b4; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .panel {
+      min-width: 0;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 18px;
+      overflow: hidden;
+    }
+    .panel-head {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel-muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .panel-body {
+      padding: 14px;
+    }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 12px/1.58 var(--mono);
+    }
+    .code-frame {
+      background: var(--code-bg);
+      color: var(--code-text);
+    }
+    .tg-shell {
+      background: linear-gradient(180deg, #dfeefa 0%, #edf6ff 100%);
+      min-height: 100%;
+      padding: 22px;
+    }
+    .tg-chat {
+      max-width: 420px;
+      margin-left: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .tg-bubble {
+      align-self: flex-end;
+      background: var(--bubble-out);
+      border-radius: 20px 20px 6px 20px;
+      padding: 14px 16px;
+      box-shadow: 0 10px 24px rgba(37, 92, 132, 0.08);
+      color: #143043;
+      line-height: 1.55;
+      font-size: 15px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .tg-bubble pre {
+      margin-top: 10px;
+      padding: 12px;
+      background: rgba(10, 24, 35, 0.92);
+      color: #e8f4fb;
+      border-radius: 12px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }
+    .tg-bubble code {
+      font-family: var(--mono);
+      font-size: 0.92em;
+      background: rgba(18, 42, 60, 0.08);
+      border-radius: 6px;
+      padding: 1px 5px;
+    }
+    .tg-bubble a {
+      color: #1167a8;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .tg-bubble p:first-child { margin-top: 0; }
+    .tg-bubble p:last-child { margin-bottom: 0; }
+    .attachment {
+      margin-top: 10px;
+      background: rgba(255,255,255,0.75);
+      border: 1px solid rgba(17, 103, 168, 0.15);
+      border-radius: 14px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .attachment strong { font-size: 14px; }
+    .attachment small { color: var(--muted); }
+    .note {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    @media (max-width: 1100px) {
+      .grid { grid-template-columns: 1fr; }
+      .tg-chat { max-width: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <h1>Telegram HTML Preview</h1>
+      <p>
+        This page uses the current Rust reply planner and renderer to compare real assistant outputs
+        from <code>data/*/conversations.jsonl</code> against the exact Telegram HTML they produce now.
+        The right-most panel is a browser approximation of Telegram presentation, not an authoritative client rendering.
+      </p>
+      <div class="summary">
+        <span>8 real assistant samples</span>
+        <span>3 synthetic coverage samples</span>
+        <span>compare raw text, generated HTML, and Telegram-style browser rendering</span>
+        <span>attachment and fallback branches are labeled explicitly</span>
+      </div>
+    </section>
+    <section class="sample">
+  <div class="sample-header">
+    <div>
+      <h2>Codex 項目 Hooks 與原始碼導讀 · sample 1 · plain</h2>
+      <div class="meta">
+        <span class="pill mode-html">InlineHtml</span>
+        
+        <span class="pill">Codex 項目 Hooks 與原始碼導讀</span>
+        <span class="pill">e0a1533c-d107-4bd0-8144-c4f939283e11/conversations.jsonl:4</span>
+        <span class="pill">2026-03-16T23:25:57.741Z</span>
+        <span class="pill">plain</span>
+      </div>
+    </div>
+  </div>
+  <div class="grid">
+    <article class="panel">
+      <div class="panel-head">Raw Markdown / Text</div>
+      <div class="panel-body code-frame"><pre>hi</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Generated Telegram HTML / Mode</div>
+      <div class="panel-body code-frame"><pre>hi</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Telegram-style Browser Preview</div>
+      <div class="panel-body tg-shell">
+        <div class="tg-chat">
+          <div class="tg-bubble">hi</div>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+<section class="sample">
+  <div class="sample-header">
+    <div>
+      <h2>Codex 項目 Hooks 與原始碼導讀 · sample 2 · dense</h2>
+      <div class="meta">
+        <span class="pill mode-html">InlineHtml</span>
+        
+        <span class="pill">Codex 項目 Hooks 與原始碼導讀</span>
+        <span class="pill">e0a1533c-d107-4bd0-8144-c4f939283e11/conversations.jsonl:6</span>
+        <span class="pill">2026-03-16T23:29:44.734Z</span>
+        <span class="pill">dense</span> <span class="pill">inline-code</span> <span class="pill">links</span> <span class="pill">lists</span> <span class="pill">long</span> <span class="pill">paths</span>
+      </div>
+    </div>
+  </div>
+  <div class="grid">
+    <article class="panel">
+      <div class="panel-head">Raw Markdown / Text</div>
+      <div class="panel-body code-frame"><pre>你可以把这个项目先分成 4 层来看：
+
+1. 入口层：[`codex-rs/README.md`](/Volumes/Data/Github/codex/codex-rs/README.md)  
+2. 核心执行层：[`codex-rs/core/src/codex.rs`](/Volumes/Data/Github/codex/codex-rs/core/src/codex.rs)  
+3. 协议/事件层：[`codex-rs/app-server-protocol/src/protocol/v2.rs`](/Volumes/Data/Github/codex/codex-rs/app-server-protocol/src/protocol/v2.rs)  
+4. UI 层：[`codex-rs/tui/src/chatwidget.rs`](/Volumes/Data/Github/codex/codex-rs/tui/src/chatwidget.rs)
+
+如果你是为了理解你提到的 hook 讨论，那最该先读的是这些文件：
+
+- [`codex-rs/core/src/features.rs#L102`](/Volumes/Data/Github/codex/codex-rs/core/src/features.rs#L102)
+- [`codex-rs/core/src/codex.rs#L1724`](/Volumes/Data/Github/codex/codex-rs/core/src/codex.rs#L1724)
+- [`codex-rs/core/src/codex.rs#L5679`](/Volumes/Data/Github/codex/codex-rs/core/src/codex.rs#L5679)
+- [`codex-rs/hooks/src/engine/config.rs`](/Volumes/Data/Github/codex/codex-rs/hooks/src/engine/config.rs)
+- [`codex-rs/hooks/src/engine/discovery.rs`](/Volumes/Data/Github/codex/codex-rs/hooks/src/engine/discovery.rs)
+- [`codex-rs/hooks/src/events/session_start.rs`](/Volumes/Data/Github/codex/codex-rs/hooks/src/events/session_start.rs)
+- [`codex-rs/hooks/src/events/stop.rs`](/Volumes/Data/Github/codex/codex-rs/hooks/src/events/stop.rs)
+- [`codex-rs/hooks/src/registry.rs`](/Volumes/Data/Github/codex/codex-rs/hooks/src/registry.rs)
+- [`codex-rs/core/src/tools/registry.rs#L475`](/Volumes/Data/Github/codex/codex-rs/core/src/tools/registry.rs#L475)
+
+结论先说清楚：
+
+- 现在仓库里已经有真正的 hooks 实现，不只是 issue 讨论。
+- 但它是“保守落地”的版本，不是通用插件系统。
+- 对普通用户可配置的 hooks，目前只有 `SessionStart` 和 `Stop`，配置文件是 `hooks.json`，不是 `config.toml` 里的某个大段配置。
+- `after_tool_use` / `after_agent` 这类 payload 和 dispatch 路径在代码里存在，但用户可配置这部分还没真正开放；[`codex-rs/hooks/src/registry.rs`](/Volumes/Data/Github/codex/codex-rs/hooks/src/registry.rs) 里 `after_tool_use` 现在是空的。
+- `prompt` / `agent` / `async` 这些形态在解析层已经留了口子，但目前会被跳过并给 warning，说明这是明显的“未完成设计”，不是稳定接口。
+
+从源码看，hook 的运行链路是：
+
+`core` 生成 hook request
+-&gt; `hooks` crate 发现并匹配 `hooks.json`
+-&gt; 执行外部 command
+-&gt; 解析 JSON 输出
+-&gt; 决定继续、停止、阻塞、或注入额外上下文
+-&gt; 通过 app-server 发出 `hook/started` 和 `hook/completed` 事件
+-&gt; TUI 渲染出来
+
+这也是为什么要先读 `core` 和 `hooks`，再读 `tui`。UI 只是展示，真正的语义都在 `core`/`hooks`。
+
+关于你看到的 issue 讨论，我的判断是：社区想要的是更泛化的 event hooks，而当前实现只先交付了“会话开始”和“收尾拦截”两类生命周期 hook。这个方向和 issue 是一致的，但范围明显收缩了。这是我根据 issue 主题和当前源码做的推断；我这边没拿到你贴的那条 comment 正文的 API 内容，所以没有逐句对 comment 做比对。
+
+如果你要最高效学习，我建议阅读顺序就是：
+
+1. [`codex-rs/README.md`](/Volumes/Data/Github/codex/codex-rs/README.md)
+2. [`codex-rs/core/src/codex.rs`](/Volumes/Data/Github/codex/codex-rs/core/src/codex.rs)
+3. [`codex-rs/hooks/src/engine/config.rs`](/Volumes/Data/Github/codex/codex-rs/hooks/src/engine/config.rs)
+4. [`codex-rs/hooks/src/events/session_start.rs`](/Volumes/Data/Github/codex/codex-rs/hooks/src/events/session_start.rs)
+5. [`codex-rs/hooks/src/events/stop.rs`](/Volumes/Data/Github/codex/codex-rs/hooks/src/events/stop.rs)
+6. [`codex-rs/app-server/src/bespoke_event_handling.rs`](/Volumes/Data/Github/codex/codex-rs/app-server/src/bespoke_event_handling.rs)
+7. [`codex-rs/tui/src/chatwidget/tests.rs`](/Volumes/Data/Github/codex/codex-rs/tui/src/chatwidget/tests.rs)
+
+来源：
+- GitHub issue: https://github.com/openai/codex/issues/2109#issuecomment-4036356210
+- 仓库源码与 README: https://github.com/openai/codex</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Generated Telegram HTML / Mode</div>
+      <div class="panel-body code-frame"><pre>你可以把这个项目先分成 4 层来看：
+
+1. 入口层：&lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/README.md&quot;&gt;&lt;code&gt;codex-rs/README.md&lt;/code&gt;&lt;/a&gt;
+2. 核心执行层：&lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/core/src/codex.rs&quot;&gt;&lt;code&gt;codex-rs/core/src/codex.rs&lt;/code&gt;&lt;/a&gt;
+3. 协议/事件层：&lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/app-server-protocol/src/protocol/v2.rs&quot;&gt;&lt;code&gt;codex-rs/app-server-protocol/src/protocol/v2.rs&lt;/code&gt;&lt;/a&gt;
+4. UI 层：&lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/tui/src/chatwidget.rs&quot;&gt;&lt;code&gt;codex-rs/tui/src/chatwidget.rs&lt;/code&gt;&lt;/a&gt;
+
+如果你是为了理解你提到的 hook 讨论，那最该先读的是这些文件：
+
+- &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/core/src/features.rs#L102&quot;&gt;&lt;code&gt;codex-rs/core/src/features.rs#L102&lt;/code&gt;&lt;/a&gt;
+- &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/core/src/codex.rs#L1724&quot;&gt;&lt;code&gt;codex-rs/core/src/codex.rs#L1724&lt;/code&gt;&lt;/a&gt;
+- &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/core/src/codex.rs#L5679&quot;&gt;&lt;code&gt;codex-rs/core/src/codex.rs#L5679&lt;/code&gt;&lt;/a&gt;
+- &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/hooks/src/engine/config.rs&quot;&gt;&lt;code&gt;codex-rs/hooks/src/engine/config.rs&lt;/code&gt;&lt;/a&gt;
+- &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/hooks/src/engine/discovery.rs&quot;&gt;&lt;code&gt;codex-rs/hooks/src/engine/discovery.rs&lt;/code&gt;&lt;/a&gt;
+- &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/hooks/src/events/session_start.rs&quot;&gt;&lt;code&gt;codex-rs/hooks/src/events/session_start.rs&lt;/code&gt;&lt;/a&gt;
+- &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/hooks/src/events/stop.rs&quot;&gt;&lt;code&gt;codex-rs/hooks/src/events/stop.rs&lt;/code&gt;&lt;/a&gt;
+- &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/hooks/src/registry.rs&quot;&gt;&lt;code&gt;codex-rs/hooks/src/registry.rs&lt;/code&gt;&lt;/a&gt;
+- &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/core/src/tools/registry.rs#L475&quot;&gt;&lt;code&gt;codex-rs/core/src/tools/registry.rs#L475&lt;/code&gt;&lt;/a&gt;
+
+结论先说清楚：
+
+- 现在仓库里已经有真正的 hooks 实现，不只是 issue 讨论。
+- 但它是“保守落地”的版本，不是通用插件系统。
+- 对普通用户可配置的 hooks，目前只有 &lt;code&gt;SessionStart&lt;/code&gt; 和 &lt;code&gt;Stop&lt;/code&gt;，配置文件是 &lt;code&gt;hooks.json&lt;/code&gt;，不是 &lt;code&gt;config.toml&lt;/code&gt; 里的某个大段配置。
+- &lt;code&gt;after_tool_use&lt;/code&gt; / &lt;code&gt;after_agent&lt;/code&gt; 这类 payload 和 dispatch 路径在代码里存在，但用户可配置这部分还没真正开放；&lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/hooks/src/registry.rs&quot;&gt;&lt;code&gt;codex-rs/hooks/src/registry.rs&lt;/code&gt;&lt;/a&gt; 里 &lt;code&gt;after_tool_use&lt;/code&gt; 现在是空的。
+- &lt;code&gt;prompt&lt;/code&gt; / &lt;code&gt;agent&lt;/code&gt; / &lt;code&gt;async&lt;/code&gt; 这些形态在解析层已经留了口子，但目前会被跳过并给 warning，说明这是明显的“未完成设计”，不是稳定接口。
+
+从源码看，hook 的运行链路是：
+
+&lt;code&gt;core&lt;/code&gt; 生成 hook request
+-&amp;gt; &lt;code&gt;hooks&lt;/code&gt; crate 发现并匹配 &lt;code&gt;hooks.json&lt;/code&gt;
+-&amp;gt; 执行外部 command
+-&amp;gt; 解析 JSON 输出
+-&amp;gt; 决定继续、停止、阻塞、或注入额外上下文
+-&amp;gt; 通过 app-server 发出 &lt;code&gt;hook/started&lt;/code&gt; 和 &lt;code&gt;hook/completed&lt;/code&gt; 事件
+-&amp;gt; TUI 渲染出来
+
+这也是为什么要先读 &lt;code&gt;core&lt;/code&gt; 和 &lt;code&gt;hooks&lt;/code&gt;，再读 &lt;code&gt;tui&lt;/code&gt;。UI 只是展示，真正的语义都在 &lt;code&gt;core&lt;/code&gt;/&lt;code&gt;hooks&lt;/code&gt;。
+
+关于你看到的 issue 讨论，我的判断是：社区想要的是更泛化的 event hooks，而当前实现只先交付了“会话开始”和“收尾拦截”两类生命周期 hook。这个方向和 issue 是一致的，但范围明显收缩了。这是我根据 issue 主题和当前源码做的推断；我这边没拿到你贴的那条 comment 正文的 API 内容，所以没有逐句对 comment 做比对。
+
+如果你要最高效学习，我建议阅读顺序就是：
+
+1. &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/README.md&quot;&gt;&lt;code&gt;codex-rs/README.md&lt;/code&gt;&lt;/a&gt;
+2. &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/core/src/codex.rs&quot;&gt;&lt;code&gt;codex-rs/core/src/codex.rs&lt;/code&gt;&lt;/a&gt;
+3. &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/hooks/src/engine/config.rs&quot;&gt;&lt;code&gt;codex-rs/hooks/src/engine/config.rs&lt;/code&gt;&lt;/a&gt;
+4. &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/hooks/src/events/session_start.rs&quot;&gt;&lt;code&gt;codex-rs/hooks/src/events/session_start.rs&lt;/code&gt;&lt;/a&gt;
+5. &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/hooks/src/events/stop.rs&quot;&gt;&lt;code&gt;codex-rs/hooks/src/events/stop.rs&lt;/code&gt;&lt;/a&gt;
+6. &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/app-server/src/bespoke_event_handling.rs&quot;&gt;&lt;code&gt;codex-rs/app-server/src/bespoke_event_handling.rs&lt;/code&gt;&lt;/a&gt;
+7. &lt;a href=&quot;/Volumes/Data/Github/codex/codex-rs/tui/src/chatwidget/tests.rs&quot;&gt;&lt;code&gt;codex-rs/tui/src/chatwidget/tests.rs&lt;/code&gt;&lt;/a&gt;
+
+来源：
+
+- GitHub issue: https://github.com/openai/codex/issues/2109#issuecomment-4036356210
+- 仓库源码与 README: https://github.com/openai/codex</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Telegram-style Browser Preview</div>
+      <div class="panel-body tg-shell">
+        <div class="tg-chat">
+          <div class="tg-bubble">你可以把这个项目先分成 4 层来看：
+
+1. 入口层：<a href="/Volumes/Data/Github/codex/codex-rs/README.md"><code>codex-rs/README.md</code></a>
+2. 核心执行层：<a href="/Volumes/Data/Github/codex/codex-rs/core/src/codex.rs"><code>codex-rs/core/src/codex.rs</code></a>
+3. 协议/事件层：<a href="/Volumes/Data/Github/codex/codex-rs/app-server-protocol/src/protocol/v2.rs"><code>codex-rs/app-server-protocol/src/protocol/v2.rs</code></a>
+4. UI 层：<a href="/Volumes/Data/Github/codex/codex-rs/tui/src/chatwidget.rs"><code>codex-rs/tui/src/chatwidget.rs</code></a>
+
+如果你是为了理解你提到的 hook 讨论，那最该先读的是这些文件：
+
+- <a href="/Volumes/Data/Github/codex/codex-rs/core/src/features.rs#L102"><code>codex-rs/core/src/features.rs#L102</code></a>
+- <a href="/Volumes/Data/Github/codex/codex-rs/core/src/codex.rs#L1724"><code>codex-rs/core/src/codex.rs#L1724</code></a>
+- <a href="/Volumes/Data/Github/codex/codex-rs/core/src/codex.rs#L5679"><code>codex-rs/core/src/codex.rs#L5679</code></a>
+- <a href="/Volumes/Data/Github/codex/codex-rs/hooks/src/engine/config.rs"><code>codex-rs/hooks/src/engine/config.rs</code></a>
+- <a href="/Volumes/Data/Github/codex/codex-rs/hooks/src/engine/discovery.rs"><code>codex-rs/hooks/src/engine/discovery.rs</code></a>
+- <a href="/Volumes/Data/Github/codex/codex-rs/hooks/src/events/session_start.rs"><code>codex-rs/hooks/src/events/session_start.rs</code></a>
+- <a href="/Volumes/Data/Github/codex/codex-rs/hooks/src/events/stop.rs"><code>codex-rs/hooks/src/events/stop.rs</code></a>
+- <a href="/Volumes/Data/Github/codex/codex-rs/hooks/src/registry.rs"><code>codex-rs/hooks/src/registry.rs</code></a>
+- <a href="/Volumes/Data/Github/codex/codex-rs/core/src/tools/registry.rs#L475"><code>codex-rs/core/src/tools/registry.rs#L475</code></a>
+
+结论先说清楚：
+
+- 现在仓库里已经有真正的 hooks 实现，不只是 issue 讨论。
+- 但它是“保守落地”的版本，不是通用插件系统。
+- 对普通用户可配置的 hooks，目前只有 <code>SessionStart</code> 和 <code>Stop</code>，配置文件是 <code>hooks.json</code>，不是 <code>config.toml</code> 里的某个大段配置。
+- <code>after_tool_use</code> / <code>after_agent</code> 这类 payload 和 dispatch 路径在代码里存在，但用户可配置这部分还没真正开放；<a href="/Volumes/Data/Github/codex/codex-rs/hooks/src/registry.rs"><code>codex-rs/hooks/src/registry.rs</code></a> 里 <code>after_tool_use</code> 现在是空的。
+- <code>prompt</code> / <code>agent</code> / <code>async</code> 这些形态在解析层已经留了口子，但目前会被跳过并给 warning，说明这是明显的“未完成设计”，不是稳定接口。
+
+从源码看，hook 的运行链路是：
+
+<code>core</code> 生成 hook request
+-&gt; <code>hooks</code> crate 发现并匹配 <code>hooks.json</code>
+-&gt; 执行外部 command
+-&gt; 解析 JSON 输出
+-&gt; 决定继续、停止、阻塞、或注入额外上下文
+-&gt; 通过 app-server 发出 <code>hook/started</code> 和 <code>hook/completed</code> 事件
+-&gt; TUI 渲染出来
+
+这也是为什么要先读 <code>core</code> 和 <code>hooks</code>，再读 <code>tui</code>。UI 只是展示，真正的语义都在 <code>core</code>/<code>hooks</code>。
+
+关于你看到的 issue 讨论，我的判断是：社区想要的是更泛化的 event hooks，而当前实现只先交付了“会话开始”和“收尾拦截”两类生命周期 hook。这个方向和 issue 是一致的，但范围明显收缩了。这是我根据 issue 主题和当前源码做的推断；我这边没拿到你贴的那条 comment 正文的 API 内容，所以没有逐句对 comment 做比对。
+
+如果你要最高效学习，我建议阅读顺序就是：
+
+1. <a href="/Volumes/Data/Github/codex/codex-rs/README.md"><code>codex-rs/README.md</code></a>
+2. <a href="/Volumes/Data/Github/codex/codex-rs/core/src/codex.rs"><code>codex-rs/core/src/codex.rs</code></a>
+3. <a href="/Volumes/Data/Github/codex/codex-rs/hooks/src/engine/config.rs"><code>codex-rs/hooks/src/engine/config.rs</code></a>
+4. <a href="/Volumes/Data/Github/codex/codex-rs/hooks/src/events/session_start.rs"><code>codex-rs/hooks/src/events/session_start.rs</code></a>
+5. <a href="/Volumes/Data/Github/codex/codex-rs/hooks/src/events/stop.rs"><code>codex-rs/hooks/src/events/stop.rs</code></a>
+6. <a href="/Volumes/Data/Github/codex/codex-rs/app-server/src/bespoke_event_handling.rs"><code>codex-rs/app-server/src/bespoke_event_handling.rs</code></a>
+7. <a href="/Volumes/Data/Github/codex/codex-rs/tui/src/chatwidget/tests.rs"><code>codex-rs/tui/src/chatwidget/tests.rs</code></a>
+
+来源：
+
+- GitHub issue: https://github.com/openai/codex/issues/2109#issuecomment-4036356210
+- 仓库源码与 README: https://github.com/openai/codex</div>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+<section class="sample">
+  <div class="sample-header">
+    <div>
+      <h2>threadBridge Plan 與透明協議層 · sample 10 · plain</h2>
+      <div class="meta">
+        <span class="pill mode-html">InlineHtml</span>
+        
+        <span class="pill">threadBridge Plan 與透明協議層</span>
+        <span class="pill">1fda3517-5c1c-4e41-9b08-d9b81eddaa05/conversations.jsonl:14</span>
+        <span class="pill">2026-03-16T23:11:01.802Z</span>
+        <span class="pill">plain</span>
+      </div>
+    </div>
+  </div>
+  <div class="grid">
+    <article class="panel">
+      <div class="panel-head">Raw Markdown / Text</div>
+      <div class="panel-body code-frame"><pre>hi</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Generated Telegram HTML / Mode</div>
+      <div class="panel-body code-frame"><pre>hi</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Telegram-style Browser Preview</div>
+      <div class="panel-body tg-shell">
+        <div class="tg-chat">
+          <div class="tg-bubble">hi</div>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+<section class="sample">
+  <div class="sample-header">
+    <div>
+      <h2>threadBridge Plan 與透明協議層 · sample 6 · dense</h2>
+      <div class="meta">
+        <span class="pill mode-html">InlineHtml</span>
+        
+        <span class="pill">threadBridge Plan 與透明協議層</span>
+        <span class="pill">1fda3517-5c1c-4e41-9b08-d9b81eddaa05/conversations.jsonl:4</span>
+        <span class="pill">2026-03-16T22:57:23.988Z</span>
+        <span class="pill">dense</span> <span class="pill">inline-code</span> <span class="pill">links</span> <span class="pill">lists</span> <span class="pill">long</span> <span class="pill">paths</span>
+      </div>
+    </div>
+  </div>
+  <div class="grid">
+    <article class="panel">
+      <div class="panel-head">Raw Markdown / Text</div>
+      <div class="panel-body code-frame"><pre>這個 workspace 內目前的文檔大致分成 3 類。
+
+項目總覽：
+- [README.md](/Volumes/Data/Github/threadBridge/README.md) 說明 `threadBridge` 是把 Telegram thread 綁到本地 workspace 與 Codex app-server thread 的 bot，包含需求、安裝、指令、runtime layout 和安全注意事項。
+- [AGENTS.md](/Volumes/Data/Github/threadBridge/AGENTS.md) 是 maintainer guide，定義 repo 結構、資料邊界、workspace lifecycle、測試與開發規範。
+- [templates/AGENTS.md](/Volumes/Data/Github/threadBridge/templates/AGENTS.md) 是會被附加到真實 workspace 的 runtime appendix，規定 `.threadbridge/bin/*`、tool request/result 檔案，以及 `build_prompt_config` / `generate_image` / `send_telegram_media` 的使用方式。
+
+設計草稿：
+- [docs/plan/README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md) 說明 `docs/plan` 都是後續工作的草稿，不代表已實作。
+- [docs/plan/session-lifecycle.md](/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md) 重新定義 `Telegram thread`、`workspace binding`、`Codex thread`、`reset`、`reconnect` 的心智模型與流程。
+- [docs/plan/topic-title-status.md](/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md) 討論把 Telegram topic title 當成狀態欄，展示 workspace 與 context ratio。
+- [docs/plan/telegram-webapp-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md) 規劃用 Telegram Web App 做 thread/turn/tool/system 級別的 observability 與診斷面板。
+
+模板與 provider 說明：
+- [docs/callNanobanana.md](/Volumes/Data/Github/threadBridge/docs/callNanobanana.md) 記錄 `tools/generate_image.py` 對 Nanobanana 的 request shape，明確要求不要提交真實金鑰、cookie 或生產 payload。
+- [templates/thread-agents.build.md](/Volumes/Data/Github/threadBridge/templates/thread-agents.build.md) 是 runtime appendix 的生成規則。
+- [templates/nanobanana.buildpromptconfig.md](/Volumes/Data/Github/threadBridge/templates/nanobanana.buildpromptconfig.md) 是建立 `concept.json` 與 `prompts/NNN_primary.json` 的提示配置指南。
+
+如果你要，我下一步可以直接幫你挑一份最重要的文檔做更細的重點整理。</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Generated Telegram HTML / Mode</div>
+      <div class="panel-body code-frame"><pre>這個 workspace 內目前的文檔大致分成 3 類。
+
+項目總覽：
+
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/README.md&quot;&gt;README.md&lt;/a&gt; 說明 &lt;code&gt;threadBridge&lt;/code&gt; 是把 Telegram thread 綁到本地 workspace 與 Codex app-server thread 的 bot，包含需求、安裝、指令、runtime layout 和安全注意事項。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/AGENTS.md&quot;&gt;AGENTS.md&lt;/a&gt; 是 maintainer guide，定義 repo 結構、資料邊界、workspace lifecycle、測試與開發規範。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/templates/AGENTS.md&quot;&gt;templates/AGENTS.md&lt;/a&gt; 是會被附加到真實 workspace 的 runtime appendix，規定 &lt;code&gt;.threadbridge/bin/*&lt;/code&gt;、tool request/result 檔案，以及 &lt;code&gt;build_prompt_config&lt;/code&gt; / &lt;code&gt;generate_image&lt;/code&gt; / &lt;code&gt;send_telegram_media&lt;/code&gt; 的使用方式。
+
+設計草稿：
+
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/README.md&quot;&gt;docs/plan/README.md&lt;/a&gt; 說明 &lt;code&gt;docs/plan&lt;/code&gt; 都是後續工作的草稿，不代表已實作。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md&quot;&gt;docs/plan/session-lifecycle.md&lt;/a&gt; 重新定義 &lt;code&gt;Telegram thread&lt;/code&gt;、&lt;code&gt;workspace binding&lt;/code&gt;、&lt;code&gt;Codex thread&lt;/code&gt;、&lt;code&gt;reset&lt;/code&gt;、&lt;code&gt;reconnect&lt;/code&gt; 的心智模型與流程。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md&quot;&gt;docs/plan/topic-title-status.md&lt;/a&gt; 討論把 Telegram topic title 當成狀態欄，展示 workspace 與 context ratio。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md&quot;&gt;docs/plan/telegram-webapp-observability.md&lt;/a&gt; 規劃用 Telegram Web App 做 thread/turn/tool/system 級別的 observability 與診斷面板。
+
+模板與 provider 說明：
+
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/callNanobanana.md&quot;&gt;docs/callNanobanana.md&lt;/a&gt; 記錄 &lt;code&gt;tools/generate_image.py&lt;/code&gt; 對 Nanobanana 的 request shape，明確要求不要提交真實金鑰、cookie 或生產 payload。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/templates/thread-agents.build.md&quot;&gt;templates/thread-agents.build.md&lt;/a&gt; 是 runtime appendix 的生成規則。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/templates/nanobanana.buildpromptconfig.md&quot;&gt;templates/nanobanana.buildpromptconfig.md&lt;/a&gt; 是建立 &lt;code&gt;concept.json&lt;/code&gt; 與 &lt;code&gt;prompts/NNN_primary.json&lt;/code&gt; 的提示配置指南。
+
+如果你要，我下一步可以直接幫你挑一份最重要的文檔做更細的重點整理。</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Telegram-style Browser Preview</div>
+      <div class="panel-body tg-shell">
+        <div class="tg-chat">
+          <div class="tg-bubble">這個 workspace 內目前的文檔大致分成 3 類。
+
+項目總覽：
+
+- <a href="/Volumes/Data/Github/threadBridge/README.md">README.md</a> 說明 <code>threadBridge</code> 是把 Telegram thread 綁到本地 workspace 與 Codex app-server thread 的 bot，包含需求、安裝、指令、runtime layout 和安全注意事項。
+- <a href="/Volumes/Data/Github/threadBridge/AGENTS.md">AGENTS.md</a> 是 maintainer guide，定義 repo 結構、資料邊界、workspace lifecycle、測試與開發規範。
+- <a href="/Volumes/Data/Github/threadBridge/templates/AGENTS.md">templates/AGENTS.md</a> 是會被附加到真實 workspace 的 runtime appendix，規定 <code>.threadbridge/bin/*</code>、tool request/result 檔案，以及 <code>build_prompt_config</code> / <code>generate_image</code> / <code>send_telegram_media</code> 的使用方式。
+
+設計草稿：
+
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/README.md">docs/plan/README.md</a> 說明 <code>docs/plan</code> 都是後續工作的草稿，不代表已實作。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md">docs/plan/session-lifecycle.md</a> 重新定義 <code>Telegram thread</code>、<code>workspace binding</code>、<code>Codex thread</code>、<code>reset</code>、<code>reconnect</code> 的心智模型與流程。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md">docs/plan/topic-title-status.md</a> 討論把 Telegram topic title 當成狀態欄，展示 workspace 與 context ratio。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md">docs/plan/telegram-webapp-observability.md</a> 規劃用 Telegram Web App 做 thread/turn/tool/system 級別的 observability 與診斷面板。
+
+模板與 provider 說明：
+
+- <a href="/Volumes/Data/Github/threadBridge/docs/callNanobanana.md">docs/callNanobanana.md</a> 記錄 <code>tools/generate_image.py</code> 對 Nanobanana 的 request shape，明確要求不要提交真實金鑰、cookie 或生產 payload。
+- <a href="/Volumes/Data/Github/threadBridge/templates/thread-agents.build.md">templates/thread-agents.build.md</a> 是 runtime appendix 的生成規則。
+- <a href="/Volumes/Data/Github/threadBridge/templates/nanobanana.buildpromptconfig.md">templates/nanobanana.buildpromptconfig.md</a> 是建立 <code>concept.json</code> 與 <code>prompts/NNN_primary.json</code> 的提示配置指南。
+
+如果你要，我下一步可以直接幫你挑一份最重要的文檔做更細的重點整理。</div>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+<section class="sample">
+  <div class="sample-header">
+    <div>
+      <h2>macOSAgentBot 工作目錄與能力確認 · sample 28 · dense</h2>
+      <div class="meta">
+        <span class="pill mode-html">InlineHtml</span>
+        
+        <span class="pill">macOSAgentBot 工作目錄與能力確認</span>
+        <span class="pill">a977bb18-c410-467c-8da9-c18f6c0780a4/conversations.jsonl:15</span>
+        <span class="pill">2026-03-17T18:26:29.660Z</span>
+        <span class="pill">dense</span> <span class="pill">inline-code</span> <span class="pill">lists</span> <span class="pill">long</span>
+      </div>
+    </div>
+  </div>
+  <div class="grid">
+    <article class="panel">
+      <div class="panel-head">Raw Markdown / Text</div>
+      <div class="panel-body code-frame"><pre>可以，先不要動手的話，我的建議是先用「角色去重」來清理，不要只看體積。
+
+我會先把這 9 個模型分成 4 類：
+
+- 視覺模型：`qwen/qwen3-vl-30b`
+- 大型主力文字模型：`qwen3-next-80b-a3b-instruct`、`qwen3.5-122b-a10b`、`qwen3.5-122b-a10b-text-mlx`
+- 中型文字模型：`qwen3.5-27b`、`qwen3.5-35b-a3b`、`qwen3.5-35b-a3b-abliterated-mlx`
+- Embedding：`text-embedding-nomic-embed-text-v1.5`、`text-embedding-qwen3-0.6b-text-embedding`
+
+如果目標是「明顯瘦身但不傷常用能力」，我會優先考慮這幾個方向：
+
+- 122B 同家族通常先二選一：`qwen3.5-122b-a10b` 和 `qwen3.5-122b-a10b-text-mlx` 很可能功能重疊。除非你同時需要不同 runtime，不然通常留一個就夠。
+- 35B 同家族也通常先二選一：`qwen3.5-35b-a3b` 和 `qwen3.5-35b-a3b-abliterated-mlx` 用途高度重疊。`abliterated` 如果不是你明確需要的風格，通常是優先清理對象。
+- 主力大模型不要留太多個：`qwen3-next-80b-a3b-instruct`、`qwen3.5-122b-a10b*` 這組裡，很多人實際只會穩定用 1 到 2 個。你如果沒有明確 benchmark 需求，三個都留著通常偏浪費。
+- Embedding 看工作流決定：如果你沒有本機 RAG / 向量檢索流程，這兩個可以一起列入清理候選。若有，就留一個主用 embedding，不必兩個都留。
+- `qwen/qwen3-vl-30b` 值不值得留，取決於你是否真的做圖文任務。若幾乎都只跑文字，它是很自然的候選。
+
+我會把清理優先順序排成這樣：
+
+1. `qwen3.5-35b-a3b-abliterated-mlx`
+2. `qwen3.5-122b-a10b` 或 `qwen3.5-122b-a10b-text-mlx` 其中一個
+3. 兩個 embedding 中較少用的一個
+4. `qwen3.5-35b-a3b` 或 `qwen3.5-27b` 其中一個
+5. `qwen/qwen3-vl-30b`，如果你幾乎不用視覺
+6. `qwen3-next-80b-a3b-instruct`，如果 122B 已經是你的固定主力
+
+比較穩的保留組合通常是這種：
+
+- 極簡組合：1 個大模型 + 1 個中模型 + 1 個 embedding
+- 均衡組合：1 個大模型 + 1 個中模型 + 1 個視覺模型 + 1 個 embedding
+- 研究組合：1 個 122B + 1 個 80B + 1 個 27B/35B + 1 個視覺 + 1 個 embedding
+
+如果你要，我下一步可以不做任何刪除操作，只幫你把這 9 個模型整理成：
+「建議保留」
+「可疑重複」
+「優先清理」
+三個名單。</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Generated Telegram HTML / Mode</div>
+      <div class="panel-body code-frame"><pre>可以，先不要動手的話，我的建議是先用「角色去重」來清理，不要只看體積。
+
+我會先把這 9 個模型分成 4 類：
+
+- 視覺模型：&lt;code&gt;qwen/qwen3-vl-30b&lt;/code&gt;
+- 大型主力文字模型：&lt;code&gt;qwen3-next-80b-a3b-instruct&lt;/code&gt;、&lt;code&gt;qwen3.5-122b-a10b&lt;/code&gt;、&lt;code&gt;qwen3.5-122b-a10b-text-mlx&lt;/code&gt;
+- 中型文字模型：&lt;code&gt;qwen3.5-27b&lt;/code&gt;、&lt;code&gt;qwen3.5-35b-a3b&lt;/code&gt;、&lt;code&gt;qwen3.5-35b-a3b-abliterated-mlx&lt;/code&gt;
+- Embedding：&lt;code&gt;text-embedding-nomic-embed-text-v1.5&lt;/code&gt;、&lt;code&gt;text-embedding-qwen3-0.6b-text-embedding&lt;/code&gt;
+
+如果目標是「明顯瘦身但不傷常用能力」，我會優先考慮這幾個方向：
+
+- 122B 同家族通常先二選一：&lt;code&gt;qwen3.5-122b-a10b&lt;/code&gt; 和 &lt;code&gt;qwen3.5-122b-a10b-text-mlx&lt;/code&gt; 很可能功能重疊。除非你同時需要不同 runtime，不然通常留一個就夠。
+- 35B 同家族也通常先二選一：&lt;code&gt;qwen3.5-35b-a3b&lt;/code&gt; 和 &lt;code&gt;qwen3.5-35b-a3b-abliterated-mlx&lt;/code&gt; 用途高度重疊。&lt;code&gt;abliterated&lt;/code&gt; 如果不是你明確需要的風格，通常是優先清理對象。
+- 主力大模型不要留太多個：&lt;code&gt;qwen3-next-80b-a3b-instruct&lt;/code&gt;、&lt;code&gt;qwen3.5-122b-a10b*&lt;/code&gt; 這組裡，很多人實際只會穩定用 1 到 2 個。你如果沒有明確 benchmark 需求，三個都留著通常偏浪費。
+- Embedding 看工作流決定：如果你沒有本機 RAG / 向量檢索流程，這兩個可以一起列入清理候選。若有，就留一個主用 embedding，不必兩個都留。
+- &lt;code&gt;qwen/qwen3-vl-30b&lt;/code&gt; 值不值得留，取決於你是否真的做圖文任務。若幾乎都只跑文字，它是很自然的候選。
+
+我會把清理優先順序排成這樣：
+
+1. &lt;code&gt;qwen3.5-35b-a3b-abliterated-mlx&lt;/code&gt;
+2. &lt;code&gt;qwen3.5-122b-a10b&lt;/code&gt; 或 &lt;code&gt;qwen3.5-122b-a10b-text-mlx&lt;/code&gt; 其中一個
+3. 兩個 embedding 中較少用的一個
+4. &lt;code&gt;qwen3.5-35b-a3b&lt;/code&gt; 或 &lt;code&gt;qwen3.5-27b&lt;/code&gt; 其中一個
+5. &lt;code&gt;qwen/qwen3-vl-30b&lt;/code&gt;，如果你幾乎不用視覺
+6. &lt;code&gt;qwen3-next-80b-a3b-instruct&lt;/code&gt;，如果 122B 已經是你的固定主力
+
+比較穩的保留組合通常是這種：
+
+- 極簡組合：1 個大模型 + 1 個中模型 + 1 個 embedding
+- 均衡組合：1 個大模型 + 1 個中模型 + 1 個視覺模型 + 1 個 embedding
+- 研究組合：1 個 122B + 1 個 80B + 1 個 27B/35B + 1 個視覺 + 1 個 embedding
+
+如果你要，我下一步可以不做任何刪除操作，只幫你把這 9 個模型整理成：
+「建議保留」
+「可疑重複」
+「優先清理」
+三個名單。</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Telegram-style Browser Preview</div>
+      <div class="panel-body tg-shell">
+        <div class="tg-chat">
+          <div class="tg-bubble">可以，先不要動手的話，我的建議是先用「角色去重」來清理，不要只看體積。
+
+我會先把這 9 個模型分成 4 類：
+
+- 視覺模型：<code>qwen/qwen3-vl-30b</code>
+- 大型主力文字模型：<code>qwen3-next-80b-a3b-instruct</code>、<code>qwen3.5-122b-a10b</code>、<code>qwen3.5-122b-a10b-text-mlx</code>
+- 中型文字模型：<code>qwen3.5-27b</code>、<code>qwen3.5-35b-a3b</code>、<code>qwen3.5-35b-a3b-abliterated-mlx</code>
+- Embedding：<code>text-embedding-nomic-embed-text-v1.5</code>、<code>text-embedding-qwen3-0.6b-text-embedding</code>
+
+如果目標是「明顯瘦身但不傷常用能力」，我會優先考慮這幾個方向：
+
+- 122B 同家族通常先二選一：<code>qwen3.5-122b-a10b</code> 和 <code>qwen3.5-122b-a10b-text-mlx</code> 很可能功能重疊。除非你同時需要不同 runtime，不然通常留一個就夠。
+- 35B 同家族也通常先二選一：<code>qwen3.5-35b-a3b</code> 和 <code>qwen3.5-35b-a3b-abliterated-mlx</code> 用途高度重疊。<code>abliterated</code> 如果不是你明確需要的風格，通常是優先清理對象。
+- 主力大模型不要留太多個：<code>qwen3-next-80b-a3b-instruct</code>、<code>qwen3.5-122b-a10b*</code> 這組裡，很多人實際只會穩定用 1 到 2 個。你如果沒有明確 benchmark 需求，三個都留著通常偏浪費。
+- Embedding 看工作流決定：如果你沒有本機 RAG / 向量檢索流程，這兩個可以一起列入清理候選。若有，就留一個主用 embedding，不必兩個都留。
+- <code>qwen/qwen3-vl-30b</code> 值不值得留，取決於你是否真的做圖文任務。若幾乎都只跑文字，它是很自然的候選。
+
+我會把清理優先順序排成這樣：
+
+1. <code>qwen3.5-35b-a3b-abliterated-mlx</code>
+2. <code>qwen3.5-122b-a10b</code> 或 <code>qwen3.5-122b-a10b-text-mlx</code> 其中一個
+3. 兩個 embedding 中較少用的一個
+4. <code>qwen3.5-35b-a3b</code> 或 <code>qwen3.5-27b</code> 其中一個
+5. <code>qwen/qwen3-vl-30b</code>，如果你幾乎不用視覺
+6. <code>qwen3-next-80b-a3b-instruct</code>，如果 122B 已經是你的固定主力
+
+比較穩的保留組合通常是這種：
+
+- 極簡組合：1 個大模型 + 1 個中模型 + 1 個 embedding
+- 均衡組合：1 個大模型 + 1 個中模型 + 1 個視覺模型 + 1 個 embedding
+- 研究組合：1 個 122B + 1 個 80B + 1 個 27B/35B + 1 個視覺 + 1 個 embedding
+
+如果你要，我下一步可以不做任何刪除操作，只幫你把這 9 個模型整理成：
+「建議保留」
+「可疑重複」
+「優先清理」
+三個名單。</div>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+<section class="sample">
+  <div class="sample-header">
+    <div>
+      <h2>macOSAgentBot 工作目錄與能力確認 · sample 29 · dense</h2>
+      <div class="meta">
+        <span class="pill mode-html">InlineHtml</span>
+        
+        <span class="pill">macOSAgentBot 工作目錄與能力確認</span>
+        <span class="pill">a977bb18-c410-467c-8da9-c18f6c0780a4/conversations.jsonl:18</span>
+        <span class="pill">2026-03-18T01:24:36.873Z</span>
+        <span class="pill">dense</span> <span class="pill">inline-code</span> <span class="pill">links</span> <span class="pill">long</span> <span class="pill">paths</span>
+      </div>
+    </div>
+  </div>
+  <div class="grid">
+    <article class="panel">
+      <div class="panel-head">Raw Markdown / Text</div>
+      <div class="panel-body code-frame"><pre>Reviewed only the requested `coco` files.
+
+**Runtime Topology**
+
+CoCo’s multi-machine model is deliberately hub-and-spoke: one active Telegram-facing controller, plus one or more non-Telegram agents reachable only over Tailscale. The controller owns Telegram polling, topic bindings, machine selection UX, and routing; each topic is conceptually bound to `machine_id + cwd + codex_thread_id`, so offline machines do not destroy state. Liveness is heartbeat-based, with a second-stage peer probe before a node is marked offline, which reduces false negatives on flaky networks. See [README.md](/Volumes/Data/Github/macOSAgentBot/coco/README.md), [multi-machine-setup.md](/Volumes/Data/Github/macOSAgentBot/coco/doc/multi-machine-setup.md), and [multi-machine-controller.md](/Volumes/Data/Github/macOSAgentBot/coco/plans/multi-machine-controller.md).
+
+**Module Responsibilities**
+
+[controller_runtime.py](/Volumes/Data/Github/macOSAgentBot/coco/src/coco/controller_runtime.py) is a thin bootstrap: it logs config and starts Telegram polling. From the files you asked for, controller RPC startup is not done there, so that part is likely wired deeper in the bot/session layer.
+
+[agent_runtime.py](/Volumes/Data/Github/macOSAgentBot/coco/src/coco/agent_runtime.py) is the real multi-machine bootstrap on workers: it registers the local node, starts `AgentRpcServer`, sends periodic heartbeats to the controller, and wires local Codex app-server notifications and request/response callbacks upstream to the controller.
+
+[controller_rpc.py](/Volumes/Data/Github/macOSAgentBot/coco/src/coco/controller_rpc.py) defines the agent-to-controller callback surface: `controller/heartbeat`, `controller/notification`, and `controller/request`. That is how remote agents report liveness and forward app-server events back to the Telegram side.
+
+[agent_rpc.py](/Volumes/Data/Github/macOSAgentBot/coco/src/coco/agent_rpc.py) defines the controller-to-agent control surface. It exposes machine ping/probe, browse, folder session discovery, thread listing, ensure/resume/fork/rollback, input sending, and document relay. Most of the server methods are thin adapters around existing local session/app-server primitives, which keeps remote execution aligned with single-machine behavior. The document relay is intentionally constrained to workspace-contained `.pdf`/`.txt`/`.md` files under 45 MB.
+
+[cluster_rpc.py](/Volumes/Data/Github/macOSAgentBot/coco/src/coco/cluster_rpc.py) is the transport: newline-delimited JSON over TCP, authenticated by a shared secret, with one request per connection and simple request/response semantics.
+
+[node_registry.py](/Volumes/Data/Github/macOSAgentBot/coco/src/coco/node_registry.py) is the persistent cluster state store. It records machine identity, status, last-seen time, browse roots, RPC endpoint, and controller-related flags, then derives online/offline transitions from heartbeats plus timeout checks.
+
+**Notable Design Tradeoffs**
+
+The design is intentionally additive and conservative: remote support is a thin RPC layer on top of the existing local Codex session model, which helps migration safety and keeps single-machine installs working. The cost is that this is not a full distributed control plane: no automatic controller failover, no generic cross-machine job scheduler, no folder sync/handoff, and no terminal mirroring.
+
+Security and transport are also pragmatic rather than heavy-duty. RPC trusts private Tailscale reachability plus a shared secret, which is simple and operationally cheap, but it is not a richer identity-bound protocol by itself. Similarly, liveness is more robust than pure heartbeats because of brokered peer probing, but still focused narrowly on node availability rather than broader cluster coordination.</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Generated Telegram HTML / Mode</div>
+      <div class="panel-body code-frame"><pre>Reviewed only the requested &lt;code&gt;coco&lt;/code&gt; files.
+
+&lt;b&gt;Runtime Topology&lt;/b&gt;
+
+CoCo’s multi-machine model is deliberately hub-and-spoke: one active Telegram-facing controller, plus one or more non-Telegram agents reachable only over Tailscale. The controller owns Telegram polling, topic bindings, machine selection UX, and routing; each topic is conceptually bound to &lt;code&gt;machine_id + cwd + codex_thread_id&lt;/code&gt;, so offline machines do not destroy state. Liveness is heartbeat-based, with a second-stage peer probe before a node is marked offline, which reduces false negatives on flaky networks. See &lt;a href=&quot;/Volumes/Data/Github/macOSAgentBot/coco/README.md&quot;&gt;README.md&lt;/a&gt;, &lt;a href=&quot;/Volumes/Data/Github/macOSAgentBot/coco/doc/multi-machine-setup.md&quot;&gt;multi-machine-setup.md&lt;/a&gt;, and &lt;a href=&quot;/Volumes/Data/Github/macOSAgentBot/coco/plans/multi-machine-controller.md&quot;&gt;multi-machine-controller.md&lt;/a&gt;.
+
+&lt;b&gt;Module Responsibilities&lt;/b&gt;
+
+&lt;a href=&quot;/Volumes/Data/Github/macOSAgentBot/coco/src/coco/controller_runtime.py&quot;&gt;controller_runtime.py&lt;/a&gt; is a thin bootstrap: it logs config and starts Telegram polling. From the files you asked for, controller RPC startup is not done there, so that part is likely wired deeper in the bot/session layer.
+
+&lt;a href=&quot;/Volumes/Data/Github/macOSAgentBot/coco/src/coco/agent_runtime.py&quot;&gt;agent_runtime.py&lt;/a&gt; is the real multi-machine bootstrap on workers: it registers the local node, starts &lt;code&gt;AgentRpcServer&lt;/code&gt;, sends periodic heartbeats to the controller, and wires local Codex app-server notifications and request/response callbacks upstream to the controller.
+
+&lt;a href=&quot;/Volumes/Data/Github/macOSAgentBot/coco/src/coco/controller_rpc.py&quot;&gt;controller_rpc.py&lt;/a&gt; defines the agent-to-controller callback surface: &lt;code&gt;controller/heartbeat&lt;/code&gt;, &lt;code&gt;controller/notification&lt;/code&gt;, and &lt;code&gt;controller/request&lt;/code&gt;. That is how remote agents report liveness and forward app-server events back to the Telegram side.
+
+&lt;a href=&quot;/Volumes/Data/Github/macOSAgentBot/coco/src/coco/agent_rpc.py&quot;&gt;agent_rpc.py&lt;/a&gt; defines the controller-to-agent control surface. It exposes machine ping/probe, browse, folder session discovery, thread listing, ensure/resume/fork/rollback, input sending, and document relay. Most of the server methods are thin adapters around existing local session/app-server primitives, which keeps remote execution aligned with single-machine behavior. The document relay is intentionally constrained to workspace-contained &lt;code&gt;.pdf&lt;/code&gt;/&lt;code&gt;.txt&lt;/code&gt;/&lt;code&gt;.md&lt;/code&gt; files under 45 MB.
+
+&lt;a href=&quot;/Volumes/Data/Github/macOSAgentBot/coco/src/coco/cluster_rpc.py&quot;&gt;cluster_rpc.py&lt;/a&gt; is the transport: newline-delimited JSON over TCP, authenticated by a shared secret, with one request per connection and simple request/response semantics.
+
+&lt;a href=&quot;/Volumes/Data/Github/macOSAgentBot/coco/src/coco/node_registry.py&quot;&gt;node_registry.py&lt;/a&gt; is the persistent cluster state store. It records machine identity, status, last-seen time, browse roots, RPC endpoint, and controller-related flags, then derives online/offline transitions from heartbeats plus timeout checks.
+
+&lt;b&gt;Notable Design Tradeoffs&lt;/b&gt;
+
+The design is intentionally additive and conservative: remote support is a thin RPC layer on top of the existing local Codex session model, which helps migration safety and keeps single-machine installs working. The cost is that this is not a full distributed control plane: no automatic controller failover, no generic cross-machine job scheduler, no folder sync/handoff, and no terminal mirroring.
+
+Security and transport are also pragmatic rather than heavy-duty. RPC trusts private Tailscale reachability plus a shared secret, which is simple and operationally cheap, but it is not a richer identity-bound protocol by itself. Similarly, liveness is more robust than pure heartbeats because of brokered peer probing, but still focused narrowly on node availability rather than broader cluster coordination.</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Telegram-style Browser Preview</div>
+      <div class="panel-body tg-shell">
+        <div class="tg-chat">
+          <div class="tg-bubble">Reviewed only the requested <code>coco</code> files.
+
+<b>Runtime Topology</b>
+
+CoCo’s multi-machine model is deliberately hub-and-spoke: one active Telegram-facing controller, plus one or more non-Telegram agents reachable only over Tailscale. The controller owns Telegram polling, topic bindings, machine selection UX, and routing; each topic is conceptually bound to <code>machine_id + cwd + codex_thread_id</code>, so offline machines do not destroy state. Liveness is heartbeat-based, with a second-stage peer probe before a node is marked offline, which reduces false negatives on flaky networks. See <a href="/Volumes/Data/Github/macOSAgentBot/coco/README.md">README.md</a>, <a href="/Volumes/Data/Github/macOSAgentBot/coco/doc/multi-machine-setup.md">multi-machine-setup.md</a>, and <a href="/Volumes/Data/Github/macOSAgentBot/coco/plans/multi-machine-controller.md">multi-machine-controller.md</a>.
+
+<b>Module Responsibilities</b>
+
+<a href="/Volumes/Data/Github/macOSAgentBot/coco/src/coco/controller_runtime.py">controller_runtime.py</a> is a thin bootstrap: it logs config and starts Telegram polling. From the files you asked for, controller RPC startup is not done there, so that part is likely wired deeper in the bot/session layer.
+
+<a href="/Volumes/Data/Github/macOSAgentBot/coco/src/coco/agent_runtime.py">agent_runtime.py</a> is the real multi-machine bootstrap on workers: it registers the local node, starts <code>AgentRpcServer</code>, sends periodic heartbeats to the controller, and wires local Codex app-server notifications and request/response callbacks upstream to the controller.
+
+<a href="/Volumes/Data/Github/macOSAgentBot/coco/src/coco/controller_rpc.py">controller_rpc.py</a> defines the agent-to-controller callback surface: <code>controller/heartbeat</code>, <code>controller/notification</code>, and <code>controller/request</code>. That is how remote agents report liveness and forward app-server events back to the Telegram side.
+
+<a href="/Volumes/Data/Github/macOSAgentBot/coco/src/coco/agent_rpc.py">agent_rpc.py</a> defines the controller-to-agent control surface. It exposes machine ping/probe, browse, folder session discovery, thread listing, ensure/resume/fork/rollback, input sending, and document relay. Most of the server methods are thin adapters around existing local session/app-server primitives, which keeps remote execution aligned with single-machine behavior. The document relay is intentionally constrained to workspace-contained <code>.pdf</code>/<code>.txt</code>/<code>.md</code> files under 45 MB.
+
+<a href="/Volumes/Data/Github/macOSAgentBot/coco/src/coco/cluster_rpc.py">cluster_rpc.py</a> is the transport: newline-delimited JSON over TCP, authenticated by a shared secret, with one request per connection and simple request/response semantics.
+
+<a href="/Volumes/Data/Github/macOSAgentBot/coco/src/coco/node_registry.py">node_registry.py</a> is the persistent cluster state store. It records machine identity, status, last-seen time, browse roots, RPC endpoint, and controller-related flags, then derives online/offline transitions from heartbeats plus timeout checks.
+
+<b>Notable Design Tradeoffs</b>
+
+The design is intentionally additive and conservative: remote support is a thin RPC layer on top of the existing local Codex session model, which helps migration safety and keeps single-machine installs working. The cost is that this is not a full distributed control plane: no automatic controller failover, no generic cross-machine job scheduler, no folder sync/handoff, and no terminal mirroring.
+
+Security and transport are also pragmatic rather than heavy-duty. RPC trusts private Tailscale reachability plus a shared secret, which is simple and operationally cheap, but it is not a richer identity-bound protocol by itself. Similarly, liveness is more robust than pure heartbeats because of brokered peer probing, but still focused narrowly on node availability rather than broader cluster coordination.</div>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+<section class="sample">
+  <div class="sample-header">
+    <div>
+      <h2>threadBridge Plan 與透明協議層 · sample 13 · dense</h2>
+      <div class="meta">
+        <span class="pill mode-html">InlineHtml</span>
+        
+        <span class="pill">threadBridge Plan 與透明協議層</span>
+        <span class="pill">1fda3517-5c1c-4e41-9b08-d9b81eddaa05/conversations.jsonl:26</span>
+        <span class="pill">2026-03-17T01:44:20.278Z</span>
+        <span class="pill">dense</span> <span class="pill">inline-code</span> <span class="pill">links</span> <span class="pill">lists</span> <span class="pill">long</span> <span class="pill">paths</span>
+      </div>
+    </div>
+  </div>
+  <div class="grid">
+    <article class="panel">
+      <div class="panel-head">Raw Markdown / Text</div>
+      <div class="panel-body code-frame"><pre>我看完了 `docs/plan/` 这一组文档。先说结论：这些都还是设计草稿，不代表已经定案或已经实现，索引在 [docs/plan/README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md)。
+
+这组 Plan 主要分成 6 个方向：
+
+- [docs/plan/session-lifecycle.md](/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md)
+  重点是重新定义产品心智模型：`Telegram thread` 是 UI 容器，`workspace binding` 是目录绑定，`Codex thread` 才是 runtime 资源。它主张以后用 `bind / resume / reset / reconnect` 来描述生命周期，而不是“接上已有 session”。
+- [docs/plan/codex-busy-input-gate.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md)
+  重点是同一个 Telegram thread 在 Codex 正在跑时，先做硬性 busy gate，不排队。文字输入直接拒绝，图片可以保存但不立即分析。
+- [docs/plan/topic-title-status.md](/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md)
+  想把 Telegram topic title 当成轻量状态栏，用来显示 workspace 标签和 context ratio，例如 `threadBridge · ctx18%`。
+- [docs/plan/telegram-webapp-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md)
+  这是最大的一篇，核心是补一个 Telegram Web App 观测面，专门看 thread 状态、turn timeline、tool 执行和日志，不是替代聊天，而是补 observability。
+- [docs/plan/telegram-markdown-adaptation.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md)
+  关注 Telegram 输出适配。建议在 bot 端做专门的 renderer，把 assistant 原始内容转成更稳定的 Telegram 表示，初版偏保守，优先稳定发出去。
+- [docs/plan/optional-agents-injection.md](/Volumes/Data/Github/threadBridge/docs/plan/optional-agents-injection.md)
+  这是和当前 `AGENTS.md` / threadBridge appendix 最相关的一篇。它在讨论以后不要强制把 appendix 直接注入 workspace `AGENTS.md`，而是拆成多种模式：`inline_appendix`、`child_document`、`external_instructions`、`tools_only`。
+
+如果你想看“这项目接下来最核心的产品路线”，我会把优先级理解成：
+
+1. 先把 session/thread/workspace 的模型讲清楚。
+2. 再补 thread 级 busy gate。
+3. 然后做 observability 和 Telegram 输出稳定性。
+4. 最后再把 `AGENTS.md` appendix 注入改成可选策略。
+
+如果你要，我下一步可以继续帮你做两种东西之一：
+1. 把这几篇 Plan 和当前代码实现逐项对照，标出哪些已做、哪些没做。
+2. 直接把这组 Plan 压缩成一份更短的架构摘要。</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Generated Telegram HTML / Mode</div>
+      <div class="panel-body code-frame"><pre>我看完了 &lt;code&gt;docs/plan/&lt;/code&gt; 这一组文档。先说结论：这些都还是设计草稿，不代表已经定案或已经实现，索引在 &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/README.md&quot;&gt;docs/plan/README.md&lt;/a&gt;。
+
+这组 Plan 主要分成 6 个方向：
+
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md&quot;&gt;docs/plan/session-lifecycle.md&lt;/a&gt;
+重点是重新定义产品心智模型：&lt;code&gt;Telegram thread&lt;/code&gt; 是 UI 容器，&lt;code&gt;workspace binding&lt;/code&gt; 是目录绑定，&lt;code&gt;Codex thread&lt;/code&gt; 才是 runtime 资源。它主张以后用 &lt;code&gt;bind / resume / reset / reconnect&lt;/code&gt; 来描述生命周期，而不是“接上已有 session”。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md&quot;&gt;docs/plan/codex-busy-input-gate.md&lt;/a&gt;
+重点是同一个 Telegram thread 在 Codex 正在跑时，先做硬性 busy gate，不排队。文字输入直接拒绝，图片可以保存但不立即分析。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md&quot;&gt;docs/plan/topic-title-status.md&lt;/a&gt;
+想把 Telegram topic title 当成轻量状态栏，用来显示 workspace 标签和 context ratio，例如 &lt;code&gt;threadBridge · ctx18%&lt;/code&gt;。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md&quot;&gt;docs/plan/telegram-webapp-observability.md&lt;/a&gt;
+这是最大的一篇，核心是补一个 Telegram Web App 观测面，专门看 thread 状态、turn timeline、tool 执行和日志，不是替代聊天，而是补 observability。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md&quot;&gt;docs/plan/telegram-markdown-adaptation.md&lt;/a&gt;
+关注 Telegram 输出适配。建议在 bot 端做专门的 renderer，把 assistant 原始内容转成更稳定的 Telegram 表示，初版偏保守，优先稳定发出去。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/optional-agents-injection.md&quot;&gt;docs/plan/optional-agents-injection.md&lt;/a&gt;
+这是和当前 &lt;code&gt;AGENTS.md&lt;/code&gt; / threadBridge appendix 最相关的一篇。它在讨论以后不要强制把 appendix 直接注入 workspace &lt;code&gt;AGENTS.md&lt;/code&gt;，而是拆成多种模式：&lt;code&gt;inline_appendix&lt;/code&gt;、&lt;code&gt;child_document&lt;/code&gt;、&lt;code&gt;external_instructions&lt;/code&gt;、&lt;code&gt;tools_only&lt;/code&gt;。
+
+如果你想看“这项目接下来最核心的产品路线”，我会把优先级理解成：
+
+1. 先把 session/thread/workspace 的模型讲清楚。
+2. 再补 thread 级 busy gate。
+3. 然后做 observability 和 Telegram 输出稳定性。
+4. 最后再把 &lt;code&gt;AGENTS.md&lt;/code&gt; appendix 注入改成可选策略。
+
+如果你要，我下一步可以继续帮你做两种东西之一：
+
+1. 把这几篇 Plan 和当前代码实现逐项对照，标出哪些已做、哪些没做。
+2. 直接把这组 Plan 压缩成一份更短的架构摘要。</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Telegram-style Browser Preview</div>
+      <div class="panel-body tg-shell">
+        <div class="tg-chat">
+          <div class="tg-bubble">我看完了 <code>docs/plan/</code> 这一组文档。先说结论：这些都还是设计草稿，不代表已经定案或已经实现，索引在 <a href="/Volumes/Data/Github/threadBridge/docs/plan/README.md">docs/plan/README.md</a>。
+
+这组 Plan 主要分成 6 个方向：
+
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md">docs/plan/session-lifecycle.md</a>
+重点是重新定义产品心智模型：<code>Telegram thread</code> 是 UI 容器，<code>workspace binding</code> 是目录绑定，<code>Codex thread</code> 才是 runtime 资源。它主张以后用 <code>bind / resume / reset / reconnect</code> 来描述生命周期，而不是“接上已有 session”。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md">docs/plan/codex-busy-input-gate.md</a>
+重点是同一个 Telegram thread 在 Codex 正在跑时，先做硬性 busy gate，不排队。文字输入直接拒绝，图片可以保存但不立即分析。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md">docs/plan/topic-title-status.md</a>
+想把 Telegram topic title 当成轻量状态栏，用来显示 workspace 标签和 context ratio，例如 <code>threadBridge · ctx18%</code>。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md">docs/plan/telegram-webapp-observability.md</a>
+这是最大的一篇，核心是补一个 Telegram Web App 观测面，专门看 thread 状态、turn timeline、tool 执行和日志，不是替代聊天，而是补 observability。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md">docs/plan/telegram-markdown-adaptation.md</a>
+关注 Telegram 输出适配。建议在 bot 端做专门的 renderer，把 assistant 原始内容转成更稳定的 Telegram 表示，初版偏保守，优先稳定发出去。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/optional-agents-injection.md">docs/plan/optional-agents-injection.md</a>
+这是和当前 <code>AGENTS.md</code> / threadBridge appendix 最相关的一篇。它在讨论以后不要强制把 appendix 直接注入 workspace <code>AGENTS.md</code>，而是拆成多种模式：<code>inline_appendix</code>、<code>child_document</code>、<code>external_instructions</code>、<code>tools_only</code>。
+
+如果你想看“这项目接下来最核心的产品路线”，我会把优先级理解成：
+
+1. 先把 session/thread/workspace 的模型讲清楚。
+2. 再补 thread 级 busy gate。
+3. 然后做 observability 和 Telegram 输出稳定性。
+4. 最后再把 <code>AGENTS.md</code> appendix 注入改成可选策略。
+
+如果你要，我下一步可以继续帮你做两种东西之一：
+
+1. 把这几篇 Plan 和当前代码实现逐项对照，标出哪些已做、哪些没做。
+2. 直接把这组 Plan 压缩成一份更短的架构摘要。</div>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+<section class="sample">
+  <div class="sample-header">
+    <div>
+      <h2>threadBridge Plan 與透明協議層 · sample 14 · dense</h2>
+      <div class="meta">
+        <span class="pill mode-html">InlineHtml</span>
+        
+        <span class="pill">threadBridge Plan 與透明協議層</span>
+        <span class="pill">1fda3517-5c1c-4e41-9b08-d9b81eddaa05/conversations.jsonl:28</span>
+        <span class="pill">2026-03-17T01:44:43.771Z</span>
+        <span class="pill">dense</span> <span class="pill">inline-code</span> <span class="pill">links</span> <span class="pill">lists</span> <span class="pill">long</span> <span class="pill">paths</span>
+      </div>
+    </div>
+  </div>
+  <div class="grid">
+    <article class="panel">
+      <div class="panel-head">Raw Markdown / Text</div>
+      <div class="panel-body code-frame"><pre>我看過這個專案的 Plan 文檔了，集中在 [docs/plan/README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md)。這一組文件都明確標成「草稿」，不是已定案或已實作的規格。
+
+目前主要有 6 份：
+
+- [docs/plan/session-lifecycle.md](/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md)
+  重新定義 `Telegram thread / workspace binding / Codex thread` 的關係，主張用 `bind / resume / reset / reconnect` 來描述生命週期。
+- [docs/plan/codex-busy-input-gate.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md)
+  討論同一個 Telegram thread 在 Codex 執行中時，先做 hard gate，不排隊，直接阻止新輸入。
+- [docs/plan/topic-title-status.md](/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md)
+  想把 Telegram topic title 當成輕量狀態欄，顯示 workspace 與 context ratio。
+- [docs/plan/telegram-webapp-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md)
+  提議做 Telegram Web App 當 observability 面板，用來看 thread 狀態、turn timeline、tool 執行與日志。
+- [docs/plan/telegram-markdown-adaptation.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md)
+  討論為 Telegram 做專門的輸出 renderer，重點是穩定顯示與降低發送失敗。
+- [docs/plan/optional-agents-injection.md](/Volumes/Data/Github/threadBridge/docs/plan/optional-agents-injection.md)
+  討論把 workspace `AGENTS.md` appendix 注入改成可選，而不是強制 inline。
+
+整體看下來，這批 Plan 的主線很清楚：
+
+- 先把 session / workspace / Codex thread 模型講清楚
+- 再補 thread-level busy 狀態
+- 再補 observability 與 Telegram 表示層
+- 最後把 `AGENTS.md` 注入策略做成可選模式
+
+如果你要，我下一步可以直接幫你做「Plan 與目前實作對照」，把哪些已落地、哪些還只是草稿列出來。</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Generated Telegram HTML / Mode</div>
+      <div class="panel-body code-frame"><pre>我看過這個專案的 Plan 文檔了，集中在 &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/README.md&quot;&gt;docs/plan/README.md&lt;/a&gt;。這一組文件都明確標成「草稿」，不是已定案或已實作的規格。
+
+目前主要有 6 份：
+
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md&quot;&gt;docs/plan/session-lifecycle.md&lt;/a&gt;
+重新定義 &lt;code&gt;Telegram thread / workspace binding / Codex thread&lt;/code&gt; 的關係，主張用 &lt;code&gt;bind / resume / reset / reconnect&lt;/code&gt; 來描述生命週期。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md&quot;&gt;docs/plan/codex-busy-input-gate.md&lt;/a&gt;
+討論同一個 Telegram thread 在 Codex 執行中時，先做 hard gate，不排隊，直接阻止新輸入。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md&quot;&gt;docs/plan/topic-title-status.md&lt;/a&gt;
+想把 Telegram topic title 當成輕量狀態欄，顯示 workspace 與 context ratio。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md&quot;&gt;docs/plan/telegram-webapp-observability.md&lt;/a&gt;
+提議做 Telegram Web App 當 observability 面板，用來看 thread 狀態、turn timeline、tool 執行與日志。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md&quot;&gt;docs/plan/telegram-markdown-adaptation.md&lt;/a&gt;
+討論為 Telegram 做專門的輸出 renderer，重點是穩定顯示與降低發送失敗。
+- &lt;a href=&quot;/Volumes/Data/Github/threadBridge/docs/plan/optional-agents-injection.md&quot;&gt;docs/plan/optional-agents-injection.md&lt;/a&gt;
+討論把 workspace &lt;code&gt;AGENTS.md&lt;/code&gt; appendix 注入改成可選，而不是強制 inline。
+
+整體看下來，這批 Plan 的主線很清楚：
+
+- 先把 session / workspace / Codex thread 模型講清楚
+- 再補 thread-level busy 狀態
+- 再補 observability 與 Telegram 表示層
+- 最後把 &lt;code&gt;AGENTS.md&lt;/code&gt; 注入策略做成可選模式
+
+如果你要，我下一步可以直接幫你做「Plan 與目前實作對照」，把哪些已落地、哪些還只是草稿列出來。</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Telegram-style Browser Preview</div>
+      <div class="panel-body tg-shell">
+        <div class="tg-chat">
+          <div class="tg-bubble">我看過這個專案的 Plan 文檔了，集中在 <a href="/Volumes/Data/Github/threadBridge/docs/plan/README.md">docs/plan/README.md</a>。這一組文件都明確標成「草稿」，不是已定案或已實作的規格。
+
+目前主要有 6 份：
+
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md">docs/plan/session-lifecycle.md</a>
+重新定義 <code>Telegram thread / workspace binding / Codex thread</code> 的關係，主張用 <code>bind / resume / reset / reconnect</code> 來描述生命週期。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md">docs/plan/codex-busy-input-gate.md</a>
+討論同一個 Telegram thread 在 Codex 執行中時，先做 hard gate，不排隊，直接阻止新輸入。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md">docs/plan/topic-title-status.md</a>
+想把 Telegram topic title 當成輕量狀態欄，顯示 workspace 與 context ratio。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md">docs/plan/telegram-webapp-observability.md</a>
+提議做 Telegram Web App 當 observability 面板，用來看 thread 狀態、turn timeline、tool 執行與日志。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md">docs/plan/telegram-markdown-adaptation.md</a>
+討論為 Telegram 做專門的輸出 renderer，重點是穩定顯示與降低發送失敗。
+- <a href="/Volumes/Data/Github/threadBridge/docs/plan/optional-agents-injection.md">docs/plan/optional-agents-injection.md</a>
+討論把 workspace <code>AGENTS.md</code> appendix 注入改成可選，而不是強制 inline。
+
+整體看下來，這批 Plan 的主線很清楚：
+
+- 先把 session / workspace / Codex thread 模型講清楚
+- 再補 thread-level busy 狀態
+- 再補 observability 與 Telegram 表示層
+- 最後把 <code>AGENTS.md</code> 注入策略做成可選模式
+
+如果你要，我下一步可以直接幫你做「Plan 與目前實作對照」，把哪些已落地、哪些還只是草稿列出來。</div>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+<section class="sample">
+  <div class="sample-header">
+    <div>
+      <h2>Synthetic fenced code block</h2>
+      <div class="meta">
+        <span class="pill mode-html">InlineHtml</span>
+        <span class="pill synthetic">synthetic coverage</span>
+        <span class="pill">supplemental coverage</span>
+        <span class="pill">synthetic</span>
+        <span class="pill">synthetic</span>
+        <span class="pill">synthetic</span> <span class="pill">code-block</span>
+      </div>
+    </div>
+  </div>
+  <div class="grid">
+    <article class="panel">
+      <div class="panel-head">Raw Markdown / Text</div>
+      <div class="panel-body code-frame"><pre>```rust
+fn main() {
+    println!(&quot;hello&quot;);
+}
+```</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Generated Telegram HTML / Mode</div>
+      <div class="panel-body code-frame"><pre>&lt;pre&gt;&lt;code&gt;rust
+fn main() {
+    println!(&amp;quot;hello&amp;quot;);
+}
+&lt;/code&gt;&lt;/pre&gt;</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Telegram-style Browser Preview</div>
+      <div class="panel-body tg-shell">
+        <div class="tg-chat">
+          <div class="tg-bubble"><pre><code>rust
+fn main() {
+    println!(&quot;hello&quot;);
+}
+</code></pre></div>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+<section class="sample">
+  <div class="sample-header">
+    <div>
+      <h2>Synthetic blockquote fallback</h2>
+      <div class="meta">
+        <span class="pill mode-html">InlineHtml</span>
+        <span class="pill synthetic">synthetic coverage</span>
+        <span class="pill">supplemental coverage</span>
+        <span class="pill">synthetic</span>
+        <span class="pill">synthetic</span>
+        <span class="pill">synthetic</span> <span class="pill">blockquote</span> <span class="pill">fallback</span>
+      </div>
+    </div>
+  </div>
+  <div class="grid">
+    <article class="panel">
+      <div class="panel-head">Raw Markdown / Text</div>
+      <div class="panel-body code-frame"><pre>&gt; nested
+&gt; quote
+&gt;
+&gt; - list item
+&gt; - another item</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Generated Telegram HTML / Mode</div>
+      <div class="panel-body code-frame"><pre>&lt;pre&gt;&lt;code&gt;nested
+quotelist itemanother item&lt;/code&gt;&lt;/pre&gt;</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Telegram-style Browser Preview</div>
+      <div class="panel-body tg-shell">
+        <div class="tg-chat">
+          <div class="tg-bubble"><pre><code>nested
+quotelist itemanother item</code></pre></div>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+<section class="sample">
+  <div class="sample-header">
+    <div>
+      <h2>Synthetic overflow attachment</h2>
+      <div class="meta">
+        <span class="pill mode-attachment">MarkdownAttachment</span>
+        <span class="pill synthetic">synthetic coverage</span>
+        <span class="pill">supplemental coverage</span>
+        <span class="pill">synthetic</span>
+        <span class="pill">synthetic</span>
+        <span class="pill">synthetic</span> <span class="pill">overflow</span> <span class="pill">attachment</span>
+      </div>
+    </div>
+  </div>
+  <div class="grid">
+    <article class="panel">
+      <div class="panel-head">Raw Markdown / Text</div>
+      <div class="panel-body code-frame"><pre>## Overflow sample
+
+This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. 
+</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Generated Telegram HTML / Mode</div>
+      <div class="panel-body code-frame"><pre>mode: MarkdownAttachment
+notice_text:
+Reply too long for inline Telegram delivery. Full response attached.
+
+## Overflow sample
+
+attachment: reply.md
+markdown_bytes: 6739
+
+## Overflow sample
+
+This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. This sample exists only to hit MarkdownAttachment mode. T...</pre></div>
+    </article>
+    <article class="panel">
+      <div class="panel-head">Telegram-style Browser Preview</div>
+      <div class="panel-body tg-shell">
+        <div class="tg-chat">
+          <div class="tg-bubble">
+  <div>Reply too long for inline Telegram delivery. Full response attached.
+
+## Overflow sample</div>
+  <div class="attachment">
+    <strong>reply.md</strong>
+    <small>Telegram document attachment preview</small>
+  </div>
+  <div class="note">attachment payload preview: 6739 chars of raw markdown</div>
+</div>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>
+  </main>
+</body>
+</html>

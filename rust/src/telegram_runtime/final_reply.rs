@@ -3,20 +3,20 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
 use teloxide::payloads::setters::*;
-use teloxide::types::{ChatId, InputFile, Message, ParseMode, ThreadId};
+use teloxide::types::{ChatId, InputFile, LinkPreviewOptions, Message, ParseMode, ThreadId};
 use tokio::fs;
 use tracing::{info, warn};
 
 use super::{Bot, Requester, ThreadRecord};
 
-const INLINE_MESSAGE_CHAR_LIMIT: usize = 4096;
+pub const INLINE_MESSAGE_CHAR_LIMIT: usize = 4096;
 const PREVIEW_CHAR_LIMIT: usize = 800;
 const OVERFLOW_FILE_NAME: &str = "reply.md";
 const OVERFLOW_NOTICE: &str =
     "Reply too long for inline Telegram delivery. Full response attached.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum TelegramReplyPlan {
+pub enum TelegramReplyPlan {
     InlineHtml {
         text: String,
     },
@@ -36,7 +36,7 @@ struct ListState {
     ordered: bool,
 }
 
-pub(crate) fn plan_final_assistant_reply(raw_text: &str, inline_limit: usize) -> TelegramReplyPlan {
+pub fn plan_final_assistant_reply(raw_text: &str, inline_limit: usize) -> TelegramReplyPlan {
     let trimmed = raw_text.trim();
     if trimmed.is_empty() {
         return TelegramReplyPlan::InlinePlainText {
@@ -143,7 +143,10 @@ async fn send_html_message(
     thread_id: Option<ThreadId>,
     text: String,
 ) -> Result<Message> {
-    let request = bot.send_message(chat_id, text).parse_mode(ParseMode::Html);
+    let request = bot
+        .send_message(chat_id, text)
+        .parse_mode(ParseMode::Html)
+        .link_preview_options(disabled_link_preview_options());
     let message = match thread_id {
         Some(thread_id) => request.message_thread_id(thread_id).await?,
         None => request.await?,
@@ -157,7 +160,9 @@ async fn send_plain_text_message(
     thread_id: Option<ThreadId>,
     text: String,
 ) -> Result<Message> {
-    let request = bot.send_message(chat_id, text);
+    let request = bot
+        .send_message(chat_id, text)
+        .link_preview_options(disabled_link_preview_options());
     let message = match thread_id {
         Some(thread_id) => request.message_thread_id(thread_id).await?,
         None => request.await?,
@@ -239,6 +244,16 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     format!("{truncated}...")
 }
 
+fn disabled_link_preview_options() -> LinkPreviewOptions {
+    LinkPreviewOptions {
+        is_disabled: true,
+        url: None,
+        prefer_small_media: false,
+        prefer_large_media: false,
+        show_above_text: false,
+    }
+}
+
 fn render_markdown_to_telegram_html(markdown: &str) -> String {
     let parser = Parser::new_ext(markdown, Options::all());
     let mut renderer = TelegramHtmlRenderer::default();
@@ -247,7 +262,8 @@ fn render_markdown_to_telegram_html(markdown: &str) -> String {
         renderer.handle_event(event);
     }
 
-    renderer.finish()
+    let html = rewrite_markdown_links_as_code(&renderer.finish());
+    apply_layout_adjustments(&html)
 }
 
 #[derive(Default)]
@@ -485,10 +501,169 @@ fn escape_html(text: &str) -> String {
     escaped
 }
 
+fn apply_layout_adjustments(html: &str) -> String {
+    let lines: Vec<&str> = html.lines().collect();
+    let mut adjusted = Vec::with_capacity(lines.len());
+
+    for (idx, line) in lines.iter().enumerate() {
+        if should_indent_following_description_line(&lines, idx) {
+            adjusted.push(format!("　{}", line.trim_start()));
+            continue;
+        }
+
+        let next_non_empty = lines
+            .iter()
+            .skip(idx + 1)
+            .find(|candidate| !candidate.trim().is_empty())
+            .copied();
+
+        let line = if should_bold_section_label(line, next_non_empty) {
+            format!("<b>{}</b>", line.trim())
+        } else if let Some(reflowed) = reflow_file_reference_bullet(line) {
+            reflowed
+        } else {
+            (*line).to_owned()
+        };
+
+        adjusted.push(line);
+    }
+
+    adjusted.join("\n")
+}
+
+fn should_indent_following_description_line(lines: &[&str], idx: usize) -> bool {
+    if idx == 0 {
+        return false;
+    }
+
+    let previous = lines[idx - 1].trim();
+    let current = lines[idx].trim();
+
+    if current.is_empty() || looks_like_bullet_line(current) {
+        return false;
+    }
+
+    previous.starts_with("- <code>") && previous.ends_with("</code>")
+}
+
+fn should_bold_section_label(line: &str, next_non_empty: Option<&str>) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.len() > 40 {
+        return false;
+    }
+    if !(trimmed.ends_with('：') || trimmed.ends_with(':')) {
+        return false;
+    }
+    next_non_empty.is_some_and(looks_like_bullet_line)
+}
+
+fn reflow_file_reference_bullet(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let indent = line.len().saturating_sub(trimmed.len());
+    let marker_len = if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+        2
+    } else {
+        ordered_marker_len(trimmed)?
+    };
+    let marker = &trimmed[..marker_len];
+    let content = &trimmed[marker_len..];
+
+    if let Some(close) = content.find("</a>") {
+        let reference = rewrite_anchor_reference(&content[..close + 4]);
+        let description = content[close + 4..].trim_start();
+        if !description.is_empty() {
+            return Some(format!(
+                "{}{}\n{}{}",
+                " ".repeat(indent),
+                format!("{marker}{reference}"),
+                continuation_indent(indent),
+                description
+            ));
+        }
+    }
+
+    if let Some(close) = content.find("</code>") {
+        let reference = &content[..close + 7];
+        let description = content[close + 7..].trim_start();
+        if !description.is_empty() {
+            return Some(format!(
+                "{}{}\n{}{}",
+                " ".repeat(indent),
+                format!("{marker}{reference}"),
+                continuation_indent(indent),
+                description
+            ));
+        }
+    }
+
+    None
+}
+
+fn ordered_marker_len(text: &str) -> Option<usize> {
+    let digit_count = text.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digit_count == 0 {
+        return None;
+    }
+    let suffix = text.get(digit_count..digit_count + 2)?;
+    if suffix == ". " {
+        Some(digit_count + 2)
+    } else {
+        None
+    }
+}
+
+fn looks_like_bullet_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("- ") || trimmed.starts_with("* ") || ordered_marker_len(trimmed).is_some()
+}
+
+fn continuation_indent(indent: usize) -> String {
+    format!("{}{}", " ".repeat(indent), "　")
+}
+
+fn rewrite_anchor_reference(anchor_html: &str) -> String {
+    let Some(start) = anchor_html.find('>') else {
+        return anchor_html.to_owned();
+    };
+    let Some(end) = anchor_html.rfind("</a>") else {
+        return anchor_html.to_owned();
+    };
+
+    let label = &anchor_html[start + 1..end];
+    format!("<code>{}</code>", label)
+}
+
+fn rewrite_markdown_links_as_code(html: &str) -> String {
+    let mut rewritten = String::with_capacity(html.len());
+    let mut rest = html;
+
+    while let Some(start) = rest.find("<a ") {
+        rewritten.push_str(&rest[..start]);
+        let after_start = &rest[start..];
+        let Some(tag_end) = after_start.find('>') else {
+            rewritten.push_str(after_start);
+            return rewritten;
+        };
+        let label_start = start + tag_end + 1;
+        let after_open = &rest[label_start..];
+        let Some(close_start_rel) = after_open.find("</a>") else {
+            rewritten.push_str(after_start);
+            return rewritten;
+        };
+        let label = &after_open[..close_start_rel];
+        rewritten.push_str(&format!("<code>{}</code>", label));
+        rest = &after_open[close_start_rel + 4..];
+    }
+
+    rewritten.push_str(rest);
+    rewritten
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         OVERFLOW_NOTICE, TelegramReplyPlan, first_preview_snippet, plan_final_assistant_reply,
+        render_markdown_to_telegram_html,
     };
 
     #[test]
@@ -506,6 +681,53 @@ mod tests {
         assert!(text.contains("<b>this</b>"));
         assert!(text.contains("- one"));
         assert!(text.contains("- two"));
+    }
+
+    #[test]
+    fn reflows_local_file_reference_bullets() {
+        let html = render_markdown_to_telegram_html(
+            "項目總覽：\n- [README.md](/tmp/README.md) 說明 `threadBridge` 是 bot。",
+        );
+
+        assert!(html.contains("<b>項目總覽：</b>"));
+        assert!(
+            html.contains("- <code>README.md</code>\n　說明 <code>threadBridge</code> 是 bot。")
+        );
+    }
+
+    #[test]
+    fn indents_following_description_line_for_two_line_file_bullets() {
+        let html = render_markdown_to_telegram_html(
+            "- [docs/plan/session-lifecycle.md](/tmp/docs/plan/session-lifecycle.md)\n  重做 session / thread / workspace 的產品模型。",
+        );
+
+        assert!(html.contains(
+            "- <code>docs/plan/session-lifecycle.md</code>\n　重做 session / thread / workspace 的產品模型。"
+        ));
+    }
+
+    #[test]
+    fn rewrites_local_path_labels_as_code() {
+        let html = render_markdown_to_telegram_html(
+            "- [docs/callNanobanana.md](/tmp/docs/callNanobanana.md) 說明",
+        );
+
+        assert!(html.contains("- <code>docs/callNanobanana.md</code>\n　說明"));
+    }
+
+    #[test]
+    fn rewrites_local_filename_labels_as_code() {
+        let html =
+            render_markdown_to_telegram_html("- [AGENTS.md](/tmp/AGENTS.md) 說明 maintainer guide");
+
+        assert!(html.contains("- <code>AGENTS.md</code>\n　說明 maintainer guide"));
+    }
+
+    #[test]
+    fn rewrites_external_links_as_code() {
+        let html = render_markdown_to_telegram_html("- [OpenAI](https://openai.com) 說明 external");
+
+        assert!(html.contains("- <code>OpenAI</code>\n　說明 external"));
     }
 
     #[test]
