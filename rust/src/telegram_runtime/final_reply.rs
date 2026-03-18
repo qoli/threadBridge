@@ -388,7 +388,11 @@ impl TelegramHtmlRenderer {
                 self.push_block_break();
             }
             Event::Start(Tag::List(start)) => {
-                self.push_block_break();
+                if self.list_stack.is_empty() {
+                    self.push_block_break();
+                } else {
+                    self.push_line_break();
+                }
                 self.list_stack.push(ListState {
                     ordered: start.is_some(),
                     next_index: start.unwrap_or(1),
@@ -396,7 +400,11 @@ impl TelegramHtmlRenderer {
             }
             Event::End(Tag::List(_)) => {
                 self.list_stack.pop();
-                self.push_block_break();
+                if self.list_stack.is_empty() {
+                    self.push_block_break();
+                } else {
+                    self.push_line_break();
+                }
             }
             Event::Start(Tag::Item) => {
                 if !self.html.is_empty() && !self.html.ends_with('\n') {
@@ -430,8 +438,7 @@ impl TelegramHtmlRenderer {
             Event::End(Tag::Image(..)) => {}
             Event::Text(text) | Event::Html(text) => self.html.push_str(&escape_html(&text)),
             Event::Code(text) => {
-                self.html
-                    .push_str(&format!("<code>{}</code>", escape_html(&text)));
+                self.html.push_str(&render_inline_code(&text));
             }
             Event::SoftBreak | Event::HardBreak => self.push_line_break(),
             Event::Rule => {
@@ -559,6 +566,23 @@ fn escape_html(text: &str) -> String {
         }
     }
     escaped
+}
+
+fn render_inline_code(text: &str) -> String {
+    let escaped = escape_html(text);
+    if looks_like_directory_label(text) {
+        format!("<b>{escaped}</b>")
+    } else {
+        format!("<code>{escaped}</code>")
+    }
+}
+
+fn looks_like_directory_label(text: &str) -> bool {
+    text.ends_with('/')
+        && !text.contains(char::is_whitespace)
+        && text
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.'))
 }
 
 fn apply_layout_adjustments(html: &str) -> String {
@@ -731,6 +755,32 @@ mod tests {
             html,
             "- 對普通用户可配置的 hooks，目前只有 <code>SessionStart</code> 和 <code>Stop</code>，配置文件是 <code>hooks.json</code>。"
         );
+    }
+
+    #[test]
+    fn renders_directory_like_inline_code_as_bold() {
+        let html = render_markdown_to_telegram_html("例如 `pathofexile/`、`browser_control/`。");
+
+        assert_eq!(html, "例如 <b>pathofexile/</b>、<b>browser_control/</b>。");
+    }
+
+    #[test]
+    fn keeps_regular_inline_code_as_code() {
+        let html = render_markdown_to_telegram_html("保留 `hooks.json` 和 `SessionStart`。");
+
+        assert_eq!(html, "保留 <code>hooks.json</code> 和 <code>SessionStart</code>。");
+    }
+
+    #[test]
+    fn nested_lists_do_not_insert_extra_blank_line() {
+        let html = render_markdown_to_telegram_html(
+            "- 幫你把零散需求落成具體變更，例如：\n  - 加一個 Telegram helper\n  - 修 PoE 自動化腳本",
+        );
+
+        assert!(html.contains(
+            "- 幫你把零散需求落成具體變更，例如：\n  - 加一個 Telegram helper\n  - 修 PoE 自動化腳本"
+        ));
+        assert!(!html.contains("例如：\n\n  - 加一個 Telegram helper"));
     }
 
     #[test]
