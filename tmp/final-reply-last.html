@@ -1,12 +1,12 @@
-從你這張圖看，這個欄位要填的是 Python 執行檔路徑，不是資料夾。畫面下方也直接舉例了：<code>/opt/homebrew/bin/python3</code>。
+這個工具就是你剛剛找的那個清理類工具，功能上是對的。
 
-<b>你可以先試這幾個常見路徑：</b>
+<code>mole --help</code> 顯示它的定位是 <code>Deep clean and optimize your Mac</code>，主要命令其實是 <code>mo</code>，不是直接打子命令在 <code>mole</code> 後面。重點功能有：
 
-- <code>/opt/homebrew/bin/python3</code>（Apple Silicon Mac 最常見）
-- <code>/usr/local/bin/python3</code>（Intel Mac 常見）
-- 如果你用虛擬環境，通常會是 <code>.../.venv/bin/python3</code>
+- <code>mo clean</code>：清理磁碟空間
+- <code>mo purge</code>：刪除舊的專案產物
+- <code>mo analyze</code>：分析磁碟使用
+- <code>mo uninstall</code>：完整移除 App
+- <code>mo optimize</code>：系統維護
 
-最穩的方法是在 Terminal 輸入：
-<code>which python3</code>
-
-它回傳的完整路徑，就是你要填進 <code>Python Path</code> 的值。
+如果你是想找能清 Xcode 衍生垃圾的工具，<code>mo purge</code> 和 <code>mo clean</code> 最值得看。
+要的話我可以下一步幫你跑 <code>mo purge --help</code> 或 <code>mo clean --dry-run</code>，看看它會不會掃到 Xcode 的 <code>DerivedData</code>、Archives 這類內容。

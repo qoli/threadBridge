@@ -19,11 +19,15 @@ pub(crate) use crate::repository::{
 };
 pub(crate) use crate::tool_results::{TelegramOutboxItem, parse_telegram_outbox};
 pub(crate) use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
+pub(crate) use crate::workspace_status::{
+    WorkspaceStatusCache, busy_workspace_status, read_status_with_cache, record_bot_status_event,
+};
 
 pub mod final_reply;
 mod media;
 pub mod preview;
 mod restore;
+pub mod status_sync;
 mod thread_flow;
 
 #[derive(Clone, BotCommands)]
@@ -53,6 +57,7 @@ pub struct AppState {
     pub(crate) repository: ThreadRepository,
     pub(crate) codex: CodexRunner,
     pub(crate) seed_template_path: PathBuf,
+    pub(crate) workspace_status_cache: WorkspaceStatusCache,
 }
 
 impl AppState {
@@ -69,6 +74,7 @@ impl AppState {
             codex: CodexRunner::new(config.runtime.codex_model.clone()),
             repository,
             seed_template_path,
+            workspace_status_cache: WorkspaceStatusCache::new(),
             config,
         })
     }

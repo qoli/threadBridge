@@ -8,6 +8,7 @@ use threadbridge_rust::config::load_app_config;
 use threadbridge_rust::logging::init_json_logs;
 use threadbridge_rust::telegram_runtime::{
     AppState, Command, command_list, handle_callback_query, handle_command, handle_message,
+    status_sync::spawn_workspace_status_watcher,
 };
 
 #[tokio::main]
@@ -16,6 +17,7 @@ async fn main() -> Result<()> {
     let _guard = init_json_logs(&config.runtime.debug_log_path)?;
     let state = AppState::new(config.clone()).await?;
     let bot = Bot::new(config.telegram_token.clone());
+    spawn_workspace_status_watcher(bot.clone(), state.clone()).await;
 
     bot.set_my_commands(command_list()).await?;
     info!(

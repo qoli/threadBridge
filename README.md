@@ -9,6 +9,7 @@ Telegram bot that maps Telegram threads to Codex app-server threads bound to rea
 - Binds each Telegram thread to a real workspace path with `/bind_workspace <absolute-path>`.
 - Starts and resumes Codex threads through `codex app-server --listen stdio://`.
 - Installs a managed runtime appendix and `.threadbridge/` wrapper surface into the bound workspace.
+- Can mirror local Codex CLI activity back into Telegram thread status through workspace-local Bash and Codex hooks.
 
 ## Requirements
 
@@ -44,6 +45,7 @@ scripts/local_threadbridge.sh start
 - Normal thread messages resume the saved Codex thread instead of creating a new one.
 - `/new` starts a fresh Codex thread for the already bound workspace.
 - `/reconnect_codex` verifies that the saved Codex thread still matches the stored workspace path.
+- When the shared workspace status shows local CLI activity, Telegram blocks new turns and reflects the status in the topic title.
 
 ## Runtime Layout
 
@@ -53,10 +55,22 @@ scripts/local_threadbridge.sh start
 - threadBridge installs the following runtime surface into a bound workspace:
   - `AGENTS.md` managed block markers
   - `.threadbridge/bin/build_prompt_config`
+  - `.threadbridge/bin/codex_sync_event`
+  - `.threadbridge/bin/codex_sync_notify`
   - `.threadbridge/bin/generate_image`
   - `.threadbridge/bin/send_telegram_media`
+  - `.threadbridge/shell/codex-sync.bash`
+  - `.threadbridge/state/codex-sync/current.json`
+  - `.threadbridge/state/codex-sync/events.jsonl`
   - `.threadbridge/tool_requests/`
   - `.threadbridge/tool_results/`
+  - `.codex/hooks.json`
+
+## Local Codex CLI Sync
+
+- After `/bind_workspace`, source `./.threadbridge/shell/codex-sync.bash` inside that workspace if you want local Bash `codex` launches to sync into Telegram.
+- The generated Bash wrapper injects `features.codex_hooks=true` and a workspace-local `notify` override, then writes CLI lifecycle state into `.threadbridge/state/codex-sync/`.
+- This v1 sync path is Bash-only. Raw `codex` launches that bypass the sourced wrapper are not guaranteed to update Telegram status.
 
 ## Commands
 

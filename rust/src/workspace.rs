@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 use tokio::fs;
 
+use crate::workspace_status::ensure_workspace_status_surface;
+
 pub const THREADBRIDGE_RUNTIME_DIR: &str = ".threadbridge";
 pub const THREADBRIDGE_RUNTIME_START: &str = "<!-- threadbridge:runtime:start -->";
 pub const THREADBRIDGE_RUNTIME_END: &str = "<!-- threadbridge:runtime:end -->";
@@ -27,6 +29,100 @@ fn build_wrapper_script(tool_file_name: &str, repo_root: &Path) -> String {
         "",
     ]
     .join("\n")
+}
+
+fn build_codex_sync_wrapper_script(subcommand: &str, repo_root: &Path) -> String {
+    let quoted_repo_root = shell_single_quote(&repo_root.display().to_string());
+    [
+        "#!/bin/sh",
+        "set -eu",
+        "SCRIPT_DIR=\"$(CDPATH= cd -- \"$(dirname \"$0\")\" && pwd)\"",
+        "RUNTIME_DIR=\"$(CDPATH= cd -- \"$SCRIPT_DIR/..\" && pwd)\"",
+        "WORKSPACE_DIR=\"$(CDPATH= cd -- \"$RUNTIME_DIR/..\" && pwd)\"",
+        &format!("REPO_ROOT={quoted_repo_root}"),
+        "cd \"$WORKSPACE_DIR\"",
+        &format!(
+            "exec python3 \"$REPO_ROOT/tools/codex_sync.py\" {subcommand} --workspace \"$WORKSPACE_DIR\" \"$@\""
+        ),
+        "",
+    ]
+    .join("\n")
+}
+
+fn build_codex_shell_snippet(workspace_path: &Path) -> String {
+    let workspace = shell_single_quote(&workspace_path.display().to_string());
+    let event_wrapper = shell_single_quote(
+        &workspace_path
+            .join(".threadbridge/bin/codex_sync_event")
+            .display()
+            .to_string(),
+    );
+    let notify_wrapper = workspace_path
+        .join(".threadbridge/bin/codex_sync_notify")
+        .display()
+        .to_string();
+    let notify_json = serde_json::to_string(&vec![notify_wrapper]).unwrap_or_else(|_| "[]".into());
+    let notify_json = shell_single_quote(&notify_json);
+    [
+        "# threadBridge Codex CLI sync",
+        &format!("export THREADBRIDGE_WORKSPACE_ROOT={workspace}"),
+        &format!("export THREADBRIDGE_CODEX_SYNC_EVENT={event_wrapper}"),
+        &format!("export THREADBRIDGE_CODEX_NOTIFY_JSON={notify_json}"),
+        "",
+        "__threadbridge_codex_in_workspace() {",
+        "  case \"$PWD/\" in",
+        "    \"$THREADBRIDGE_WORKSPACE_ROOT\"/*|\"$THREADBRIDGE_WORKSPACE_ROOT/\") return 0 ;;",
+        "    *) return 1 ;;",
+        "  esac",
+        "}",
+        "",
+        "codex() {",
+        "  if ! __threadbridge_codex_in_workspace; then",
+        "    command codex \"$@\"",
+        "    return $?",
+        "  fi",
+        "  \"$THREADBRIDGE_CODEX_SYNC_EVENT\" shell_process_started --shell-pid \"$$\" >/dev/null 2>&1 || true",
+        "  command codex -c features.codex_hooks=true -c \"notify=$THREADBRIDGE_CODEX_NOTIFY_JSON\" \"$@\"",
+        "  local status=$?",
+        "  \"$THREADBRIDGE_CODEX_SYNC_EVENT\" shell_process_exited --shell-pid \"$$\" --exit-code \"$status\" >/dev/null 2>&1 || true",
+        "  return \"$status\"",
+        "}",
+        "",
+    ]
+    .join("\n")
+}
+
+fn build_codex_hooks_json(workspace_path: &Path) -> String {
+    let event_wrapper = workspace_path
+        .join(".threadbridge/bin/codex_sync_event")
+        .display()
+        .to_string();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "hooks": {
+            "SessionStart": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} --hook-event SessionStart", shell_single_quote(&event_wrapper)),
+                    "statusMessage": "threadBridge session start sync"
+                }]
+            }],
+            "UserPromptSubmit": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} --hook-event UserPromptSubmit", shell_single_quote(&event_wrapper)),
+                    "statusMessage": "threadBridge prompt sync"
+                }]
+            }],
+            "Stop": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{} --hook-event Stop", shell_single_quote(&event_wrapper)),
+                    "statusMessage": "threadBridge stop sync"
+                }]
+            }]
+        }
+    }))
+    .unwrap()
 }
 
 fn managed_appendix_block(appendix: &str) -> String {
@@ -115,11 +211,14 @@ pub async fn ensure_workspace_runtime(
 
     let runtime_root = workspace_path.join(THREADBRIDGE_RUNTIME_DIR);
     let bin_dir = runtime_root.join("bin");
+    let shell_dir = runtime_root.join("shell");
     let tool_requests_dir = runtime_root.join("tool_requests");
     let tool_results_dir = runtime_root.join("tool_results");
     fs::create_dir_all(&bin_dir).await?;
+    fs::create_dir_all(&shell_dir).await?;
     fs::create_dir_all(&tool_requests_dir).await?;
     fs::create_dir_all(&tool_results_dir).await?;
+    ensure_workspace_status_surface(workspace_path).await?;
 
     for (tool, filename) in [
         ("build_prompt_config.py", "build_prompt_config"),
@@ -138,6 +237,46 @@ pub async fn ensure_workspace_runtime(
             fs::set_permissions(&wrapper_path, permissions).await?;
         }
     }
+
+    for (subcommand, filename) in [
+        ("event", "codex_sync_event"),
+        ("notify", "codex_sync_notify"),
+    ] {
+        let wrapper_path = bin_dir.join(filename);
+        let wrapper = build_codex_sync_wrapper_script(subcommand, repo_root);
+        write_text_file(&wrapper_path, &wrapper).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = fs::metadata(&wrapper_path).await?;
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&wrapper_path, permissions).await?;
+        }
+    }
+
+    let shell_snippet_path = shell_dir.join("codex-sync.bash");
+    write_text_file(
+        &shell_snippet_path,
+        &build_codex_shell_snippet(workspace_path),
+    )
+    .await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::metadata(&shell_snippet_path).await?;
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(&shell_snippet_path, permissions).await?;
+    }
+
+    let codex_dir = workspace_path.join(".codex");
+    fs::create_dir_all(&codex_dir).await?;
+    write_text_file(
+        &codex_dir.join("hooks.json"),
+        &format!("{}\n", build_codex_hooks_json(workspace_path)),
+    )
+    .await?;
 
     Ok(runtime_root)
 }
@@ -213,12 +352,37 @@ mod tests {
                 .unwrap()
         );
         assert!(
+            fs::try_exists(workspace.join(".threadbridge/bin/codex_sync_event"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            fs::try_exists(workspace.join(".threadbridge/bin/codex_sync_notify"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            fs::try_exists(workspace.join(".threadbridge/shell/codex-sync.bash"))
+                .await
+                .unwrap()
+        );
+        assert!(
             fs::try_exists(workspace.join(".threadbridge/tool_requests"))
                 .await
                 .unwrap()
         );
         assert!(
             fs::try_exists(workspace.join(".threadbridge/tool_results"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            fs::try_exists(workspace.join(".codex/hooks.json"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            fs::try_exists(workspace.join(".threadbridge/state/codex-sync/current.json"))
                 .await
                 .unwrap()
         );

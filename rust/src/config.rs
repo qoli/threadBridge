@@ -20,6 +20,7 @@ pub struct AppConfig {
     pub stream_edit_interval_ms: u64,
     pub stream_message_max_chars: usize,
     pub command_output_tail_chars: usize,
+    pub workspace_status_poll_interval_ms: u64,
 }
 
 fn load_dotenv() {
@@ -127,5 +128,9 @@ pub fn load_app_config() -> Result<AppConfig> {
         stream_edit_interval_ms: parse_positive_u64("STREAM_EDIT_INTERVAL_MS", 750),
         stream_message_max_chars: parse_positive_usize("STREAM_MESSAGE_MAX_CHARS", 3500),
         command_output_tail_chars: parse_positive_usize("COMMAND_OUTPUT_TAIL_CHARS", 800),
+        workspace_status_poll_interval_ms: parse_positive_u64(
+            "WORKSPACE_STATUS_POLL_INTERVAL_MS",
+            1500,
+        ),
     })
 }

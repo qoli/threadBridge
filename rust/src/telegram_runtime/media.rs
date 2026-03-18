@@ -11,6 +11,7 @@ use tracing::{error, info};
 
 use super::final_reply::send_final_assistant_reply;
 use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
+use super::status_sync;
 use super::*;
 
 pub(crate) const CALLBACK_IMAGE_BATCH_ANALYZE: &str = "image_batch_analyze";
@@ -268,7 +269,7 @@ pub(crate) async fn queue_image_for_thread(
         .await?;
         return Ok(());
     }
-    let _ =
+    let workspace_path =
         ensure_bound_workspace_runtime(state, session.as_ref().context("missing session binding")?)
             .await?;
     let pending = state
@@ -329,6 +330,17 @@ pub(crate) async fn queue_image_for_thread(
             )
             .await?;
     }
+    if let Some(busy) =
+        busy_workspace_status(&state.workspace_status_cache, &workspace_path).await?
+    {
+        send_scoped_message(
+            bot,
+            msg.chat.id,
+            Some(thread_id),
+            status_sync::busy_text_message(&busy.snapshot, true),
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -363,6 +375,21 @@ pub(crate) async fn analyze_pending_image_batch(
     let workspace_path =
         ensure_bound_workspace_runtime(state, session.as_ref().context("missing session binding")?)
             .await?;
+    if let Some(busy) =
+        busy_workspace_status(&state.workspace_status_cache, &workspace_path).await?
+    {
+        let text = status_sync::busy_text_message(&busy.snapshot, false);
+        if let Some(callback_query_id) = callback_query_id {
+            bot.answer_callback_query(callback_query_id.clone())
+                .text(text)
+                .show_alert(true)
+                .await?;
+        } else {
+            send_scoped_message(bot, ChatId(record.metadata.chat_id), Some(thread_id), text)
+                .await?;
+        }
+        return Ok(());
+    }
     let Some(batch) = state.repository.read_pending_image_batch(&record).await? else {
         return Ok(());
     };
@@ -389,6 +416,14 @@ pub(crate) async fn analyze_pending_image_batch(
         state.config.stream_edit_interval_ms,
     )));
     let preview_heartbeat = PreviewHeartbeat::start(preview.clone());
+    record_bot_status_event(
+        &workspace_path,
+        "bot_turn_started",
+        Some(existing_thread_id),
+        None,
+        Some(user_prompt.unwrap_or("Analyze pending image batch")),
+    )
+    .await?;
     let mut input = vec![CodexInputItem::Text {
         text: prompt.clone(),
     }];
@@ -405,7 +440,7 @@ pub(crate) async fn analyze_pending_image_batch(
         .codex
         .run_locked_with_events(
             &CodexWorkspace {
-                working_directory: workspace_path,
+                working_directory: workspace_path.clone(),
             },
             existing_thread_id,
             input,
@@ -420,6 +455,14 @@ pub(crate) async fn analyze_pending_image_batch(
     let result = match result {
         Ok(result) => result,
         Err(error) => {
+            let _ = record_bot_status_event(
+                &workspace_path,
+                "bot_turn_failed",
+                Some(existing_thread_id),
+                None,
+                Some("image analysis failed"),
+            )
+            .await;
             error!(
                 event = "telegram.thread.image_analysis.codex_failed",
                 thread_key = %record.metadata.thread_key,
@@ -445,9 +488,18 @@ pub(crate) async fn analyze_pending_image_batch(
                     None,
                 )
                 .await?;
+            let _ = status_sync::refresh_thread_topic_title(bot, state, &record).await;
             return Err(error);
         }
     };
+    record_bot_status_event(
+        &workspace_path,
+        "bot_turn_completed",
+        Some(existing_thread_id),
+        None,
+        Some(&result.final_response),
+    )
+    .await?;
     let record = state
         .repository
         .mark_session_binding_verified(record)

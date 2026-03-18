@@ -13,12 +13,27 @@ This managed block is appended by threadBridge to a real project workspace `AGEN
 
 - threadBridge installs wrapper commands under:
   - `./.threadbridge/bin/build_prompt_config`
+  - `./.threadbridge/bin/codex_sync_event`
+  - `./.threadbridge/bin/codex_sync_notify`
   - `./.threadbridge/bin/generate_image`
   - `./.threadbridge/bin/send_telegram_media`
+- threadBridge installs local shell/runtime sync files under:
+  - `./.threadbridge/shell/codex-sync.bash`
+  - `./.threadbridge/state/codex-sync/current.json`
+  - `./.threadbridge/state/codex-sync/events.jsonl`
+  - `./.codex/hooks.json`
 - threadBridge request/result files live under:
   - `./.threadbridge/tool_requests/`
   - `./.threadbridge/tool_results/`
 - Keep these wrapper names and paths stable.
+
+### Local Codex CLI Sync
+
+- If you want local Bash `codex` runs in this workspace to sync back into Telegram status, source `./.threadbridge/shell/codex-sync.bash`.
+- The managed Bash wrapper injects threadBridge's `notify` override and enables Codex hooks for that workspace.
+- The managed `.codex/hooks.json` belongs to threadBridge. Do not repurpose it for unrelated project hooks.
+- Shared CLI/bot status snapshots live in `./.threadbridge/state/codex-sync/current.json`.
+- Shared status events append to `./.threadbridge/state/codex-sync/events.jsonl`.
 
 ### `./.threadbridge/bin/build_prompt_config`
 
@@ -129,8 +144,11 @@ The request file must look like this:
 
 - threadBridge-owned runtime surface inside this workspace:
   - `.threadbridge/bin/`
+  - `.threadbridge/shell/`
+  - `.threadbridge/state/codex-sync/`
   - `.threadbridge/tool_requests/`
   - `.threadbridge/tool_results/`
+  - `.codex/hooks.json`
 - Workspace/project artifacts produced by the tools:
   - `concept.json`
   - `prompts/*.json`

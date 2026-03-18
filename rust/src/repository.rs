@@ -543,6 +543,32 @@ impl ThreadRepository {
         Ok(records)
     }
 
+    pub async fn list_active_threads(&self) -> Result<Vec<ThreadRecord>> {
+        let mut dir = fs::read_dir(&self.data_root_path).await?;
+        let mut records = Vec::new();
+        while let Some(entry) = dir.next_entry().await? {
+            let path = entry.path();
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let metadata_path = path.join("metadata.json");
+            if !fs::try_exists(&metadata_path).await? {
+                continue;
+            }
+            let metadata: ThreadMetadata =
+                serde_json::from_str(&fs::read_to_string(&metadata_path).await?)?;
+            if matches!(metadata.scope, ThreadScope::Thread)
+                && matches!(metadata.status, ThreadStatus::Active)
+            {
+                records.push(
+                    self.build_record(entry.file_name().to_string_lossy().to_string(), metadata),
+                );
+            }
+        }
+        records.sort_by(|a, b| a.metadata.created_at.cmp(&b.metadata.created_at));
+        Ok(records)
+    }
+
     pub async fn get_thread_by_key(
         &self,
         chat_id: i64,
