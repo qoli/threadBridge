@@ -1192,6 +1192,27 @@ pub(crate) async fn run_text_message(
     if let Some(binding) = session.as_ref()
         && let Some(owner_claim) = selected_live_cli_owned_session(state, &record, binding).await?
     {
+        state
+            .repository
+            .append_log(
+                &record,
+                LogDirection::User,
+                text.to_owned(),
+                msg.from.as_ref().map(|user| user.id.0 as i64),
+            )
+            .await?;
+        state
+            .repository
+            .append_log(
+                &record,
+                LogDirection::System,
+                format!(
+                    "Rejected while local Codex CLI owned the selected session. Owner thread: {}.",
+                    owner_claim.thread_key
+                ),
+                None,
+            )
+            .await?;
         log_cli_owned_rejection(&record, binding, &owner_claim, "thread_text");
         send_scoped_message(
             bot,
