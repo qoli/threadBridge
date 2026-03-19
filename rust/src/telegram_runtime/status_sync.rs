@@ -816,6 +816,9 @@ mod tests {
             thread_key: thread_key.to_owned(),
             shell_pid: 42,
             session_id: session_id.map(str::to_owned),
+            child_pid: None,
+            child_pgid: None,
+            child_command: None,
             started_at: "2026-03-19T00:00:00.000Z".to_owned(),
             updated_at: "2026-03-19T00:00:00.000Z".to_owned(),
         }

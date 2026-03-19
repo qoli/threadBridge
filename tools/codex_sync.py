@@ -88,6 +88,9 @@ def default_session_status(
         "live": owner == "cli",
         "phase": "idle",
         "shell_pid": None,
+        "child_pid": None,
+        "child_pgid": None,
+        "child_command": None,
         "client": None,
         "turn_id": None,
         "summary": None,
@@ -276,6 +279,7 @@ def apply_event(
         session_id = payload.get("session_id")
         if not session_id:
             return refresh_current(workspace, current)
+        claim = read_owner_claim(workspace)
         session = normalize_session(workspace, session_id, owner="cli")
         session.update(
             {
@@ -283,13 +287,17 @@ def apply_event(
                 "live": True,
                 "phase": "shell_active",
                 "shell_pid": shell_pid or session.get("shell_pid"),
+                "child_pid": claim.get("child_pid") if claim else session.get("child_pid"),
+                "child_pgid": claim.get("child_pgid") if claim else session.get("child_pgid"),
+                "child_command": claim.get("child_command")
+                if claim
+                else session.get("child_command"),
                 "client": payload.get("client") or "codex-cli",
                 "summary": summarize_text(payload.get("source")),
                 "turn_id": None,
             }
         )
         write_session(workspace, session)
-        claim = read_owner_claim(workspace)
         owner_thread_key = payload.get("owner_thread_key")
         if claim and claim.get("shell_pid") == shell_pid:
             claim["session_id"] = session_id
@@ -302,6 +310,9 @@ def apply_event(
                     "thread_key": owner_thread_key,
                     "shell_pid": shell_pid,
                     "session_id": session_id,
+                    "child_pid": None,
+                    "child_pgid": None,
+                    "child_command": None,
                     "started_at": now_iso(),
                     "updated_at": now_iso(),
                 },
@@ -319,6 +330,9 @@ def apply_event(
                 "live": True,
                 "phase": "turn_running",
                 "shell_pid": shell_pid or session.get("shell_pid"),
+                "child_pid": session.get("child_pid"),
+                "child_pgid": session.get("child_pgid"),
+                "child_command": session.get("child_command"),
                 "client": payload.get("client") or session.get("client") or "codex-cli",
                 "summary": summarize_text(payload.get("prompt")),
             }
@@ -337,6 +351,9 @@ def apply_event(
                 "live": True,
                 "phase": "turn_finalizing",
                 "shell_pid": shell_pid or session.get("shell_pid"),
+                "child_pid": session.get("child_pid"),
+                "child_pgid": session.get("child_pgid"),
+                "child_command": session.get("child_command"),
                 "client": payload.get("client") or session.get("client") or "codex-cli",
             }
         )
@@ -352,6 +369,9 @@ def apply_event(
             {
                 "owner": "cli",
                 "phase": "shell_active" if session.get("live") else "idle",
+                "child_pid": session.get("child_pid"),
+                "child_pgid": session.get("child_pgid"),
+                "child_command": session.get("child_command"),
                 "client": payload.get("client") or session.get("client") or "codex-cli",
                 "turn_id": payload.get("turn-id"),
                 "summary": summarize_text(payload.get("last-assistant-message")),
@@ -519,11 +539,37 @@ def command_prepare_launch(args: argparse.Namespace) -> int:
             "thread_key": thread_key,
             "shell_pid": args.shell_pid,
             "session_id": claim.get("session_id") if claim else None,
+            "child_pid": claim.get("child_pid") if claim else None,
+            "child_pgid": claim.get("child_pgid") if claim else None,
+            "child_command": claim.get("child_command") if claim else None,
             "started_at": claim.get("started_at", now) if claim else now,
             "updated_at": now,
         },
     )
     print(thread_key)
+    return 0
+
+
+def command_record_child_process(args: argparse.Namespace) -> int:
+    workspace = workspace_root(args.workspace)
+    ensure_surface(workspace)
+    claim = read_owner_claim(workspace)
+    if not claim or claim.get("shell_pid") != args.shell_pid:
+        return 0
+    claim["child_pid"] = args.child_pid
+    claim["child_pgid"] = args.child_pgid
+    claim["child_command"] = args.child_command
+    claim["updated_at"] = now_iso()
+    write_owner_claim(workspace, claim)
+
+    session_id = claim.get("session_id")
+    if session_id:
+        session = normalize_session(workspace, session_id, owner="cli")
+        session["child_pid"] = args.child_pid
+        session["child_pgid"] = args.child_pgid
+        session["child_command"] = args.child_command
+        write_session(workspace, session)
+        refresh_current(workspace, read_current(workspace))
     return 0
 
 
@@ -613,6 +659,14 @@ def build_parser() -> argparse.ArgumentParser:
     consume_intent_parser.add_argument("--workspace")
     consume_intent_parser.add_argument("--shell-pid", type=int, required=True)
     consume_intent_parser.set_defaults(func=command_consume_attach_intent)
+
+    child_parser = subparsers.add_parser("record-child-process")
+    child_parser.add_argument("--workspace")
+    child_parser.add_argument("--shell-pid", type=int, required=True)
+    child_parser.add_argument("--child-pid", type=int, required=True)
+    child_parser.add_argument("--child-pgid", type=int, required=True)
+    child_parser.add_argument("--child-command", required=True)
+    child_parser.set_defaults(func=command_record_child_process)
 
     exit_diag_parser = subparsers.add_parser("record-exit-diagnostic")
     exit_diag_parser.add_argument("--workspace")

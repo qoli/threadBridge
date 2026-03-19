@@ -50,6 +50,12 @@ pub struct SessionCurrentStatus {
     pub live: bool,
     pub phase: WorkspaceStatusPhase,
     pub shell_pid: Option<u32>,
+    #[serde(default)]
+    pub child_pid: Option<u32>,
+    #[serde(default)]
+    pub child_pgid: Option<u32>,
+    #[serde(default)]
+    pub child_command: Option<String>,
     pub client: Option<String>,
     pub turn_id: Option<String>,
     pub summary: Option<String>,
@@ -89,6 +95,12 @@ pub struct CliOwnerClaim {
     pub thread_key: String,
     pub shell_pid: u32,
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub child_pid: Option<u32>,
+    #[serde(default)]
+    pub child_pgid: Option<u32>,
+    #[serde(default)]
+    pub child_command: Option<String>,
     pub started_at: String,
     pub updated_at: String,
 }
@@ -180,6 +192,9 @@ pub fn default_cli_owner_claim(
         thread_key: thread_key.into(),
         shell_pid,
         session_id: None,
+        child_pid: None,
+        child_pgid: None,
+        child_command: None,
         started_at: now.clone(),
         updated_at: now,
     }
@@ -226,6 +241,9 @@ pub fn default_session_status(
         live: matches!(owner, SessionStatusOwner::Cli),
         phase: WorkspaceStatusPhase::Idle,
         shell_pid: None,
+        child_pid: None,
+        child_pgid: None,
+        child_command: None,
         client: None,
         turn_id: None,
         summary: None,
@@ -463,6 +481,9 @@ pub async fn record_bot_status_event(
     current.owner = SessionStatusOwner::Bot;
     current.live = false;
     current.shell_pid = None;
+    current.child_pid = None;
+    current.child_pgid = None;
+    current.child_command = None;
     current.turn_id = turn_id.map(str::to_owned);
     current.updated_at = now_iso();
 
@@ -627,6 +648,9 @@ mod tests {
             live: false,
             phase: WorkspaceStatusPhase::Idle,
             shell_pid: Some(99),
+            child_pid: None,
+            child_pgid: None,
+            child_command: None,
             client: Some("codex-cli".to_owned()),
             turn_id: None,
             summary: Some("startup".to_owned()),
@@ -702,6 +726,9 @@ mod tests {
             live: true,
             phase: WorkspaceStatusPhase::ShellActive,
             shell_pid: Some(12),
+            child_pid: None,
+            child_pgid: None,
+            child_command: None,
             client: Some("codex-cli".to_owned()),
             turn_id: None,
             summary: Some("startup".to_owned()),

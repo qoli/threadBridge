@@ -299,10 +299,21 @@ async fn terminate_cli_session_tui(
     let shell_pid = target
         .shell_pid
         .context("live CLI session is missing shell_pid")?;
-    let process =
+    let process = if let Some(child_pid) = target.child_pid {
+        ProcessRow {
+            pid: child_pid,
+            ppid: shell_pid,
+            pgid: target.child_pgid.unwrap_or(child_pid),
+            command: target
+                .child_command
+                .clone()
+                .unwrap_or_else(|| "codex".to_owned()),
+        }
+    } else {
         resolve_codex_process(&list_process_rows().await?, shell_pid).with_context(|| {
             format!("failed to locate Codex CLI process under shell pid {shell_pid}")
-        })?;
+        })?
+    };
 
     info!(
         event = "telegram.attach.kill_cli_session",
@@ -1444,7 +1455,8 @@ pub(crate) async fn run_text_message(
 #[cfg(test)]
 mod tests {
     use super::{
-        cli_owner_claim_is_live, command_binary_name, parse_process_rows, resolve_codex_process,
+        ProcessRow, cli_owner_claim_is_live, command_binary_name, parse_process_rows,
+        resolve_codex_process,
     };
     use crate::workspace_status::{CliOwnerClaim, WorkspaceAggregateStatus};
 
@@ -1487,6 +1499,19 @@ mod tests {
     }
 
     #[test]
+    fn known_child_pid_avoids_process_table_lookup() {
+        let process = ProcessRow {
+            pid: 8782,
+            ppid: 944,
+            pgid: 8782,
+            command: "/opt/homebrew/bin/codex -c features.codex_hooks=true".to_owned(),
+        };
+        assert_eq!(process.pid, 8782);
+        assert_eq!(process.pgid, 8782);
+        assert_eq!(command_binary_name(&process.command), Some("codex"));
+    }
+
+    #[test]
     fn cli_owner_claim_is_live_when_shell_is_active_before_session_start() {
         let aggregate = WorkspaceAggregateStatus {
             schema_version: 2,
@@ -1501,6 +1526,9 @@ mod tests {
             thread_key: "thread-1".into(),
             shell_pid: 53249,
             session_id: None,
+            child_pid: None,
+            child_pgid: None,
+            child_command: None,
             started_at: "2026-03-19T00:00:00.000Z".into(),
             updated_at: "2026-03-19T00:00:00.000Z".into(),
         };
@@ -1522,6 +1550,9 @@ mod tests {
             thread_key: "thread-1".into(),
             shell_pid: 53249,
             session_id: Some("session-a".into()),
+            child_pid: None,
+            child_pgid: None,
+            child_command: None,
             started_at: "2026-03-19T00:00:00.000Z".into(),
             updated_at: "2026-03-19T00:00:00.000Z".into(),
         };
