@@ -79,6 +79,7 @@ scripts/local_threadbridge.sh restart --codex-source alpha
 - The generated shell wrapper injects `features.codex_hooks=true` and a workspace-local `notify` override, then writes CLI lifecycle state into `.threadbridge/state/codex-sync/`.
 - This v1 sync path is Bash-only. Raw `codex` launches that bypass the sourced wrapper are not guaranteed to update Telegram status.
 - Manual test flow for `.cli` / `.attach` session behavior: [docs/session-sync-manual-test.md](/Volumes/Data/Github/threadBridge/docs/session-sync-manual-test.md)
+- Alpha CLI investigation note: [docs/codex-alpha-cli-exit-investigation-2026-03-19.md](/Volumes/Data/Github/threadBridge/docs/codex-alpha-cli-exit-investigation-2026-03-19.md)
 
 ## Commands
 
