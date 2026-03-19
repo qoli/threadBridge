@@ -280,13 +280,55 @@ async fn terminate_cli_session_tui(
             format!("failed to locate Codex CLI process under shell pid {shell_pid}")
         })?;
 
+    info!(
+        event = "telegram.attach.kill_cli_session",
+        workspace = %workspace_path.display(),
+        session_id = %target.session_id,
+        shell_pid,
+        codex_pid = process.pid,
+        process_group = process.pgid,
+        signal = "TERM",
+        "starting CLI handoff by terminating local Codex TUI"
+    );
     signal_process_group(process.pgid, "TERM").await?;
     if wait_for_cli_session_to_stop(workspace_path, &target.session_id).await? {
+        info!(
+            event = "telegram.attach.kill_cli_session",
+            workspace = %workspace_path.display(),
+            session_id = %target.session_id,
+            shell_pid,
+            codex_pid = process.pid,
+            process_group = process.pgid,
+            signal = "TERM",
+            result = "stopped",
+            "local Codex TUI stopped after TERM"
+        );
         return Ok(());
     }
 
+    info!(
+        event = "telegram.attach.kill_cli_session",
+        workspace = %workspace_path.display(),
+        session_id = %target.session_id,
+        shell_pid,
+        codex_pid = process.pid,
+        process_group = process.pgid,
+        signal = "KILL",
+        "CLI handoff still active after TERM; escalating to KILL"
+    );
     signal_process_group(process.pgid, "KILL").await?;
     if wait_for_cli_session_to_stop(workspace_path, &target.session_id).await? {
+        info!(
+            event = "telegram.attach.kill_cli_session",
+            workspace = %workspace_path.display(),
+            session_id = %target.session_id,
+            shell_pid,
+            codex_pid = process.pid,
+            process_group = process.pgid,
+            signal = "KILL",
+            result = "stopped",
+            "local Codex TUI stopped after KILL"
+        );
         return Ok(());
     }
 
@@ -305,6 +347,24 @@ pub(crate) async fn selected_live_cli_owned_session(
         return Ok(None);
     }
     current_thread_cli_owner_claim(state, record, binding).await
+}
+
+pub(crate) fn log_cli_owned_rejection(
+    record: &ThreadRecord,
+    binding: &SessionBinding,
+    owner_claim: &CliOwnerClaim,
+    surface: &str,
+) {
+    info!(
+        event = "telegram.cli_owned.rejected",
+        surface = surface,
+        thread_key = %record.metadata.thread_key,
+        workspace = binding.workspace_cwd.as_deref().unwrap_or("unbound"),
+        selected_session_id = binding.selected_session_id.as_deref().unwrap_or("none"),
+        owner_thread_key = %owner_claim.thread_key,
+        owner_session_id = owner_claim.session_id.as_deref().unwrap_or("none"),
+        "telegram request rejected because local Codex CLI owns the selected session"
+    );
 }
 
 pub(crate) async fn run_command(
@@ -419,10 +479,10 @@ pub(crate) async fn run_command(
             }
             if let Some(binding) = existing_binding.as_ref()
                 && binding.workspace_cwd.is_some()
-                && selected_live_cli_owned_session(state, &record, binding)
-                    .await?
-                    .is_some()
+                && let Some(owner_claim) =
+                    selected_live_cli_owned_session(state, &record, binding).await?
             {
+                log_cli_owned_rejection(&record, binding, &owner_claim, "thread_command_bind");
                 send_scoped_message(
                     bot,
                     msg.chat.id,
@@ -507,10 +567,10 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             }
-            if selected_live_cli_owned_session(state, &record, binding)
-                .await?
-                .is_some()
+            if let Some(owner_claim) =
+                selected_live_cli_owned_session(state, &record, binding).await?
             {
+                log_cli_owned_rejection(&record, binding, &owner_claim, "thread_command_new");
                 send_scoped_message(
                     bot,
                     msg.chat.id,
@@ -603,10 +663,15 @@ pub(crate) async fn run_command(
                 return Ok(());
             }
             if let Some(binding) = session.as_ref()
-                && selected_live_cli_owned_session(state, &record, binding)
-                    .await?
-                    .is_some()
+                && let Some(owner_claim) =
+                    selected_live_cli_owned_session(state, &record, binding).await?
             {
+                log_cli_owned_rejection(
+                    &record,
+                    binding,
+                    &owner_claim,
+                    "thread_command_reconnect_codex",
+                );
                 send_scoped_message(
                     bot,
                     msg.chat.id,
@@ -894,10 +959,15 @@ pub(crate) async fn run_command(
                 return Ok(());
             }
             if let Some(binding) = session.as_ref()
-                && selected_live_cli_owned_session(state, &record, binding)
-                    .await?
-                    .is_some()
+                && let Some(owner_claim) =
+                    selected_live_cli_owned_session(state, &record, binding).await?
             {
+                log_cli_owned_rejection(
+                    &record,
+                    binding,
+                    &owner_claim,
+                    "thread_command_generate_title",
+                );
                 send_scoped_message(
                     bot,
                     msg.chat.id,
@@ -1090,10 +1160,9 @@ pub(crate) async fn run_text_message(
         return Ok(());
     }
     if let Some(binding) = session.as_ref()
-        && selected_live_cli_owned_session(state, &record, binding)
-            .await?
-            .is_some()
+        && let Some(owner_claim) = selected_live_cli_owned_session(state, &record, binding).await?
     {
+        log_cli_owned_rejection(&record, binding, &owner_claim, "thread_text");
         send_scoped_message(
             bot,
             msg.chat.id,

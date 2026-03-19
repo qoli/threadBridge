@@ -344,10 +344,15 @@ pub(crate) async fn queue_image_for_thread(
         .await?;
     }
     if let Some(binding) = session.as_ref()
-        && super::thread_flow::selected_live_cli_owned_session(state, &record, binding)
-            .await?
-            .is_some()
+        && let Some(owner_claim) =
+            super::thread_flow::selected_live_cli_owned_session(state, &record, binding).await?
     {
+        super::thread_flow::log_cli_owned_rejection(
+            &record,
+            binding,
+            &owner_claim,
+            "image_batch_saved",
+        );
         send_scoped_message(
             bot,
             msg.chat.id,
@@ -410,10 +415,15 @@ pub(crate) async fn analyze_pending_image_batch(
         return Ok(());
     }
     if let Some(binding) = session.as_ref()
-        && super::thread_flow::selected_live_cli_owned_session(state, &record, binding)
-            .await?
-            .is_some()
+        && let Some(owner_claim) =
+            super::thread_flow::selected_live_cli_owned_session(state, &record, binding).await?
     {
+        super::thread_flow::log_cli_owned_rejection(
+            &record,
+            binding,
+            &owner_claim,
+            "image_batch_analyze",
+        );
         let text = status_sync::cli_owned_text_message(true);
         if let Some(callback_query_id) = callback_query_id {
             bot.answer_callback_query(callback_query_id.clone())
