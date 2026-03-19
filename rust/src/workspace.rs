@@ -9,6 +9,13 @@ pub const THREADBRIDGE_RUNTIME_DIR: &str = ".threadbridge";
 pub const THREADBRIDGE_RUNTIME_START: &str = "<!-- threadbridge:runtime:start -->";
 pub const THREADBRIDGE_RUNTIME_END: &str = "<!-- threadbridge:runtime:end -->";
 const MANAGED_CODEX_CACHE_BINARY: &str = ".threadbridge/codex/codex";
+const MANAGED_CODEX_SOURCE_FILE: &str = ".threadbridge/codex/source.txt";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CodexSourcePreference {
+    Brew,
+    Alpha,
+}
 
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
@@ -88,6 +95,32 @@ fn build_codex_launch_wrapper_script() -> String {
     .join("\n")
 }
 
+async fn read_codex_source_preference(repo_root: &Path) -> Result<CodexSourcePreference> {
+    let source_path = repo_root.join(MANAGED_CODEX_SOURCE_FILE);
+    let value = match fs::read_to_string(&source_path).await {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CodexSourcePreference::Brew);
+        }
+        Err(error) => {
+            return Err(anyhow!(
+                "failed to read Codex source preference {}: {}",
+                source_path.display(),
+                error
+            ));
+        }
+    };
+    match value.trim() {
+        "alpha" => Ok(CodexSourcePreference::Alpha),
+        "brew" | "" => Ok(CodexSourcePreference::Brew),
+        other => Err(anyhow!(
+            "unsupported Codex source preference in {}: {}",
+            source_path.display(),
+            other
+        )),
+    }
+}
+
 fn threadbridge_viewer_binary_path(repo_root: &Path) -> PathBuf {
     if let Ok(current_exe) = std::env::current_exe()
         && let Some(bin_dir) = current_exe.parent()
@@ -106,7 +139,12 @@ fn threadbridge_viewer_binary_path(repo_root: &Path) -> PathBuf {
     target_root.join(profile).join("threadbridge_viewer")
 }
 
-fn build_codex_shell_snippet(workspace_path: &Path, repo_root: &Path, data_root: &Path) -> String {
+fn build_codex_shell_snippet(
+    workspace_path: &Path,
+    repo_root: &Path,
+    data_root: &Path,
+    codex_source_preference: CodexSourcePreference,
+) -> String {
     let workspace = shell_single_quote(&workspace_path.display().to_string());
     let repo_root_quoted = shell_single_quote(&repo_root.display().to_string());
     let data_root = shell_single_quote(&data_root.display().to_string());
@@ -145,117 +183,156 @@ fn build_codex_shell_snippet(workspace_path: &Path, repo_root: &Path, data_root:
     );
     let notify_json = serde_json::to_string(&vec![notify_wrapper]).unwrap_or_else(|_| "[]".into());
     let notify_json = shell_single_quote(&notify_json);
-    [
-        "# threadBridge Codex CLI sync",
-        &format!("export THREADBRIDGE_WORKSPACE_ROOT={workspace}"),
-        &format!("export THREADBRIDGE_REPO_ROOT={repo_root_quoted}"),
-        &format!("export THREADBRIDGE_DATA_ROOT={data_root}"),
-        &format!("export THREADBRIDGE_CODEX_SYNC_EVENT={event_wrapper}"),
-        &format!("export THREADBRIDGE_CODEX_SYNC_MANAGE={manage_wrapper}"),
-        &format!("export THREADBRIDGE_CODEX_LAUNCH={launch_wrapper}"),
-        &format!("export THREADBRIDGE_CODEX_NOTIFY_JSON={notify_json}"),
-        &format!("export THREADBRIDGE_MANAGED_CODEX={managed_codex}"),
-        &format!("export THREADBRIDGE_VIEWER_BIN={viewer_binary}"),
-        "",
-        "__threadbridge_codex_in_workspace() {",
-        "  local current_dir",
-        "  current_dir=\"$(pwd -P 2>/dev/null || pwd)\"",
-        "  case \"$PWD/\" in",
-        "    \"$THREADBRIDGE_WORKSPACE_ROOT\"/*|\"$THREADBRIDGE_WORKSPACE_ROOT/\") return 0 ;;",
-        "  esac",
-        "  case \"$current_dir/\" in",
-        "    \"$THREADBRIDGE_WORKSPACE_ROOT\"/*|\"$THREADBRIDGE_WORKSPACE_ROOT/\") return 0 ;;",
-        "    *) return 1 ;;",
-        "  esac",
-        "}",
-        "",
-        "hcodex() {",
-        "  if ! __threadbridge_codex_in_workspace; then",
-        "    command codex \"$@\"",
-        "    return $?",
-        "  fi",
-        "  local codex_bin",
-        "  if [ -x \"$THREADBRIDGE_MANAGED_CODEX\" ]; then",
-        "    codex_bin=\"$THREADBRIDGE_MANAGED_CODEX\"",
-        "  else",
-        "    codex_bin=\"$(command -v codex)\"",
-        "  fi",
-        "  local requested_thread_key=\"\"",
-        "  local -a codex_args=()",
-        "  while [ \"$#\" -gt 0 ]; do",
-        "    case \"$1\" in",
-        "      --thread-key)",
-        "        shift",
-        "        if [ \"$#\" -eq 0 ]; then",
-        "          echo \"hcodex: missing value for --thread-key\" >&2",
-        "          return 2",
-        "        fi",
-        "        requested_thread_key=\"$1\"",
-        "        ;;",
-        "      *)",
-        "        codex_args+=(\"$1\")",
-        "        ;;",
-        "    esac",
-        "    shift",
-        "  done",
-        "  local owner_thread_key",
-        "  if [ -n \"$requested_thread_key\" ]; then",
-        "    owner_thread_key=\"$($THREADBRIDGE_CODEX_SYNC_MANAGE prepare-launch --data-root \"$THREADBRIDGE_DATA_ROOT\" --shell-pid \"$$\" --thread-key \"$requested_thread_key\")\" || return $?",
-        "  else",
-        "    owner_thread_key=\"$($THREADBRIDGE_CODEX_SYNC_MANAGE prepare-launch --data-root \"$THREADBRIDGE_DATA_ROOT\" --shell-pid \"$$\")\" || return $?",
-        "  fi",
-        "  export THREADBRIDGE_CODEX_SHELL_PID=\"$$\"",
-        "  export THREADBRIDGE_CODEX_OWNER_THREAD_KEY=\"$owner_thread_key\"",
-        "  \"$THREADBRIDGE_CODEX_SYNC_EVENT\" shell_process_started --shell-pid \"$$\" --owner-thread-key \"$THREADBRIDGE_CODEX_OWNER_THREAD_KEY\" >/dev/null 2>&1 || true",
-        "  local child_info_file",
-        "  child_info_file=\"$(mktemp \"${TMPDIR:-/tmp}/threadbridge-codex-child.XXXXXX\" 2>/dev/null || true)\"",
-        "  \"$THREADBRIDGE_CODEX_LAUNCH\" \"$child_info_file\" \"$codex_bin\" -c features.codex_hooks=true -c \"notify=$THREADBRIDGE_CODEX_NOTIFY_JSON\" \"${codex_args[@]}\"",
-        "  local exit_code=$?",
-        "  \"$THREADBRIDGE_CODEX_SYNC_EVENT\" shell_process_exited --shell-pid \"$$\" --exit-code \"$exit_code\" --owner-thread-key \"$THREADBRIDGE_CODEX_OWNER_THREAD_KEY\" >/dev/null 2>&1 || true",
-        "  local attach_payload",
-        "  attach_payload=\"$($THREADBRIDGE_CODEX_SYNC_MANAGE consume-attach-intent --shell-pid \"$$\")\"",
-        "  if [ \"$exit_code\" -eq 137 ] || [ \"$exit_code\" -eq 143 ]; then",
-        "    local shell_ppid shell_pgid shell_tty child_pid child_pgid child_command",
-        "    shell_ppid=\"$(ps -o ppid= -p \"$$\" 2>/dev/null | tr -d ' ')\"",
-        "    shell_pgid=\"$(ps -o pgid= -p \"$$\" 2>/dev/null | tr -d ' ')\"",
-        "    shell_tty=\"$(tty 2>/dev/null || printf 'unknown')\"",
-        "    if [ -n \"$child_info_file\" ] && [ -s \"$child_info_file\" ]; then",
-        "      IFS=$'\\t' read -r child_pid child_pgid child_command < \"$child_info_file\"",
-        "    fi",
-        "    local -a exit_diag_args",
-        "    exit_diag_args=(record-exit-diagnostic --shell-pid \"$$\" --exit-code \"$exit_code\" --owner-thread-key \"$THREADBRIDGE_CODEX_OWNER_THREAD_KEY\" --shell-ppid \"$shell_ppid\" --shell-pgid \"$shell_pgid\" --tty \"$shell_tty\")",
-        "    if [ -n \"$child_pid\" ]; then",
-        "      exit_diag_args+=(--child-pid \"$child_pid\")",
-        "    fi",
-        "    if [ -n \"$child_pgid\" ]; then",
-        "      exit_diag_args+=(--child-pgid \"$child_pgid\")",
-        "    fi",
-        "    if [ -n \"$child_command\" ]; then",
-        "      exit_diag_args+=(--child-command \"$child_command\")",
-        "    fi",
-        "    if [ -n \"$attach_payload\" ]; then",
-        "      exit_diag_args+=(--attach-intent-present)",
-        "    fi",
-        "    \"$THREADBRIDGE_CODEX_SYNC_MANAGE\" \"${exit_diag_args[@]}\" >/dev/null 2>&1 || true",
-        "  fi",
-        "  if [ -n \"$child_info_file\" ]; then",
-        "    rm -f \"$child_info_file\" >/dev/null 2>&1 || true",
-        "  fi",
-        "  if [ -n \"$attach_payload\" ]; then",
-        "    local attach_thread_key attach_session_id attach_since",
-        "    IFS=$'\\t' read -r attach_thread_key attach_session_id attach_since <<< \"$attach_payload\"",
-        "    if [ -x \"$THREADBRIDGE_VIEWER_BIN\" ]; then",
-        "      \"$THREADBRIDGE_VIEWER_BIN\" --repo-root \"$THREADBRIDGE_REPO_ROOT\" --data-root \"$THREADBRIDGE_DATA_ROOT\" --workspace \"$THREADBRIDGE_WORKSPACE_ROOT\" --thread-key \"$attach_thread_key\" --session-id \"$attach_session_id\" --since \"$attach_since\"",
-        "      return \"$?\"",
-        "    fi",
-        "    cargo run --manifest-path \"$THREADBRIDGE_REPO_ROOT/Cargo.toml\" --bin threadbridge_viewer -- --repo-root \"$THREADBRIDGE_REPO_ROOT\" --data-root \"$THREADBRIDGE_DATA_ROOT\" --workspace \"$THREADBRIDGE_WORKSPACE_ROOT\" --thread-key \"$attach_thread_key\" --session-id \"$attach_session_id\" --since \"$attach_since\"",
-        "    return \"$?\"",
-        "  fi",
-        "  return \"$exit_code\"",
-        "}",
-        "",
-    ]
-    .join("\n")
+    let codex_source = match codex_source_preference {
+        CodexSourcePreference::Brew => "brew",
+        CodexSourcePreference::Alpha => "alpha",
+    };
+    let mut lines = vec![
+        "# threadBridge Codex CLI sync".to_owned(),
+        format!("export THREADBRIDGE_WORKSPACE_ROOT={workspace}"),
+        format!("export THREADBRIDGE_REPO_ROOT={repo_root_quoted}"),
+        format!("export THREADBRIDGE_DATA_ROOT={data_root}"),
+        format!("export THREADBRIDGE_CODEX_SYNC_EVENT={event_wrapper}"),
+        format!("export THREADBRIDGE_CODEX_SYNC_MANAGE={manage_wrapper}"),
+        format!("export THREADBRIDGE_CODEX_LAUNCH={launch_wrapper}"),
+        format!(
+            "export THREADBRIDGE_CODEX_SOURCE={}",
+            shell_single_quote(codex_source)
+        ),
+        format!("export THREADBRIDGE_CODEX_NOTIFY_JSON={notify_json}"),
+        format!("export THREADBRIDGE_MANAGED_CODEX={managed_codex}"),
+        format!("export THREADBRIDGE_VIEWER_BIN={viewer_binary}"),
+        "".to_owned(),
+        "__threadbridge_codex_in_workspace() {".to_owned(),
+        "  local current_dir".to_owned(),
+        "  current_dir=\"$(pwd -P 2>/dev/null || pwd)\"".to_owned(),
+        "  case \"$PWD/\" in".to_owned(),
+        "    \"$THREADBRIDGE_WORKSPACE_ROOT\"/*|\"$THREADBRIDGE_WORKSPACE_ROOT/\") return 0 ;;"
+            .to_owned(),
+        "  esac".to_owned(),
+        "  case \"$current_dir/\" in".to_owned(),
+        "    \"$THREADBRIDGE_WORKSPACE_ROOT\"/*|\"$THREADBRIDGE_WORKSPACE_ROOT/\") return 0 ;;"
+            .to_owned(),
+        "    *) return 1 ;;".to_owned(),
+        "  esac".to_owned(),
+        "}".to_owned(),
+        "".to_owned(),
+        "hcodex() {".to_owned(),
+        "  if ! __threadbridge_codex_in_workspace; then".to_owned(),
+        "    command codex \"$@\"".to_owned(),
+        "    return $?".to_owned(),
+        "  fi".to_owned(),
+        "  local codex_bin".to_owned(),
+    ];
+    match codex_source_preference {
+        CodexSourcePreference::Brew => lines.extend([
+            "  codex_bin=\"$(command -v codex 2>/dev/null || true)\"".to_owned(),
+            "  if [ -z \"$codex_bin\" ] && [ -x \"$THREADBRIDGE_MANAGED_CODEX\" ]; then".to_owned(),
+            "    codex_bin=\"$THREADBRIDGE_MANAGED_CODEX\"".to_owned(),
+            "  fi".to_owned(),
+        ]),
+        CodexSourcePreference::Alpha => lines.extend([
+            "  if [ -x \"$THREADBRIDGE_MANAGED_CODEX\" ]; then".to_owned(),
+            "    codex_bin=\"$THREADBRIDGE_MANAGED_CODEX\"".to_owned(),
+            "  else".to_owned(),
+            "    codex_bin=\"$(command -v codex 2>/dev/null || true)\"".to_owned(),
+            "  fi".to_owned(),
+        ]),
+    }
+    lines.extend([
+        "  if [ -z \"$codex_bin\" ]; then".to_owned(),
+        "    echo \"hcodex: could not find a codex binary\" >&2".to_owned(),
+        "    return 127".to_owned(),
+        "  fi".to_owned(),
+        "  local requested_thread_key=\"\"".to_owned(),
+        "  local -a codex_args=()".to_owned(),
+        "  while [ \"$#\" -gt 0 ]; do".to_owned(),
+        "    case \"$1\" in".to_owned(),
+        "      --thread-key)".to_owned(),
+        "        shift".to_owned(),
+        "        if [ \"$#\" -eq 0 ]; then".to_owned(),
+        "          echo \"hcodex: missing value for --thread-key\" >&2".to_owned(),
+        "          return 2".to_owned(),
+        "        fi".to_owned(),
+        "        requested_thread_key=\"$1\"".to_owned(),
+        "        ;;".to_owned(),
+        "      *)".to_owned(),
+        "        codex_args+=(\"$1\")".to_owned(),
+        "        ;;".to_owned(),
+        "    esac".to_owned(),
+        "    shift".to_owned(),
+        "  done".to_owned(),
+        "  local owner_thread_key".to_owned(),
+        "  if [ -n \"$requested_thread_key\" ]; then".to_owned(),
+        "    owner_thread_key=\"$($THREADBRIDGE_CODEX_SYNC_MANAGE prepare-launch --data-root \"$THREADBRIDGE_DATA_ROOT\" --shell-pid \"$$\" --thread-key \"$requested_thread_key\")\" || return $?"
+            .to_owned(),
+        "  else".to_owned(),
+        "    owner_thread_key=\"$($THREADBRIDGE_CODEX_SYNC_MANAGE prepare-launch --data-root \"$THREADBRIDGE_DATA_ROOT\" --shell-pid \"$$\")\" || return $?"
+            .to_owned(),
+        "  fi".to_owned(),
+        "  export THREADBRIDGE_CODEX_SHELL_PID=\"$$\"".to_owned(),
+        "  export THREADBRIDGE_CODEX_OWNER_THREAD_KEY=\"$owner_thread_key\"".to_owned(),
+        "  \"$THREADBRIDGE_CODEX_SYNC_EVENT\" shell_process_started --shell-pid \"$$\" --owner-thread-key \"$THREADBRIDGE_CODEX_OWNER_THREAD_KEY\" >/dev/null 2>&1 || true"
+            .to_owned(),
+        "  local child_info_file".to_owned(),
+        "  child_info_file=\"$(mktemp \"${TMPDIR:-/tmp}/threadbridge-codex-child.XXXXXX\" 2>/dev/null || true)\""
+            .to_owned(),
+        "  \"$THREADBRIDGE_CODEX_LAUNCH\" \"$child_info_file\" \"$codex_bin\" -c features.codex_hooks=true -c \"notify=$THREADBRIDGE_CODEX_NOTIFY_JSON\" \"${codex_args[@]}\""
+            .to_owned(),
+        "  local exit_code=$?".to_owned(),
+        "  \"$THREADBRIDGE_CODEX_SYNC_EVENT\" shell_process_exited --shell-pid \"$$\" --exit-code \"$exit_code\" --owner-thread-key \"$THREADBRIDGE_CODEX_OWNER_THREAD_KEY\" >/dev/null 2>&1 || true"
+            .to_owned(),
+        "  local attach_payload".to_owned(),
+        "  attach_payload=\"$($THREADBRIDGE_CODEX_SYNC_MANAGE consume-attach-intent --shell-pid \"$$\")\""
+            .to_owned(),
+        "  if [ \"$exit_code\" -eq 137 ] || [ \"$exit_code\" -eq 143 ]; then".to_owned(),
+        "    local shell_ppid shell_pgid shell_tty child_pid child_pgid child_command".to_owned(),
+        "    shell_ppid=\"$(ps -o ppid= -p \"$$\" 2>/dev/null | tr -d ' ')\"".to_owned(),
+        "    shell_pgid=\"$(ps -o pgid= -p \"$$\" 2>/dev/null | tr -d ' ')\"".to_owned(),
+        "    shell_tty=\"$(tty 2>/dev/null || printf 'unknown')\"".to_owned(),
+        "    if [ -n \"$child_info_file\" ] && [ -s \"$child_info_file\" ]; then".to_owned(),
+        "      IFS=$'\\t' read -r child_pid child_pgid child_command < \"$child_info_file\""
+            .to_owned(),
+        "    fi".to_owned(),
+        "    local -a exit_diag_args".to_owned(),
+        "    exit_diag_args=(record-exit-diagnostic --shell-pid \"$$\" --exit-code \"$exit_code\" --owner-thread-key \"$THREADBRIDGE_CODEX_OWNER_THREAD_KEY\" --shell-ppid \"$shell_ppid\" --shell-pgid \"$shell_pgid\" --tty \"$shell_tty\")"
+            .to_owned(),
+        "    if [ -n \"$child_pid\" ]; then".to_owned(),
+        "      exit_diag_args+=(--child-pid \"$child_pid\")".to_owned(),
+        "    fi".to_owned(),
+        "    if [ -n \"$child_pgid\" ]; then".to_owned(),
+        "      exit_diag_args+=(--child-pgid \"$child_pgid\")".to_owned(),
+        "    fi".to_owned(),
+        "    if [ -n \"$child_command\" ]; then".to_owned(),
+        "      exit_diag_args+=(--child-command \"$child_command\")".to_owned(),
+        "    fi".to_owned(),
+        "    if [ -n \"$attach_payload\" ]; then".to_owned(),
+        "      exit_diag_args+=(--attach-intent-present)".to_owned(),
+        "    fi".to_owned(),
+        "    \"$THREADBRIDGE_CODEX_SYNC_MANAGE\" \"${exit_diag_args[@]}\" >/dev/null 2>&1 || true"
+            .to_owned(),
+        "  fi".to_owned(),
+        "  if [ -n \"$child_info_file\" ]; then".to_owned(),
+        "    rm -f \"$child_info_file\" >/dev/null 2>&1 || true".to_owned(),
+        "  fi".to_owned(),
+        "  if [ -n \"$attach_payload\" ]; then".to_owned(),
+        "    local attach_thread_key attach_session_id attach_since".to_owned(),
+        "    IFS=$'\\t' read -r attach_thread_key attach_session_id attach_since <<< \"$attach_payload\""
+            .to_owned(),
+        "    if [ -x \"$THREADBRIDGE_VIEWER_BIN\" ]; then".to_owned(),
+        "      \"$THREADBRIDGE_VIEWER_BIN\" --repo-root \"$THREADBRIDGE_REPO_ROOT\" --data-root \"$THREADBRIDGE_DATA_ROOT\" --workspace \"$THREADBRIDGE_WORKSPACE_ROOT\" --thread-key \"$attach_thread_key\" --session-id \"$attach_session_id\" --since \"$attach_since\""
+            .to_owned(),
+        "      return \"$?\"".to_owned(),
+        "    fi".to_owned(),
+        "    cargo run --manifest-path \"$THREADBRIDGE_REPO_ROOT/Cargo.toml\" --bin threadbridge_viewer -- --repo-root \"$THREADBRIDGE_REPO_ROOT\" --data-root \"$THREADBRIDGE_DATA_ROOT\" --workspace \"$THREADBRIDGE_WORKSPACE_ROOT\" --thread-key \"$attach_thread_key\" --session-id \"$attach_session_id\" --since \"$attach_since\""
+            .to_owned(),
+        "    return \"$?\"".to_owned(),
+        "  fi".to_owned(),
+        "  return \"$exit_code\"".to_owned(),
+        "}".to_owned(),
+        "".to_owned(),
+    ]);
+    lines.join("\n")
 }
 
 fn build_codex_hooks_json(workspace_path: &Path) -> String {
@@ -359,6 +436,7 @@ pub async fn ensure_workspace_runtime(
     seed_template_path: &Path,
     workspace_path: &Path,
 ) -> Result<PathBuf> {
+    let codex_source_preference = read_codex_source_preference(repo_root).await?;
     fs::create_dir_all(workspace_path).await.with_context(|| {
         format!(
             "failed to create workspace directory: {}",
@@ -481,7 +559,12 @@ pub async fn ensure_workspace_runtime(
     let shell_snippet_path = shell_dir.join("codex-sync.bash");
     write_text_file(
         &shell_snippet_path,
-        &build_codex_shell_snippet(workspace_path, repo_root, data_root),
+        &build_codex_shell_snippet(
+            workspace_path,
+            repo_root,
+            data_root,
+            codex_source_preference,
+        ),
     )
     .await?;
     set_mode(&shell_snippet_path, 0o644).await?;
@@ -640,8 +723,10 @@ mod tests {
         assert!(shell_snippet.contains("hcodex()"));
         assert!(shell_snippet.contains("THREADBRIDGE_CODEX_SYNC_MANAGE"));
         assert!(shell_snippet.contains("THREADBRIDGE_CODEX_LAUNCH"));
+        assert!(shell_snippet.contains("THREADBRIDGE_CODEX_SOURCE='brew'"));
         assert!(shell_snippet.contains("THREADBRIDGE_MANAGED_CODEX"));
         assert!(shell_snippet.contains(".threadbridge/bin/codex"));
+        assert!(shell_snippet.contains("codex_bin=\"$(command -v codex 2>/dev/null || true)\""));
     }
 
     #[tokio::test]
@@ -675,6 +760,32 @@ mod tests {
                 .unwrap(),
             "managed codex binary"
         );
+    }
+
+    #[tokio::test]
+    async fn workspace_runtime_respects_alpha_codex_source_preference() {
+        let root = temp_path();
+        let repo_root = root.join("repo");
+        let workspace = root.join("workspace");
+        let template = root.join("template.md");
+        let source_file = repo_root.join(".threadbridge/codex/source.txt");
+
+        fs::create_dir_all(source_file.parent().unwrap())
+            .await
+            .unwrap();
+        fs::write(&source_file, "alpha\n").await.unwrap();
+        fs::write(&template, "runtime appendix\n").await.unwrap();
+
+        ensure_workspace_runtime(&repo_root, &repo_root.join("data"), &template, &workspace)
+            .await
+            .unwrap();
+
+        let shell_snippet =
+            fs::read_to_string(workspace.join(".threadbridge/shell/codex-sync.bash"))
+                .await
+                .unwrap();
+        assert!(shell_snippet.contains("THREADBRIDGE_CODEX_SOURCE='alpha'"));
+        assert!(shell_snippet.contains("if [ -x \"$THREADBRIDGE_MANAGED_CODEX\" ]; then"));
     }
 
     #[tokio::test]

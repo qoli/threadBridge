@@ -16,10 +16,11 @@ RUNTIME_PATH="$HOME/.cargo/bin:$REPO_ROOT/bin:$PATH"
 MANAGED_CODEX_DIR="$REPO_ROOT/.threadbridge/codex"
 MANAGED_CODEX_BIN="$MANAGED_CODEX_DIR/codex"
 MANAGED_CODEX_TAG_FILE="$MANAGED_CODEX_DIR/release-tag.txt"
+MANAGED_CODEX_SOURCE_FILE="$MANAGED_CODEX_DIR/source.txt"
 
 usage() {
   cat <<'EOF'
-Usage: local_threadbridge.sh <command>
+Usage: local_threadbridge.sh <command> [--codex-source brew|alpha]
 
 Commands:
   start
@@ -28,6 +29,10 @@ Commands:
   status
   logs
 
+Options:
+  --codex-source brew|alpha   Choose which local codex binary hcodex should prefer.
+                              The choice is persisted in .threadbridge/codex/source.txt.
+
 Environment overrides:
   BUILD_PROFILE=dev|release   Build profile to run. Default: dev
 EOF
@@ -35,6 +40,47 @@ EOF
 
 log() {
   printf '[local-threadbridge] %s\n' "$*"
+}
+
+read_codex_source_preference() {
+  if [[ -f "$MANAGED_CODEX_SOURCE_FILE" ]]; then
+    tr -d '\n' < "$MANAGED_CODEX_SOURCE_FILE"
+    return 0
+  fi
+  printf '%s\n' 'brew'
+}
+
+write_codex_source_preference() {
+  local source=$1
+  mkdir -p "$MANAGED_CODEX_DIR"
+  printf '%s\n' "$source" > "$MANAGED_CODEX_SOURCE_FILE"
+}
+
+resolve_codex_source() {
+  local requested=${1:-}
+  if [[ -n "$requested" ]]; then
+    case "$requested" in
+      brew|alpha)
+        printf '%s\n' "$requested"
+        return 0
+        ;;
+      *)
+        printf 'Unsupported codex source: %s\n' "$requested" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
+  local persisted
+  persisted=$(read_codex_source_preference)
+  case "$persisted" in
+    brew|alpha)
+      printf '%s\n' "$persisted"
+      ;;
+    *)
+      printf '%s\n' 'brew'
+      ;;
+  esac
 }
 
 managed_codex_asset_name() {
@@ -190,12 +236,20 @@ build_bot() {
 }
 
 start_bot() {
+  local codex_source=${1:-}
   ensure_layout
   ensure_env
   require_command cargo
   require_command tmux
 
-  ensure_managed_codex_binary
+  codex_source=$(resolve_codex_source "$codex_source")
+  write_codex_source_preference "$codex_source"
+
+  if [[ "$codex_source" == "alpha" ]]; then
+    ensure_managed_codex_binary
+  else
+    log "using brew/system codex as primary local CLI source"
+  fi
   build_bot
 
   local bot_binary
@@ -234,6 +288,7 @@ start_bot() {
   fi
 
   log "threadbridge started in tmux session: $session_name"
+  log "codex source preference: $codex_source"
   status_bot
 }
 
@@ -253,6 +308,8 @@ stop_bot() {
 status_bot() {
   local session_name
   session_name=$(tmux_session_name)
+  local codex_source
+  codex_source=$(resolve_codex_source "")
 
   if ! tmux_session_exists "$session_name"; then
     log "threadbridge is not running"
@@ -263,6 +320,10 @@ status_bot() {
     if [[ -n "$pane_pid" ]]; then
       log "tmux pane PID: $pane_pid"
     fi
+  fi
+  log "codex source preference: $codex_source"
+  if [[ "$codex_source" == "alpha" && -f "$MANAGED_CODEX_TAG_FILE" ]]; then
+    log "managed Codex tag: $(tr -d '\n' < "$MANAGED_CODEX_TAG_FILE")"
   fi
 
   if [[ -f "$EVENT_LOG" ]]; then
@@ -291,16 +352,36 @@ logs_bot() {
 
 main() {
   local command=${1:-}
+  local codex_source=""
+  shift || true
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --codex-source)
+        shift
+        if [[ $# -eq 0 ]]; then
+          printf 'Missing value for --codex-source\n' >&2
+          exit 1
+        fi
+        codex_source=$1
+        ;;
+      *)
+        printf 'Unknown argument: %s\n' "$1" >&2
+        usage
+        exit 1
+        ;;
+    esac
+    shift
+  done
   case "$command" in
     start)
-      start_bot
+      start_bot "$codex_source"
       ;;
     stop)
       stop_bot
       ;;
     restart)
       stop_bot
-      start_bot
+      start_bot "$codex_source"
       ;;
     status)
       status_bot

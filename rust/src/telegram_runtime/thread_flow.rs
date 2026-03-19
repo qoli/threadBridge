@@ -220,11 +220,33 @@ fn command_binary_name(command: &str) -> Option<&str> {
     Path::new(executable).file_name()?.to_str()
 }
 
+fn command_mentions_codex(command: &str) -> bool {
+    command_binary_name(command) == Some("codex")
+        || command.contains("/codex ")
+        || command.ends_with("/codex")
+        || command.starts_with("codex ")
+        || command == "codex"
+}
+
 fn resolve_codex_process(rows: &[ProcessRow], shell_pid: u32) -> Option<ProcessRow> {
     rows.iter()
         .filter(|row| row.ppid == shell_pid && command_binary_name(&row.command) == Some("codex"))
         .max_by_key(|row| row.pid)
         .cloned()
+        .or_else(|| {
+            rows.iter()
+                .filter(|row| row.ppid == shell_pid && command_mentions_codex(&row.command))
+                .max_by_key(|row| row.pid)
+                .cloned()
+        })
+        .or_else(|| {
+            let shell = rows.iter().find(|row| row.pid == shell_pid)?;
+            rows.iter()
+                .filter(|row| row.ppid == shell_pid || row.pgid == shell.pgid)
+                .filter(|row| row.pid != shell_pid && command_mentions_codex(&row.command))
+                .max_by_key(|row| row.pid)
+                .cloned()
+        })
 }
 
 async fn list_process_rows() -> Result<Vec<ProcessRow>> {
@@ -1443,6 +1465,25 @@ mod tests {
         let process = resolve_codex_process(&rows, 21345).expect("codex child");
         assert_eq!(process.pid, 33298);
         assert_eq!(command_binary_name(&process.command), Some("codex"));
+    }
+
+    #[test]
+    fn resolve_codex_process_accepts_absolute_path_codex_command() {
+        let rows = parse_process_rows(
+            "944 942 944 -zsh\n3709 944 3709 /opt/homebrew/bin/codex -c features.codex_hooks=true\n",
+        );
+        let process = resolve_codex_process(&rows, 944).expect("codex child");
+        assert_eq!(process.pid, 3709);
+        assert_eq!(command_binary_name(&process.command), Some("codex"));
+    }
+
+    #[test]
+    fn resolve_codex_process_falls_back_to_same_process_group() {
+        let rows = parse_process_rows(
+            "944 942 944 -zsh\n3709 1 944 /opt/homebrew/bin/codex -c features.codex_hooks=true\n",
+        );
+        let process = resolve_codex_process(&rows, 944).expect("codex pgid fallback");
+        assert_eq!(process.pid, 3709);
     }
 
     #[test]

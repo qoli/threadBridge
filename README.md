@@ -34,7 +34,11 @@ Or use the local helper script:
 
 ```bash
 scripts/local_threadbridge.sh start
+scripts/local_threadbridge.sh restart --codex-source brew
+scripts/local_threadbridge.sh restart --codex-source alpha
 ```
+
+`--codex-source brew|alpha` controls which local `codex` binary `hcodex` should prefer. The choice is persisted in `.threadbridge/codex/source.txt` and is picked up the next time a workspace runtime is bootstrapped.
 
 ## Behavior
 
