@@ -8,10 +8,10 @@
 
 - `· cli`
   - 只有 owner thread 會顯示
-  - 表示這個 thread 是當前受管本地 CLI 的 mirror target
+  - 表示 `hcodex` 現在是 live，Telegram 只是 viewer
 - `· attach`
   - 當前 Telegram thread 已接管原 CLI session
-  - Telegram 現在持有輸入權
+  - 表示 Telegram 現在是 live，本地終端只跑 `threadbridge_viewer`
 - `· cli!`
   - workspace 的 CLI owner 狀態不可信或衝突
   - 例如 owner claim 缺失、registry 對不上、或出現多個 live CLI sessions
@@ -20,9 +20,9 @@
 
 - `hcodex` 是受管本地 CLI 入口
 - owner thread 透過 `thread_key` 決定
-- CLI 的用戶輸入文本與 assistant 最終文本會鏡像到 owner thread
+- `.cli` 狀態下，Telegram viewer 只看 `CLI user + Codex final`
 - `/attach_cli_session` 會 kill `codex` TUI，然後在同一個終端進入只讀 viewer
-- viewer 會顯示 attach 之後的 Telegram 文本與 Codex 最終回覆
+- `.attach` 狀態下，本地 viewer 只看 attach 之後的 `Telegram user + Codex final`
 - viewer 按 `r` 會在同一終端執行 `hcodex resume <session-id> --thread-key <thread-key>`
 - `/thread_info` 會暴露 `thread_key`、selected session、marker 和 owner 狀態
 
@@ -101,7 +101,7 @@ hi
 
 - `hcodex` 而不是 raw `codex` 在管理受管 CLI
 - owner thread 由 `thread_key` 明確決定
-- `.cli` 是 owner-thread marker，不是 workspace 廣播標記
+- `.cli` 表示 `hcodex live / Telegram viewer`
 
 ## 測試 2: CLI 文本鏡像到 owner thread
 
@@ -129,6 +129,7 @@ hi
 
 - `CLI -> Telegram` mirror routing 只走 owner thread
 - routing 依賴 `thread_key` owner claim，不依賴 workspace 廣播
+- owner thread 只應看到 `CLI:` user 行與 `Codex:` final；不做 token / delta streaming
 
 ## 測試 3: `/attach_cli_session` 進入 `· attach`
 
@@ -159,6 +160,7 @@ hcodex resume <session-id> --thread-key <thread-key>
 
 - attach 是排他式 handoff
 - `codex` TUI 被 kill 後，由 viewer 在同一終端接棒
+- `.attach` 表示 `Telegram live / 本地 viewer`
 
 ## 測試 4: `.attach` 狀態下 Telegram 接手輸入窗口
 
@@ -180,6 +182,7 @@ hcodex resume <session-id> --thread-key <thread-key>
 
 - Telegram 已接管原 CLI session
 - `Telegram -> viewer` 文本鏡像已生效
+- viewer 只顯示普通文字消息與 assistant 最終回覆；不顯示命令、系統事件或圖片分析內部 prompt
 
 ## 測試 5: viewer 用 `r` 回到本地 CLI
 
@@ -301,6 +304,7 @@ cat .threadbridge/state/codex-sync/cli-owner.json
 
 ```bash
 cat .threadbridge/state/codex-sync/cli-owner.json
+rg -n 'user_prompt_submitted|turn_completed' .threadbridge/state/codex-sync/events.jsonl
 ```
 
 以及 Telegram thread：
@@ -314,6 +318,9 @@ cat .threadbridge/state/codex-sync/cli-owner.json
 1. owner claim 的 `thread_key` 是否就是當前 thread
 2. `marker` 是否是 `.cli`
 3. thread 是否是 active，而不是 archived
+4. `events.jsonl` 裡是否真的有 `user_prompt_submitted`
+
+如果只有 `turn_completed`、沒有 `user_prompt_submitted`，owner thread 目前只會看到 `Codex:` final，不會補 `CLI:` user 行。這是刻意的嚴格行為，不會從 `input-messages` 或 rollout 歷史回補。
 
 ### `/attach_cli_session` 後沒有進 viewer
 
@@ -344,9 +351,9 @@ cat .threadbridge/state/codex-sync/attach-intent.json
 - owner claim / `thread_key`
 - `.cli` / `.cli!` / `.attach`
 - `/thread_info`
-- CLI user text 與 assistant final text 鏡像到 owner thread
+- `.cli` 下的 `CLI user + assistant final` 鏡像到 owner thread
 - `/attach_cli_session` handoff
-- attach 後 viewer 顯示 Telegram user text 與 assistant final text
+- `.attach` 下 viewer 顯示 `Telegram user + assistant final`
 - viewer `r` -> `hcodex resume`
 
 它不驗證以下尚未落地能力：

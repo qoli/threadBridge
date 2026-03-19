@@ -8,6 +8,7 @@ use crate::workspace_status::ensure_workspace_status_surface;
 pub const THREADBRIDGE_RUNTIME_DIR: &str = ".threadbridge";
 pub const THREADBRIDGE_RUNTIME_START: &str = "<!-- threadbridge:runtime:start -->";
 pub const THREADBRIDGE_RUNTIME_END: &str = "<!-- threadbridge:runtime:end -->";
+const MANAGED_CODEX_CACHE_BINARY: &str = ".threadbridge/codex/codex";
 
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
@@ -85,6 +86,12 @@ fn build_codex_shell_snippet(workspace_path: &Path, repo_root: &Path, data_root:
         .join(".threadbridge/bin/codex_sync_notify")
         .display()
         .to_string();
+    let managed_codex = shell_single_quote(
+        &workspace_path
+            .join(".threadbridge/bin/codex")
+            .display()
+            .to_string(),
+    );
     let notify_json = serde_json::to_string(&vec![notify_wrapper]).unwrap_or_else(|_| "[]".into());
     let notify_json = shell_single_quote(&notify_json);
     [
@@ -95,6 +102,7 @@ fn build_codex_shell_snippet(workspace_path: &Path, repo_root: &Path, data_root:
         &format!("export THREADBRIDGE_CODEX_SYNC_EVENT={event_wrapper}"),
         &format!("export THREADBRIDGE_CODEX_SYNC_MANAGE={manage_wrapper}"),
         &format!("export THREADBRIDGE_CODEX_NOTIFY_JSON={notify_json}"),
+        &format!("export THREADBRIDGE_MANAGED_CODEX={managed_codex}"),
         "",
         "__threadbridge_codex_in_workspace() {",
         "  local current_dir",
@@ -112,6 +120,12 @@ fn build_codex_shell_snippet(workspace_path: &Path, repo_root: &Path, data_root:
         "  if ! __threadbridge_codex_in_workspace; then",
         "    command codex \"$@\"",
         "    return $?",
+        "  fi",
+        "  local codex_bin",
+        "  if [ -x \"$THREADBRIDGE_MANAGED_CODEX\" ]; then",
+        "    codex_bin=\"$THREADBRIDGE_MANAGED_CODEX\"",
+        "  else",
+        "    codex_bin=\"$(command -v codex)\"",
         "  fi",
         "  local requested_thread_key=\"\"",
         "  local -a codex_args=()",
@@ -140,7 +154,7 @@ fn build_codex_shell_snippet(workspace_path: &Path, repo_root: &Path, data_root:
         "  export THREADBRIDGE_CODEX_SHELL_PID=\"$$\"",
         "  export THREADBRIDGE_CODEX_OWNER_THREAD_KEY=\"$owner_thread_key\"",
         "  \"$THREADBRIDGE_CODEX_SYNC_EVENT\" shell_process_started --shell-pid \"$$\" --owner-thread-key \"$THREADBRIDGE_CODEX_OWNER_THREAD_KEY\" >/dev/null 2>&1 || true",
-        "  command codex -c features.codex_hooks=true -c \"notify=$THREADBRIDGE_CODEX_NOTIFY_JSON\" \"${codex_args[@]}\"",
+        "  \"$codex_bin\" -c features.codex_hooks=true -c \"notify=$THREADBRIDGE_CODEX_NOTIFY_JSON\" \"${codex_args[@]}\"",
         "  local exit_code=$?",
         "  \"$THREADBRIDGE_CODEX_SYNC_EVENT\" shell_process_exited --shell-pid \"$$\" --exit-code \"$exit_code\" --owner-thread-key \"$THREADBRIDGE_CODEX_OWNER_THREAD_KEY\" >/dev/null 2>&1 || true",
         "  local attach_payload",
@@ -234,6 +248,22 @@ async fn write_text_file(path: &Path, contents: &str) -> Result<()> {
     fs::write(path, contents)
         .await
         .map_err(|error| anyhow!("failed to write {}: {}", path.display(), error))
+}
+
+async fn set_mode(path: &Path, mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::metadata(path).await?;
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(mode);
+        fs::set_permissions(path, permissions).await?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+    }
+    Ok(())
 }
 
 pub async fn ensure_workspace_runtime(
@@ -332,13 +362,29 @@ pub async fn ensure_workspace_runtime(
         &build_codex_sync_manage_wrapper_script(repo_root),
     )
     .await?;
-    #[cfg(unix)]
+    set_mode(&manage_wrapper_path, 0o755).await?;
+
+    let managed_codex_source = repo_root.join(MANAGED_CODEX_CACHE_BINARY);
+    if fs::try_exists(&managed_codex_source)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to inspect managed Codex binary: {}",
+                managed_codex_source.display()
+            )
+        })?
     {
-        use std::os::unix::fs::PermissionsExt;
-        let metadata = fs::metadata(&manage_wrapper_path).await?;
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&manage_wrapper_path, permissions).await?;
+        let managed_codex_dest = bin_dir.join("codex");
+        fs::copy(&managed_codex_source, &managed_codex_dest)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to copy managed Codex binary from {} to {}",
+                    managed_codex_source.display(),
+                    managed_codex_dest.display()
+                )
+            })?;
+        set_mode(&managed_codex_dest, 0o755).await?;
     }
 
     let shell_snippet_path = shell_dir.join("codex-sync.bash");
@@ -347,14 +393,7 @@ pub async fn ensure_workspace_runtime(
         &build_codex_shell_snippet(workspace_path, repo_root, data_root),
     )
     .await?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let metadata = fs::metadata(&shell_snippet_path).await?;
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(0o644);
-        fs::set_permissions(&shell_snippet_path, permissions).await?;
-    }
+    set_mode(&shell_snippet_path, 0o644).await?;
 
     let codex_dir = workspace_path.join(".codex");
     fs::create_dir_all(&codex_dir).await?;
@@ -504,6 +543,41 @@ mod tests {
                 .unwrap();
         assert!(shell_snippet.contains("hcodex()"));
         assert!(shell_snippet.contains("THREADBRIDGE_CODEX_SYNC_MANAGE"));
+        assert!(shell_snippet.contains("THREADBRIDGE_MANAGED_CODEX"));
+        assert!(shell_snippet.contains(".threadbridge/bin/codex"));
+    }
+
+    #[tokio::test]
+    async fn workspace_runtime_copies_managed_codex_binary_when_available() {
+        let root = temp_path();
+        let repo_root = root.join("repo");
+        let workspace = root.join("workspace");
+        let template = root.join("template.md");
+        let managed_codex = repo_root.join(".threadbridge/codex/codex");
+
+        fs::create_dir_all(managed_codex.parent().unwrap())
+            .await
+            .unwrap();
+        fs::write(&managed_codex, "managed codex binary")
+            .await
+            .unwrap();
+        fs::write(&template, "runtime appendix\n").await.unwrap();
+
+        ensure_workspace_runtime(&repo_root, &repo_root.join("data"), &template, &workspace)
+            .await
+            .unwrap();
+
+        assert!(
+            fs::try_exists(workspace.join(".threadbridge/bin/codex"))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join(".threadbridge/bin/codex"))
+                .await
+                .unwrap(),
+            "managed codex binary"
+        );
     }
 
     #[tokio::test]

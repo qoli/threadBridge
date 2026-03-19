@@ -9,8 +9,8 @@
 - threadBridge 已經從 workspace-level 單快照升級到 `workspace aggregate + per-session registry`
 - Telegram thread binding 已經有明確的 `selected_session_id`
 - topic title 已經改成 ownership 標記：
-  - `.cli` = 同 workspace 有 live CLI session，而且 CLI 目前持有輸入權
-  - `.attach` = 當前 thread 已接管原 CLI session，Telegram 目前持有輸入權
+  - `.cli` = `hcodex live / Telegram viewer`
+  - `.attach` = `Telegram live / threadbridge_viewer`
 - `/attach_cli_session` 已落地
 - `/attach_cli_session` 現在是排他式 handoff，不是單純選中
 - attach 成功時會結束本地 `codex` TUI，並回覆 `codex resume <session-id>`
@@ -33,6 +33,29 @@
 - CLI 正在進行中的 turn/item/delta 事件完整鏡像到 Telegram
 - Telegram 發出的 turn 在本地 CLI 開著的情況下，被 CLI 以 live attach UI 方式即時看見
 - 真正的 shared live TUI continuity
+
+## 名詞固定
+
+- `· cli`
+  - `hcodex` 現在是 live
+  - Telegram 是 viewer
+  - Telegram 只應看到 `CLI user + Codex final`
+- `· attach`
+  - Telegram 現在是 live
+  - 本地 `codex` TUI 已被 kill
+  - 本地終端改跑 `threadbridge_viewer`
+  - viewer 只應看到 attach 之後的 `Telegram user + Codex final`
+- viewer 只顯示 `user + assistant`
+- `user` 文本要求在送出後立刻鏡像
+- `assistant` 只顯示最終文本
+- Telegram 作為 live 時，只有普通文字消息進入 viewer timeline；命令、系統事件、圖片分析內部 prompt 不算 viewer 文本
+
+## 目前已知缺口
+
+- `.cli` 狀態下，CLI user prompt 的鏡像目前嚴格依賴 `UserPromptSubmit` hook
+- threadBridge 不接受從 `turn_completed.input-messages`、rollout、history 對 user prompt 做 fallback
+- 如果本地 `codex` build 沒有真正把 `UserPromptSubmit` 寫進 workspace 事件流，owner thread 只會看到 `Codex:` final，而不會事後補 `CLI:` user 行
+- 這種缺口只應記錄 debug / warn，不應升級成 `.cli!`，也不應在 Telegram thread 發系統提示
 
 ## 願景
 

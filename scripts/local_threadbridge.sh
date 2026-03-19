@@ -13,6 +13,9 @@ CARGO_TARGET_DIR_PATH="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 BUILD_PROFILE="${BUILD_PROFILE:-dev}"
 RUSTUP_HOME_DIR="${RUSTUP_HOME:-$HOME/.rustup}"
 RUNTIME_PATH="$HOME/.cargo/bin:$REPO_ROOT/bin:$PATH"
+MANAGED_CODEX_DIR="$REPO_ROOT/.threadbridge/codex"
+MANAGED_CODEX_BIN="$MANAGED_CODEX_DIR/codex"
+MANAGED_CODEX_TAG_FILE="$MANAGED_CODEX_DIR/release-tag.txt"
 
 usage() {
   cat <<'EOF'
@@ -32,6 +35,85 @@ EOF
 
 log() {
   printf '[local-threadbridge] %s\n' "$*"
+}
+
+managed_codex_asset_name() {
+  local system arch
+  system=$(uname -s)
+  arch=$(uname -m)
+  case "$system:$arch" in
+    Darwin:arm64)
+      printf '%s\n' 'codex-aarch64-apple-darwin.tar.gz'
+      ;;
+    Darwin:x86_64)
+      printf '%s\n' 'codex-x86_64-apple-darwin.tar.gz'
+      ;;
+    Linux:aarch64|Linux:arm64)
+      printf '%s\n' 'codex-aarch64-unknown-linux-gnu.tar.gz'
+      ;;
+    Linux:x86_64)
+      printf '%s\n' 'codex-x86_64-unknown-linux-gnu.tar.gz'
+      ;;
+    *)
+      printf 'Unsupported platform for managed Codex binary: %s %s\n' "$system" "$arch" >&2
+      exit 1
+      ;;
+  esac
+}
+
+latest_managed_codex_tag() {
+  gh api "repos/openai/codex/releases?per_page=100" | python3 -c '
+import json, sys
+for release in json.load(sys.stdin):
+    if release.get("prerelease") and not release.get("draft"):
+        tag = release.get("tag_name")
+        if tag:
+            print(tag)
+            break
+'
+}
+
+ensure_managed_codex_binary() {
+  require_command gh
+  require_command tar
+
+  mkdir -p "$MANAGED_CODEX_DIR"
+
+  local tag asset current_tag tmpdir archive extracted_binary
+  tag=$(latest_managed_codex_tag)
+  if [[ -z "$tag" ]]; then
+    printf 'Failed to discover latest pre-release Codex tag.\n' >&2
+    exit 1
+  fi
+
+  asset=$(managed_codex_asset_name)
+  current_tag=""
+  if [[ -f "$MANAGED_CODEX_TAG_FILE" ]]; then
+    current_tag=$(tr -d '\n' < "$MANAGED_CODEX_TAG_FILE")
+  fi
+
+  if [[ -x "$MANAGED_CODEX_BIN" && "$current_tag" == "$tag" ]]; then
+    log "managed Codex binary up to date ($tag)"
+    return 0
+  fi
+
+  log "downloading managed Codex binary ($tag, $asset)"
+  tmpdir=$(mktemp -d)
+
+  gh release download "$tag" --repo openai/codex --pattern "$asset" --dir "$tmpdir" --clobber
+  archive="$tmpdir/$asset"
+  mkdir -p "$tmpdir/extract"
+  tar -xzf "$archive" -C "$tmpdir/extract"
+  extracted_binary=$(find "$tmpdir/extract" -type f | head -n 1)
+  if [[ -z "$extracted_binary" || ! -f "$extracted_binary" ]]; then
+    printf 'Failed to locate extracted codex binary inside %s\n' "$asset" >&2
+    exit 1
+  fi
+
+  install -m 755 "$extracted_binary" "$MANAGED_CODEX_BIN"
+  printf '%s\n' "$tag" > "$MANAGED_CODEX_TAG_FILE"
+  rm -rf "$tmpdir"
+  log "managed Codex binary ready: $MANAGED_CODEX_BIN"
 }
 
 require_command() {
@@ -73,7 +155,7 @@ tmux_session_pid() {
 }
 
 ensure_layout() {
-  mkdir -p "$LOG_DIR" "$REPO_ROOT/data/debug"
+  mkdir -p "$LOG_DIR" "$REPO_ROOT/data/debug" "$MANAGED_CODEX_DIR"
   touch "$STDOUT_LOG" "$STDERR_LOG" "$EVENT_LOG"
 }
 
@@ -113,6 +195,7 @@ start_bot() {
   require_command cargo
   require_command tmux
 
+  ensure_managed_codex_binary
   build_bot
 
   local bot_binary

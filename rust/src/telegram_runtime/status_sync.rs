@@ -228,13 +228,19 @@ pub async fn spawn_workspace_status_watcher(bot: Bot, state: AppState) {
     tokio::spawn(async move {
         let mut applied_titles: HashMap<String, String> = HashMap::new();
         let mut workspace_event_offsets: HashMap<String, usize> = HashMap::new();
+        let mut pending_cli_user_prompts: HashSet<String> = HashSet::new();
         loop {
             if let Err(error) = sync_workspace_titles_once(&bot, &state, &mut applied_titles).await
             {
                 warn!(event = "workspace_status.sync.failed", error = %error);
             }
-            if let Err(error) =
-                sync_cli_transcript_mirrors_once(&bot, &state, &mut workspace_event_offsets).await
+            if let Err(error) = sync_cli_transcript_mirrors_once(
+                &bot,
+                &state,
+                &mut workspace_event_offsets,
+                &mut pending_cli_user_prompts,
+            )
+            .await
             {
                 warn!(event = "workspace_mirror.sync.failed", error = %error);
             }
@@ -357,6 +363,7 @@ async fn sync_cli_transcript_mirrors_once(
     bot: &Bot,
     state: &AppState,
     workspace_event_offsets: &mut HashMap<String, usize>,
+    pending_cli_user_prompts: &mut HashSet<String>,
 ) -> Result<()> {
     let records = state.repository.list_active_threads().await?;
     let mut by_workspace: HashMap<String, Vec<ThreadRecord>> = HashMap::new();
@@ -376,6 +383,7 @@ async fn sync_cli_transcript_mirrors_once(
     for (workspace_key, workspace_records) in by_workspace {
         let workspace_path = PathBuf::from(&workspace_key);
         let Some(owner_claim) = read_cli_owner_claim(&workspace_path).await? else {
+            pending_cli_user_prompts.retain(|key| !key.starts_with(&workspace_key));
             let Some(lines) = read_workspace_event_lines(&workspace_path).await? else {
                 continue;
             };
@@ -385,6 +393,7 @@ async fn sync_cli_transcript_mirrors_once(
         let aggregate =
             crate::workspace_status::read_workspace_aggregate_status(&workspace_path).await?;
         if workspace_cli_conflict(Some(&aggregate), Some(&owner_claim)) {
+            pending_cli_user_prompts.retain(|key| !key.starts_with(&workspace_key));
             let Some(lines) = read_workspace_event_lines(&workspace_path).await? else {
                 continue;
             };
@@ -396,6 +405,7 @@ async fn sync_cli_transcript_mirrors_once(
             .find(|record| record.metadata.thread_key == owner_claim.thread_key)
             .cloned()
         else {
+            pending_cli_user_prompts.retain(|key| !key.starts_with(&workspace_key));
             let Some(lines) = read_workspace_event_lines(&workspace_path).await? else {
                 continue;
             };
@@ -423,6 +433,79 @@ async fn sync_cli_transcript_mirrors_once(
                     continue;
                 }
             };
+            match event.event.as_str() {
+                "user_prompt_submitted" => {
+                    let Some(session_id) = event
+                        .payload
+                        .get("session_id")
+                        .and_then(|value| value.as_str())
+                    else {
+                        warn!(
+                            event = "workspace_mirror.cli_user_prompt_missing_session",
+                            workspace = %workspace_key,
+                            thread_key = %owner_record.metadata.thread_key,
+                        );
+                        continue;
+                    };
+                    if owner_claim
+                        .session_id
+                        .as_deref()
+                        .is_some_and(|expected| expected != session_id)
+                    {
+                        continue;
+                    }
+                    let Some(entry) =
+                        cli_mirror_entry_from_event(&event, owner_claim.session_id.as_deref())
+                    else {
+                        warn!(
+                            event = "workspace_mirror.cli_user_prompt_missing_text",
+                            workspace = %workspace_key,
+                            thread_key = %owner_record.metadata.thread_key,
+                            session_id = session_id,
+                        );
+                        continue;
+                    };
+                    pending_cli_user_prompts
+                        .insert(cli_prompt_tracking_key(&workspace_key, &entry.session_id));
+                    state
+                        .repository
+                        .append_transcript_mirror(&owner_record, &entry)
+                        .await?;
+                    if let Some(message_thread_id) = owner_record.metadata.message_thread_id {
+                        send_scoped_message(
+                            bot,
+                            ChatId(owner_record.metadata.chat_id),
+                            Some(thread_id_from_i32(message_thread_id)),
+                            format!("CLI: {}", entry.text),
+                        )
+                        .await?;
+                    }
+                    continue;
+                }
+                "turn_completed" => {
+                    if let Some(session_id) = event
+                        .payload
+                        .get("thread-id")
+                        .and_then(|value| value.as_str())
+                    {
+                        if owner_claim
+                            .session_id
+                            .as_deref()
+                            .is_none_or(|expected| expected == session_id)
+                            && !pending_cli_user_prompts
+                                .remove(&cli_prompt_tracking_key(&workspace_key, session_id))
+                        {
+                            warn!(
+                                event = "workspace_mirror.cli_user_prompt_missing",
+                                workspace = %workspace_key,
+                                thread_key = %owner_record.metadata.thread_key,
+                                session_id = session_id,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
             if let Some(entry) =
                 cli_mirror_entry_from_event(&event, owner_claim.session_id.as_deref())
             {
@@ -449,6 +532,10 @@ async fn sync_cli_transcript_mirrors_once(
         workspace_event_offsets.insert(workspace_key, new_offset);
     }
     Ok(())
+}
+
+fn cli_prompt_tracking_key(workspace_key: &str, session_id: &str) -> String {
+    format!("{workspace_key}::{session_id}")
 }
 
 async fn read_workspace_event_lines(workspace_path: &Path) -> Result<Option<Vec<String>>> {
@@ -512,12 +599,18 @@ fn cli_mirror_entry_from_event(
 
 #[cfg(test)]
 mod tests {
-    use super::{CliTopicMarker, cli_topic_marker_for_record, render_topic_title};
+    use super::{
+        CliTopicMarker, cli_mirror_entry_from_event, cli_topic_marker_for_record,
+        render_topic_title,
+    };
     use crate::repository::{
         SessionAttachmentState, SessionBinding, ThreadMetadata, ThreadRecord, ThreadScope,
-        ThreadStatus,
+        ThreadStatus, TranscriptMirrorOrigin, TranscriptMirrorRole,
     };
-    use crate::workspace_status::{CliOwnerClaim, WorkspaceAggregateStatus};
+    use crate::workspace_status::{
+        CliOwnerClaim, WorkspaceAggregateStatus, WorkspaceStatusEventRecord,
+    };
+    use serde_json::json;
     use std::path::PathBuf;
 
     fn record(title: Option<&str>, session_broken: bool) -> ThreadRecord {
@@ -643,5 +736,55 @@ mod tests {
             marker,
         );
         assert_eq!(title, "Conflict · cli!");
+    }
+
+    #[test]
+    fn cli_user_prompt_event_creates_cli_user_entry() {
+        let event = WorkspaceStatusEventRecord {
+            schema_version: 2,
+            event: "user_prompt_submitted".to_owned(),
+            source: crate::workspace_status::SessionStatusOwner::Cli,
+            workspace_cwd: "/tmp/workspace".to_owned(),
+            occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
+            payload: json!({
+                "session_id": "thr_cli",
+                "prompt": "inspect this repo"
+            }),
+        };
+        let entry = cli_mirror_entry_from_event(&event, Some("thr_cli")).expect("cli user entry");
+        assert_eq!(entry.origin, TranscriptMirrorOrigin::Cli);
+        assert_eq!(entry.role, TranscriptMirrorRole::User);
+        assert_eq!(entry.text, "inspect this repo");
+    }
+
+    #[test]
+    fn cli_user_prompt_event_without_prompt_is_ignored() {
+        let event = WorkspaceStatusEventRecord {
+            schema_version: 2,
+            event: "user_prompt_submitted".to_owned(),
+            source: crate::workspace_status::SessionStatusOwner::Cli,
+            workspace_cwd: "/tmp/workspace".to_owned(),
+            occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
+            payload: json!({
+                "session_id": "thr_cli"
+            }),
+        };
+        assert!(cli_mirror_entry_from_event(&event, Some("thr_cli")).is_none());
+    }
+
+    #[test]
+    fn turn_completed_does_not_fallback_to_input_messages_for_cli_user_entry() {
+        let event = WorkspaceStatusEventRecord {
+            schema_version: 2,
+            event: "turn_completed".to_owned(),
+            source: crate::workspace_status::SessionStatusOwner::Cli,
+            workspace_cwd: "/tmp/workspace".to_owned(),
+            occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
+            payload: json!({
+                "thread-id": "thr_cli",
+                "input-messages": ["hello from cli"]
+            }),
+        };
+        assert!(cli_mirror_entry_from_event(&event, Some("thr_cli")).is_none());
     }
 }
