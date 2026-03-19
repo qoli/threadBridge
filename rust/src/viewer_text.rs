@@ -56,9 +56,9 @@ pub fn render_transcript_lines(entries: &[TranscriptMirrorEntry], width: u16) ->
     }
 
     let content_width = content_width(width);
-    let label_width = entries
-        .iter()
-        .map(|entry| display_width(label_for(entry)))
+    let label_width = [LABEL_TELEGRAM, LABEL_CLI, LABEL_CODEX]
+        .into_iter()
+        .map(display_width)
         .max()
         .unwrap_or_else(|| display_width(LABEL_TELEGRAM));
     let text_width = content_width
