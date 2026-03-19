@@ -1,9 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use teloxide::payloads::setters::*;
+use tokio::process::Command as TokioCommand;
 use tokio::sync::Mutex;
+use tokio::time::{Duration, Instant, sleep};
 use tracing::{error, info};
 
 use super::final_reply::send_final_assistant_reply;
@@ -57,9 +59,185 @@ async fn start_fresh_binding(
 async fn busy_snapshot_for_binding(
     state: &AppState,
     binding: &SessionBinding,
-) -> Result<Option<crate::workspace_status::BusyWorkspaceStatus>> {
+) -> Result<Option<crate::workspace_status::BusySelectedSessionStatus>> {
     let workspace_path = workspace_path_from_binding(binding)?;
-    busy_workspace_status(&state.workspace_status_cache, &workspace_path).await
+    let Some(session_id) = usable_bound_session_id(Some(binding)) else {
+        return Ok(None);
+    };
+    busy_selected_session_status(&state.workspace_status_cache, &workspace_path, session_id).await
+}
+
+fn render_live_cli_session_choices(
+    sessions: &[crate::workspace_status::SessionCurrentStatus],
+    current_session_id: Option<&str>,
+) -> String {
+    let mut lines = vec![
+        "Multiple live CLI sessions are available in this workspace.".to_owned(),
+        "Run /attach_cli_session <session-id> with one of these ids:".to_owned(),
+        String::new(),
+    ];
+    for session in sessions {
+        let current = if current_session_id == Some(session.session_id.as_str()) {
+            " (current)"
+        } else {
+            ""
+        };
+        let summary = session
+            .summary
+            .as_deref()
+            .map(|value| format!(" - {value}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- `{}`{} [{}]{}",
+            session.session_id,
+            current,
+            match session.phase {
+                crate::workspace_status::WorkspaceStatusPhase::ShellActive => "shell_active",
+                crate::workspace_status::WorkspaceStatusPhase::TurnRunning => "turn_running",
+                crate::workspace_status::WorkspaceStatusPhase::TurnFinalizing => "turn_finalizing",
+                crate::workspace_status::WorkspaceStatusPhase::Idle => "idle",
+            },
+            summary
+        ));
+    }
+    lines.join("\n")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessRow {
+    pid: u32,
+    ppid: u32,
+    pgid: u32,
+    command: String,
+}
+
+fn parse_process_rows(ps_output: &str) -> Vec<ProcessRow> {
+    ps_output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.trim().splitn(4, char::is_whitespace);
+            let pid = parts.next()?.trim().parse().ok()?;
+            let ppid = parts.next()?.trim().parse().ok()?;
+            let pgid = parts.next()?.trim().parse().ok()?;
+            let command = parts.next()?.trim().to_owned();
+            if command.is_empty() {
+                return None;
+            }
+            Some(ProcessRow {
+                pid,
+                ppid,
+                pgid,
+                command,
+            })
+        })
+        .collect()
+}
+
+fn command_binary_name(command: &str) -> Option<&str> {
+    let executable = command.split_whitespace().next()?;
+    Path::new(executable).file_name()?.to_str()
+}
+
+fn resolve_codex_process(rows: &[ProcessRow], shell_pid: u32) -> Option<ProcessRow> {
+    rows.iter()
+        .filter(|row| row.ppid == shell_pid && command_binary_name(&row.command) == Some("codex"))
+        .max_by_key(|row| row.pid)
+        .cloned()
+}
+
+async fn list_process_rows() -> Result<Vec<ProcessRow>> {
+    let output = TokioCommand::new("ps")
+        .args(["-axo", "pid=,ppid=,pgid=,command="])
+        .output()
+        .await
+        .context("failed to run ps for Codex CLI handoff")?;
+    if !output.status.success() {
+        bail!(
+            "failed to inspect local process table for Codex CLI handoff: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(parse_process_rows(&String::from_utf8_lossy(&output.stdout)))
+}
+
+async fn signal_process_group(pgid: u32, signal: &str) -> Result<()> {
+    let status = TokioCommand::new("kill")
+        .args([format!("-{signal}"), "--".to_owned(), format!("-{pgid}")])
+        .status()
+        .await
+        .with_context(|| format!("failed to send {signal} to process group {pgid}"))?;
+    if !status.success() {
+        bail!("kill {signal} failed for process group {pgid}");
+    }
+    Ok(())
+}
+
+async fn wait_for_cli_session_to_stop(workspace_path: &Path, session_id: &str) -> Result<bool> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let Some(snapshot) = read_session_status(workspace_path, session_id).await? else {
+            return Ok(true);
+        };
+        if !snapshot.live {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn terminate_cli_session_tui(
+    workspace_path: &Path,
+    target: &crate::workspace_status::SessionCurrentStatus,
+) -> Result<()> {
+    let shell_pid = target
+        .shell_pid
+        .context("live CLI session is missing shell_pid")?;
+    let process =
+        resolve_codex_process(&list_process_rows().await?, shell_pid).with_context(|| {
+            format!("failed to locate Codex CLI process under shell pid {shell_pid}")
+        })?;
+
+    signal_process_group(process.pgid, "TERM").await?;
+    if wait_for_cli_session_to_stop(workspace_path, &target.session_id).await? {
+        return Ok(());
+    }
+
+    signal_process_group(process.pgid, "KILL").await?;
+    if wait_for_cli_session_to_stop(workspace_path, &target.session_id).await? {
+        return Ok(());
+    }
+
+    bail!(
+        "CLI session {} did not shut down cleanly after TERM/KILL",
+        target.session_id
+    );
+}
+
+pub(crate) async fn selected_live_cli_owned_session(
+    state: &AppState,
+    binding: &SessionBinding,
+) -> Result<Option<crate::workspace_status::SessionCurrentStatus>> {
+    if binding.attachment_state == SessionAttachmentState::CliHandoff {
+        return Ok(None);
+    }
+    let Some(session_id) = usable_bound_session_id(Some(binding)) else {
+        return Ok(None);
+    };
+    let workspace_path = workspace_path_from_binding(binding)?;
+    let aggregate =
+        crate::workspace_status::read_workspace_aggregate_status(&workspace_path).await?;
+    state.workspace_status_cache.insert(aggregate.clone()).await;
+    if !aggregate
+        .live_cli_session_ids
+        .iter()
+        .any(|item| item == session_id)
+    {
+        return Ok(None);
+    }
+    read_session_status(&workspace_path, session_id).await
 }
 
 pub(crate) async fn run_command(
@@ -172,6 +350,21 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             }
+            if let Some(binding) = existing_binding.as_ref()
+                && binding.workspace_cwd.is_some()
+                && selected_live_cli_owned_session(state, binding)
+                    .await?
+                    .is_some()
+            {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    status_sync::cli_owned_command_message(),
+                )
+                .await?;
+                return Ok(());
+            }
 
             let workspace_path = resolve_workspace_argument(argument).await?;
             let typing = TypingHeartbeat::start(bot.clone(), msg.chat.id, Some(thread_id));
@@ -243,6 +436,19 @@ pub(crate) async fn run_command(
                     msg.chat.id,
                     Some(thread_id),
                     status_sync::busy_command_message(&busy.snapshot),
+                )
+                .await?;
+                return Ok(());
+            }
+            if selected_live_cli_owned_session(state, binding)
+                .await?
+                .is_some()
+            {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    status_sync::cli_owned_command_message(),
                 )
                 .await?;
                 return Ok(());
@@ -329,6 +535,20 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             }
+            if let Some(binding) = session.as_ref()
+                && selected_live_cli_owned_session(state, binding)
+                    .await?
+                    .is_some()
+            {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    status_sync::cli_owned_command_message(),
+                )
+                .await?;
+                return Ok(());
+            }
             let workspace_path =
                 ensure_bound_workspace_runtime(state, session.as_ref().context("missing binding")?)
                     .await?;
@@ -379,6 +599,153 @@ pub(crate) async fn run_command(
                 }
             }
         }
+        Command::AttachCliSession => {
+            if is_control_chat(msg) {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    None,
+                    "Use /attach_cli_session inside a thread.",
+                )
+                .await?;
+                return Ok(());
+            }
+            let thread_id = msg.thread_id.context("thread message missing thread id")?;
+            let record = state
+                .repository
+                .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
+                .await?;
+            if matches!(record.metadata.status, ThreadStatus::Archived) {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "This thread is archived.",
+                )
+                .await?;
+                return Ok(());
+            }
+            let session = state.repository.read_session_binding(&record).await?;
+            let Some(binding) = session.as_ref() else {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    session_binding_hint(None),
+                )
+                .await?;
+                return Ok(());
+            };
+            if let Some(busy) = busy_snapshot_for_binding(state, binding).await? {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    status_sync::busy_command_message(&busy.snapshot),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let workspace_path = ensure_bound_workspace_runtime(state, binding).await?;
+            let live_sessions = list_live_cli_sessions(&workspace_path).await?;
+            if live_sessions.is_empty() {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "No live CLI sessions are available in this workspace.",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let requested_session_id = command_argument_text(msg, "attach_cli_session");
+            let selected_session_id = usable_bound_session_id(session.as_ref());
+            let target = if let Some(requested_session_id) = requested_session_id {
+                let Some(found) = live_sessions
+                    .iter()
+                    .find(|item| item.session_id == requested_session_id)
+                else {
+                    send_scoped_message(
+                        bot,
+                        msg.chat.id,
+                        Some(thread_id),
+                        render_live_cli_session_choices(&live_sessions, selected_session_id),
+                    )
+                    .await?;
+                    return Ok(());
+                };
+                found.clone()
+            } else if live_sessions.len() == 1 {
+                live_sessions[0].clone()
+            } else {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    render_live_cli_session_choices(&live_sessions, selected_session_id),
+                )
+                .await?;
+                return Ok(());
+            };
+
+            if target.phase.is_turn_busy() {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "That CLI session is still running a turn. Wait for it to finish before attaching it to Telegram.",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            if let Some(owner) = state
+                .repository
+                .find_active_cli_handoff_owner(&target.workspace_cwd, &target.session_id)
+                .await?
+                && owner.conversation_key != record.conversation_key
+            {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "Another Telegram thread already owns that attached CLI session.",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            terminate_cli_session_tui(&workspace_path, &target).await?;
+            let updated = state
+                .repository
+                .attach_cli_session_binding_session(record, target.session_id.clone())
+                .await?;
+            state
+                .repository
+                .append_log(
+                    &updated,
+                    LogDirection::System,
+                    format!(
+                        "Attached this thread to live CLI session {} and handed ownership to Telegram.",
+                        target.session_id
+                    ),
+                    None,
+                )
+                .await?;
+            send_scoped_message(
+                bot,
+                msg.chat.id,
+                Some(thread_id),
+                format!(
+                    "Attached this thread to live CLI session `{}` and switched control to Telegram.\n\nTo return to local CLI later, run:\n`codex resume {}`",
+                    target.session_id, target.session_id
+                ),
+            )
+            .await?;
+            let _ = status_sync::refresh_thread_topic_title(bot, state, &updated).await;
+        }
         Command::GenerateTitle => {
             if is_control_chat(msg) {
                 send_scoped_message(
@@ -424,6 +791,20 @@ pub(crate) async fn run_command(
                     msg.chat.id,
                     Some(thread_id),
                     status_sync::busy_command_message(&busy.snapshot),
+                )
+                .await?;
+                return Ok(());
+            }
+            if let Some(binding) = session.as_ref()
+                && selected_live_cli_owned_session(state, binding)
+                    .await?
+                    .is_some()
+            {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    status_sync::cli_owned_command_message(),
                 )
                 .await?;
                 return Ok(());
@@ -610,6 +991,20 @@ pub(crate) async fn run_text_message(
         .await?;
         return Ok(());
     }
+    if let Some(binding) = session.as_ref()
+        && selected_live_cli_owned_session(state, binding)
+            .await?
+            .is_some()
+    {
+        send_scoped_message(
+            bot,
+            msg.chat.id,
+            Some(thread_id),
+            status_sync::cli_owned_text_message(false),
+        )
+        .await?;
+        return Ok(());
+    }
 
     info!(
         event = "telegram.thread.message.received",
@@ -775,4 +1170,28 @@ pub(crate) async fn run_text_message(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{command_binary_name, parse_process_rows, resolve_codex_process};
+
+    #[test]
+    fn parse_process_rows_keeps_full_command() {
+        let rows =
+            parse_process_rows("21345 21344 21345 -zsh\n33298 21345 33298 codex resume 019d032d\n");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].pid, 33298);
+        assert_eq!(rows[1].command, "codex resume 019d032d");
+    }
+
+    #[test]
+    fn resolve_codex_process_prefers_shell_child_named_codex() {
+        let rows = parse_process_rows(
+            "21345 21344 21345 -zsh\n33298 21345 33298 codex resume abc\n33299 21345 33299 rg codex\n",
+        );
+        let process = resolve_codex_process(&rows, 21345).expect("codex child");
+        assert_eq!(process.pid, 33298);
+        assert_eq!(command_binary_name(&process.command), Some("codex"));
+    }
 }

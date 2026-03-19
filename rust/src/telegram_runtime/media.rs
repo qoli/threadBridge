@@ -330,14 +330,29 @@ pub(crate) async fn queue_image_for_thread(
             )
             .await?;
     }
-    if let Some(busy) =
-        busy_workspace_status(&state.workspace_status_cache, &workspace_path).await?
+    if let Some(session_id) = usable_bound_session_id(session.as_ref())
+        && let Some(busy) =
+            busy_selected_session_status(&state.workspace_status_cache, &workspace_path, session_id)
+                .await?
     {
         send_scoped_message(
             bot,
             msg.chat.id,
             Some(thread_id),
             status_sync::busy_text_message(&busy.snapshot, true),
+        )
+        .await?;
+    }
+    if let Some(binding) = session.as_ref()
+        && super::thread_flow::selected_live_cli_owned_session(state, binding)
+            .await?
+            .is_some()
+    {
+        send_scoped_message(
+            bot,
+            msg.chat.id,
+            Some(thread_id),
+            status_sync::cli_owned_text_message(true),
         )
         .await?;
     }
@@ -375,10 +390,31 @@ pub(crate) async fn analyze_pending_image_batch(
     let workspace_path =
         ensure_bound_workspace_runtime(state, session.as_ref().context("missing session binding")?)
             .await?;
-    if let Some(busy) =
-        busy_workspace_status(&state.workspace_status_cache, &workspace_path).await?
+    if let Some(busy) = busy_selected_session_status(
+        &state.workspace_status_cache,
+        &workspace_path,
+        existing_thread_id,
+    )
+    .await?
     {
         let text = status_sync::busy_text_message(&busy.snapshot, false);
+        if let Some(callback_query_id) = callback_query_id {
+            bot.answer_callback_query(callback_query_id.clone())
+                .text(text)
+                .show_alert(true)
+                .await?;
+        } else {
+            send_scoped_message(bot, ChatId(record.metadata.chat_id), Some(thread_id), text)
+                .await?;
+        }
+        return Ok(());
+    }
+    if let Some(binding) = session.as_ref()
+        && super::thread_flow::selected_live_cli_owned_session(state, binding)
+            .await?
+            .is_some()
+    {
+        let text = status_sync::cli_owned_text_message(true);
         if let Some(callback_query_id) = callback_query_id {
             bot.answer_callback_query(callback_query_id.clone())
                 .text(text)

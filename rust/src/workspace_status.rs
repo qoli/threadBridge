@@ -11,14 +11,15 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-const STATUS_SCHEMA_VERSION: u32 = 1;
+const STATUS_SCHEMA_VERSION: u32 = 2;
 const STATUS_DIR: &str = ".threadbridge/state/codex-sync";
 const CURRENT_FILE: &str = "current.json";
 const EVENTS_FILE: &str = "events.jsonl";
+const SESSIONS_DIR: &str = "sessions";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkspaceStatusSource {
+pub enum SessionStatusOwner {
     Cli,
     Bot,
 }
@@ -33,22 +34,39 @@ pub enum WorkspaceStatusPhase {
 }
 
 impl WorkspaceStatusPhase {
-    pub fn is_idle(self) -> bool {
-        matches!(self, Self::Idle)
+    pub fn is_turn_busy(self) -> bool {
+        matches!(self, Self::TurnRunning | Self::TurnFinalizing)
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkspaceCurrentStatus {
+pub struct SessionCurrentStatus {
     pub schema_version: u32,
     pub workspace_cwd: String,
-    pub source: Option<WorkspaceStatusSource>,
+    pub session_id: String,
+    pub owner: SessionStatusOwner,
+    pub live: bool,
     pub phase: WorkspaceStatusPhase,
     pub shell_pid: Option<u32>,
     pub client: Option<String>,
-    pub session_id: Option<String>,
     pub turn_id: Option<String>,
     pub summary: Option<String>,
+    pub updated_at: String,
+}
+
+impl SessionCurrentStatus {
+    pub fn is_live_cli_session(&self) -> bool {
+        self.owner == SessionStatusOwner::Cli && self.live
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceAggregateStatus {
+    pub schema_version: u32,
+    pub workspace_cwd: String,
+    pub live_cli_session_ids: Vec<String>,
+    #[serde(default)]
+    pub active_shell_pids: Vec<u32>,
     pub updated_at: String,
 }
 
@@ -56,7 +74,7 @@ pub struct WorkspaceCurrentStatus {
 pub struct WorkspaceStatusEventRecord {
     pub schema_version: u32,
     pub event: String,
-    pub source: WorkspaceStatusSource,
+    pub source: SessionStatusOwner,
     pub workspace_cwd: String,
     pub occurred_at: String,
     pub payload: Value,
@@ -64,13 +82,13 @@ pub struct WorkspaceStatusEventRecord {
 
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceStatusCache {
-    inner: Arc<RwLock<HashMap<String, WorkspaceCurrentStatus>>>,
+    inner: Arc<RwLock<HashMap<String, WorkspaceAggregateStatus>>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct BusyWorkspaceStatus {
+pub struct BusySelectedSessionStatus {
     pub workspace_path: PathBuf,
-    pub snapshot: WorkspaceCurrentStatus,
+    pub snapshot: SessionCurrentStatus,
 }
 
 fn now_iso() -> String {
@@ -89,6 +107,10 @@ fn status_dir(workspace_path: &Path) -> PathBuf {
     workspace_path.join(STATUS_DIR)
 }
 
+fn sessions_dir(workspace_path: &Path) -> PathBuf {
+    status_dir(workspace_path).join(SESSIONS_DIR)
+}
+
 pub fn current_status_path(workspace_path: &Path) -> PathBuf {
     status_dir(workspace_path).join(CURRENT_FILE)
 }
@@ -97,15 +119,47 @@ pub fn events_path(workspace_path: &Path) -> PathBuf {
     status_dir(workspace_path).join(EVENTS_FILE)
 }
 
-pub fn idle_status_for_workspace(workspace_path: &Path) -> WorkspaceCurrentStatus {
-    WorkspaceCurrentStatus {
+fn session_file_name(session_id: &str) -> String {
+    let mut name = String::with_capacity(session_id.len() + 5);
+    for ch in session_id.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            name.push(ch);
+        } else {
+            name.push('_');
+        }
+    }
+    name.push_str(".json");
+    name
+}
+
+pub fn session_status_path(workspace_path: &Path, session_id: &str) -> PathBuf {
+    sessions_dir(workspace_path).join(session_file_name(session_id))
+}
+
+pub fn default_workspace_status(workspace_path: &Path) -> WorkspaceAggregateStatus {
+    WorkspaceAggregateStatus {
         schema_version: STATUS_SCHEMA_VERSION,
         workspace_cwd: canonical_workspace_string(workspace_path),
-        source: None,
+        live_cli_session_ids: Vec::new(),
+        active_shell_pids: Vec::new(),
+        updated_at: now_iso(),
+    }
+}
+
+pub fn default_session_status(
+    workspace_path: &Path,
+    session_id: &str,
+    owner: SessionStatusOwner,
+) -> SessionCurrentStatus {
+    SessionCurrentStatus {
+        schema_version: STATUS_SCHEMA_VERSION,
+        workspace_cwd: canonical_workspace_string(workspace_path),
+        session_id: session_id.to_owned(),
+        owner,
+        live: matches!(owner, SessionStatusOwner::Cli),
         phase: WorkspaceStatusPhase::Idle,
         shell_pid: None,
         client: None,
-        session_id: None,
         turn_id: None,
         summary: None,
         updated_at: now_iso(),
@@ -130,11 +184,19 @@ async fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
-pub async fn write_current_status(
+async fn write_workspace_status(
     workspace_path: &Path,
-    status: &WorkspaceCurrentStatus,
+    status: &WorkspaceAggregateStatus,
 ) -> Result<()> {
     atomic_write_json(&current_status_path(workspace_path), status).await
+}
+
+async fn write_session_status(workspace_path: &Path, status: &SessionCurrentStatus) -> Result<()> {
+    atomic_write_json(
+        &session_status_path(workspace_path, &status.session_id),
+        status,
+    )
+    .await
 }
 
 pub async fn append_status_event(
@@ -160,10 +222,11 @@ pub async fn append_status_event(
 pub async fn ensure_workspace_status_surface(workspace_path: &Path) -> Result<()> {
     let dir = status_dir(workspace_path);
     fs::create_dir_all(&dir).await?;
+    fs::create_dir_all(sessions_dir(workspace_path)).await?;
 
     let current_path = current_status_path(workspace_path);
     if !fs::try_exists(&current_path).await? {
-        write_current_status(workspace_path, &idle_status_for_workspace(workspace_path)).await?;
+        write_workspace_status(workspace_path, &default_workspace_status(workspace_path)).await?;
     }
 
     let events_path = events_path(workspace_path);
@@ -174,15 +237,67 @@ pub async fn ensure_workspace_status_surface(workspace_path: &Path) -> Result<()
     Ok(())
 }
 
-pub async fn read_current_status(workspace_path: &Path) -> Result<WorkspaceCurrentStatus> {
+pub async fn read_workspace_aggregate_status(
+    workspace_path: &Path,
+) -> Result<WorkspaceAggregateStatus> {
     let path = current_status_path(workspace_path);
     match fs::read_to_string(&path).await {
         Ok(content) => Ok(serde_json::from_str(&content)?),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(idle_status_for_workspace(workspace_path))
+            Ok(default_workspace_status(workspace_path))
         }
         Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
     }
+}
+
+pub async fn read_session_status(
+    workspace_path: &Path,
+    session_id: &str,
+) -> Result<Option<SessionCurrentStatus>> {
+    let path = session_status_path(workspace_path, session_id);
+    match fs::read_to_string(&path).await {
+        Ok(content) => Ok(Some(serde_json::from_str(&content)?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+async fn list_all_session_statuses(workspace_path: &Path) -> Result<Vec<SessionCurrentStatus>> {
+    let dir_path = sessions_dir(workspace_path);
+    if !fs::try_exists(&dir_path).await? {
+        return Ok(Vec::new());
+    }
+    let mut dir = fs::read_dir(dir_path).await?;
+    let mut sessions: Vec<SessionCurrentStatus> = Vec::new();
+    while let Some(entry) = dir.next_entry().await? {
+        if !entry.file_type().await?.is_file() {
+            continue;
+        }
+        let content = fs::read_to_string(entry.path()).await?;
+        sessions.push(serde_json::from_str(&content)?);
+    }
+    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(sessions)
+}
+
+async fn refresh_workspace_aggregate_status(
+    workspace_path: &Path,
+    mut aggregate: WorkspaceAggregateStatus,
+) -> Result<WorkspaceAggregateStatus> {
+    let sessions = list_all_session_statuses(workspace_path).await?;
+    let mut live_cli_session_ids = sessions
+        .iter()
+        .filter(|session| session.is_live_cli_session())
+        .map(|session| session.session_id.clone())
+        .collect::<Vec<_>>();
+    live_cli_session_ids.sort();
+    live_cli_session_ids.dedup();
+    aggregate.schema_version = STATUS_SCHEMA_VERSION;
+    aggregate.workspace_cwd = canonical_workspace_string(workspace_path);
+    aggregate.live_cli_session_ids = live_cli_session_ids;
+    aggregate.updated_at = now_iso();
+    write_workspace_status(workspace_path, &aggregate).await?;
+    Ok(aggregate)
 }
 
 fn summarize_prompt(prompt: &str) -> Option<String> {
@@ -200,43 +315,58 @@ fn summarize_prompt(prompt: &str) -> Option<String> {
     Some(summary)
 }
 
+pub async fn list_live_cli_sessions(workspace_path: &Path) -> Result<Vec<SessionCurrentStatus>> {
+    let aggregate = read_workspace_aggregate_status(workspace_path).await?;
+    let mut sessions = Vec::new();
+    for session_id in aggregate.live_cli_session_ids {
+        if let Some(session) = read_session_status(workspace_path, &session_id).await? {
+            sessions.push(session);
+        }
+    }
+    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(sessions)
+}
+
 pub async fn record_bot_status_event(
     workspace_path: &Path,
     event_name: &str,
     session_id: Option<&str>,
     turn_id: Option<&str>,
     summary: Option<&str>,
-) -> Result<WorkspaceCurrentStatus> {
+) -> Result<SessionCurrentStatus> {
     ensure_workspace_status_surface(workspace_path).await?;
-    let mut current = read_current_status(workspace_path).await?;
+    let session_id = session_id.context("bot workspace status event requires a session_id")?;
+    let mut current = read_session_status(workspace_path, session_id)
+        .await?
+        .unwrap_or_else(|| {
+            default_session_status(workspace_path, session_id, SessionStatusOwner::Bot)
+        });
     let payload = json!({
         "session_id": session_id,
         "turn_id": turn_id,
         "summary": summary,
     });
 
+    current.schema_version = STATUS_SCHEMA_VERSION;
+    current.workspace_cwd = canonical_workspace_string(workspace_path);
+    current.owner = SessionStatusOwner::Bot;
+    current.live = false;
+    current.shell_pid = None;
+    current.turn_id = turn_id.map(str::to_owned);
+    current.updated_at = now_iso();
+
     let next = match event_name {
-        "bot_turn_started" => WorkspaceCurrentStatus {
-            schema_version: STATUS_SCHEMA_VERSION,
-            workspace_cwd: current.workspace_cwd.clone(),
-            source: Some(WorkspaceStatusSource::Bot),
-            phase: WorkspaceStatusPhase::TurnRunning,
-            shell_pid: None,
-            client: Some("threadbridge".to_owned()),
-            session_id: session_id.map(str::to_owned),
-            turn_id: turn_id.map(str::to_owned),
-            summary: summary.and_then(summarize_prompt),
-            updated_at: now_iso(),
-        },
+        "bot_turn_started" => {
+            current.phase = WorkspaceStatusPhase::TurnRunning;
+            current.client = Some("threadbridge".to_owned());
+            current.summary = summary.and_then(summarize_prompt);
+            current
+        }
         "bot_turn_completed" | "bot_turn_failed" => {
-            current.source = None;
             current.phase = WorkspaceStatusPhase::Idle;
-            current.shell_pid = None;
-            current.client = None;
-            current.session_id = None;
+            current.client = Some("threadbridge".to_owned());
             current.turn_id = None;
-            current.summary = None;
-            current.updated_at = now_iso();
+            current.summary = summary.and_then(summarize_prompt).or(current.summary);
             current
         }
         other => {
@@ -247,13 +377,15 @@ pub async fn record_bot_status_event(
     let record = WorkspaceStatusEventRecord {
         schema_version: STATUS_SCHEMA_VERSION,
         event: event_name.to_owned(),
-        source: WorkspaceStatusSource::Bot,
+        source: SessionStatusOwner::Bot,
         workspace_cwd: canonical_workspace_string(workspace_path),
         occurred_at: now_iso(),
         payload,
     };
     append_status_event(workspace_path, &record).await?;
-    write_current_status(workspace_path, &next).await?;
+    write_session_status(workspace_path, &next).await?;
+    let aggregate = read_workspace_aggregate_status(workspace_path).await?;
+    let _ = refresh_workspace_aggregate_status(workspace_path, aggregate).await?;
     Ok(next)
 }
 
@@ -262,7 +394,7 @@ impl WorkspaceStatusCache {
         Self::default()
     }
 
-    pub async fn get(&self, workspace_path: &Path) -> Option<WorkspaceCurrentStatus> {
+    pub async fn get(&self, workspace_path: &Path) -> Option<WorkspaceAggregateStatus> {
         self.inner
             .read()
             .await
@@ -270,7 +402,7 @@ impl WorkspaceStatusCache {
             .cloned()
     }
 
-    pub async fn insert(&self, status: WorkspaceCurrentStatus) {
+    pub async fn insert(&self, status: WorkspaceAggregateStatus) {
         self.inner
             .write()
             .await
@@ -283,28 +415,32 @@ impl WorkspaceStatusCache {
     }
 }
 
-pub async fn read_status_with_cache(
+pub async fn read_workspace_status_with_cache(
     cache: &WorkspaceStatusCache,
     workspace_path: &Path,
-) -> Result<WorkspaceCurrentStatus> {
+) -> Result<WorkspaceAggregateStatus> {
     if let Some(status) = cache.get(workspace_path).await {
         return Ok(status);
     }
-    let status = read_current_status(workspace_path).await?;
+    let status = read_workspace_aggregate_status(workspace_path).await?;
     cache.insert(status.clone()).await;
     Ok(status)
 }
 
-pub async fn busy_workspace_status(
+pub async fn busy_selected_session_status(
     cache: &WorkspaceStatusCache,
     workspace_path: &Path,
-) -> Result<Option<BusyWorkspaceStatus>> {
-    let snapshot = read_current_status(workspace_path).await?;
-    cache.insert(snapshot.clone()).await;
-    if snapshot.phase.is_idle() {
+    session_id: &str,
+) -> Result<Option<BusySelectedSessionStatus>> {
+    let aggregate = read_workspace_aggregate_status(workspace_path).await?;
+    cache.insert(aggregate).await;
+    let Some(snapshot) = read_session_status(workspace_path, session_id).await? else {
+        return Ok(None);
+    };
+    if !snapshot.phase.is_turn_busy() {
         return Ok(None);
     }
-    Ok(Some(BusyWorkspaceStatus {
+    Ok(Some(BusySelectedSessionStatus {
         workspace_path: workspace_path.to_path_buf(),
         snapshot,
     }))
@@ -313,75 +449,166 @@ pub async fn busy_workspace_status(
 #[cfg(test)]
 mod tests {
     use super::{
-        WorkspaceStatusCache, WorkspaceStatusPhase, WorkspaceStatusSource, busy_workspace_status,
-        current_status_path, ensure_workspace_status_surface, idle_status_for_workspace,
-        read_current_status, record_bot_status_event,
+        SessionCurrentStatus, SessionStatusOwner, WorkspaceStatusCache, WorkspaceStatusPhase,
+        busy_selected_session_status, current_status_path, ensure_workspace_status_surface,
+        list_live_cli_sessions, read_session_status, read_workspace_aggregate_status,
+        record_bot_status_event, session_status_path,
     };
     use std::path::PathBuf;
     use tokio::fs;
     use uuid::Uuid;
 
-    fn temp_workspace() -> PathBuf {
-        std::env::temp_dir().join(format!("threadbridge-status-test-{}", Uuid::new_v4()))
+    fn temp_path() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "threadbridge-workspace-status-test-{}",
+            Uuid::new_v4()
+        ))
     }
 
     #[tokio::test]
-    async fn ensure_workspace_status_surface_initializes_idle_snapshot() {
-        let workspace = temp_workspace();
-        fs::create_dir_all(&workspace).await.unwrap();
-
+    async fn ensure_surface_creates_aggregate_and_sessions_directory() {
+        let workspace = temp_path();
         ensure_workspace_status_surface(&workspace).await.unwrap();
 
-        let status = read_current_status(&workspace).await.unwrap();
-        assert_eq!(status.phase, WorkspaceStatusPhase::Idle);
-        assert_eq!(status.source, None);
-        assert!(current_status_path(&workspace).exists());
+        assert!(
+            fs::try_exists(current_status_path(&workspace))
+                .await
+                .unwrap()
+        );
+        assert!(
+            fs::try_exists(workspace.join(".threadbridge/state/codex-sync/sessions"))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
-    async fn bot_events_transition_status_and_cache() {
-        let workspace = temp_workspace();
-        fs::create_dir_all(&workspace).await.unwrap();
-        ensure_workspace_status_surface(&workspace).await.unwrap();
-
-        let started = record_bot_status_event(
+    async fn bot_events_write_session_snapshot() {
+        let workspace = temp_path();
+        record_bot_status_event(
             &workspace,
             "bot_turn_started",
-            Some("thread-1"),
+            Some("thr_bot"),
             Some("turn-1"),
-            Some("hello world"),
+            Some("hello"),
         )
         .await
         .unwrap();
-        assert_eq!(started.source, Some(WorkspaceStatusSource::Bot));
-        assert_eq!(started.phase, WorkspaceStatusPhase::TurnRunning);
 
-        let cache = WorkspaceStatusCache::new();
-        cache.insert(started.clone()).await;
-        let busy = busy_workspace_status(&cache, &workspace)
+        let session = read_session_status(&workspace, "thr_bot")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(busy.snapshot.phase, WorkspaceStatusPhase::TurnRunning);
+        assert_eq!(session.owner, SessionStatusOwner::Bot);
+        assert_eq!(session.phase, WorkspaceStatusPhase::TurnRunning);
+        assert!(!session.live);
+    }
 
-        let completed = record_bot_status_event(
-            &workspace,
-            "bot_turn_completed",
-            Some("thread-1"),
-            Some("turn-1"),
-            None,
+    #[tokio::test]
+    async fn bot_events_take_over_existing_cli_session_snapshot() {
+        let workspace = temp_path();
+        ensure_workspace_status_surface(&workspace).await.unwrap();
+        let cli_session = SessionCurrentStatus {
+            schema_version: 2,
+            workspace_cwd: workspace.display().to_string(),
+            session_id: "thr_cli".to_owned(),
+            owner: SessionStatusOwner::Cli,
+            live: false,
+            phase: WorkspaceStatusPhase::Idle,
+            shell_pid: Some(99),
+            client: Some("codex-cli".to_owned()),
+            turn_id: None,
+            summary: Some("startup".to_owned()),
+            updated_at: "2026-03-19T00:00:00.000Z".to_owned(),
+        };
+        fs::write(
+            session_status_path(&workspace, "thr_cli"),
+            format!("{}\n", serde_json::to_string_pretty(&cli_session).unwrap()),
         )
         .await
         .unwrap();
-        assert_eq!(completed.phase, WorkspaceStatusPhase::Idle);
-        assert_eq!(completed.source, None);
+
+        let session = record_bot_status_event(
+            &workspace,
+            "bot_turn_started",
+            Some("thr_cli"),
+            Some("turn-1"),
+            Some("handoff"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(session.owner, SessionStatusOwner::Bot);
+        assert_eq!(session.phase, WorkspaceStatusPhase::TurnRunning);
+        assert!(!session.live);
+        assert_eq!(session.shell_pid, None);
     }
 
-    #[test]
-    fn idle_snapshot_uses_workspace_path() {
-        let workspace = PathBuf::from("/tmp/example-workspace");
-        let idle = idle_status_for_workspace(&workspace);
-        assert_eq!(idle.phase, WorkspaceStatusPhase::Idle);
-        assert!(idle.workspace_cwd.ends_with("example-workspace"));
+    #[tokio::test]
+    async fn busy_selected_session_only_blocks_running_turns() {
+        let workspace = temp_path();
+        record_bot_status_event(
+            &workspace,
+            "bot_turn_started",
+            Some("thr_bot"),
+            Some("turn-1"),
+            Some("hello"),
+        )
+        .await
+        .unwrap();
+
+        let busy =
+            busy_selected_session_status(&WorkspaceStatusCache::new(), &workspace, "thr_bot")
+                .await
+                .unwrap();
+        assert!(busy.is_some());
+
+        record_bot_status_event(
+            &workspace,
+            "bot_turn_completed",
+            Some("thr_bot"),
+            Some("turn-1"),
+            Some("done"),
+        )
+        .await
+        .unwrap();
+
+        let busy =
+            busy_selected_session_status(&WorkspaceStatusCache::new(), &workspace, "thr_bot")
+                .await
+                .unwrap();
+        assert!(busy.is_none());
+    }
+
+    #[tokio::test]
+    async fn live_cli_session_listing_reads_per_session_registry() {
+        let workspace = temp_path();
+        ensure_workspace_status_surface(&workspace).await.unwrap();
+        let cli_session = SessionCurrentStatus {
+            schema_version: 2,
+            workspace_cwd: workspace.display().to_string(),
+            session_id: "thr_cli".to_owned(),
+            owner: SessionStatusOwner::Cli,
+            live: true,
+            phase: WorkspaceStatusPhase::ShellActive,
+            shell_pid: Some(12),
+            client: Some("codex-cli".to_owned()),
+            turn_id: None,
+            summary: Some("startup".to_owned()),
+            updated_at: "2026-03-19T00:00:00.000Z".to_owned(),
+        };
+        fs::write(
+            session_status_path(&workspace, "thr_cli"),
+            format!("{}\n", serde_json::to_string_pretty(&cli_session).unwrap()),
+        )
+        .await
+        .unwrap();
+
+        let aggregate = read_workspace_aggregate_status(&workspace).await.unwrap();
+        super::refresh_workspace_aggregate_status(&workspace, aggregate)
+            .await
+            .unwrap();
+        let sessions = list_live_cli_sessions(&workspace).await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "thr_cli");
     }
 }

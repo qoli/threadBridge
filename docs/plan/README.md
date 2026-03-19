@@ -33,7 +33,8 @@
 
 - [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md)
   - 目標是 CLI / Telegram 共用同一個 Codex session
-  - 目前是調研草稿，且完整落地需要 upstream `codex` 暴露 remote attach 能力
+  - threadBridge 側的 session registry、`.cli/.attach` title、selected-session gate、排他式 `/attach_cli_session` handoff 已落地
+  - 但完整 live turn/item/delta 鏡像仍需要 upstream `codex` 暴露更完整的 remote attach / shared runtime 能力
 - [runtime-state-machine.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-state-machine.md)
   - 狀態語義主規格草稿
 - [message-queue-and-status-delivery.md](/Volumes/Data/Github/threadBridge/docs/plan/message-queue-and-status-delivery.md)

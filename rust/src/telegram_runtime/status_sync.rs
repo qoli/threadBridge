@@ -8,7 +8,8 @@ use teloxide::types::{MessageId, ThreadId};
 use tracing::warn;
 
 use super::*;
-use crate::workspace_status::WorkspaceStatusSource;
+use crate::repository::SessionAttachmentState;
+use crate::workspace_status::{SessionCurrentStatus, SessionStatusOwner, WorkspaceAggregateStatus};
 
 const TELEGRAM_TOPIC_TITLE_MAX_CHARS: usize = 128;
 
@@ -48,7 +49,8 @@ fn truncate_topic_base(base: &str, suffix: &str) -> String {
 pub(crate) fn render_topic_title(
     record: &ThreadRecord,
     workspace_path: Option<&Path>,
-    snapshot: Option<&crate::workspace_status::WorkspaceCurrentStatus>,
+    session: Option<&SessionBinding>,
+    aggregate: Option<&WorkspaceAggregateStatus>,
 ) -> String {
     let base = record
         .metadata
@@ -61,14 +63,13 @@ pub(crate) fn render_topic_title(
         .unwrap_or_else(|| "Unbound".to_owned());
 
     let mut suffix = String::new();
-    if let Some(snapshot) = snapshot
-        && !snapshot.phase.is_idle()
+    if session.is_some_and(|binding| binding.attachment_state == SessionAttachmentState::CliHandoff)
     {
-        match snapshot.source {
-            Some(WorkspaceStatusSource::Cli) => suffix.push_str(" · cli"),
-            Some(WorkspaceStatusSource::Bot) => suffix.push_str(" · bot"),
-            None => {}
-        }
+        suffix.push_str(" · attach");
+    } else if let Some(aggregate) = aggregate
+        && !aggregate.live_cli_session_ids.is_empty()
+    {
+        suffix.push_str(" · cli");
     }
     if record.metadata.session_broken {
         suffix.push_str(" · broken");
@@ -90,12 +91,17 @@ pub(crate) async fn refresh_thread_topic_title(
         .as_ref()
         .and_then(|binding| binding.workspace_cwd.as_deref())
         .map(PathBuf::from);
-    let snapshot = if let Some(path) = workspace_path.as_ref() {
-        Some(read_status_with_cache(&state.workspace_status_cache, path).await?)
+    let aggregate = if let Some(path) = workspace_path.as_ref() {
+        Some(read_workspace_status_with_cache(&state.workspace_status_cache, path).await?)
     } else {
         None
     };
-    let title = render_topic_title(record, workspace_path.as_deref(), snapshot.as_ref());
+    let title = render_topic_title(
+        record,
+        workspace_path.as_deref(),
+        session.as_ref(),
+        aggregate.as_ref(),
+    );
     bot.edit_forum_topic(
         ChatId(record.metadata.chat_id),
         thread_id_from_i32(message_thread_id),
@@ -106,39 +112,43 @@ pub(crate) async fn refresh_thread_topic_title(
 }
 
 pub(crate) fn busy_text_message(
-    snapshot: &crate::workspace_status::WorkspaceCurrentStatus,
+    snapshot: &SessionCurrentStatus,
     image_saved: bool,
 ) -> &'static str {
-    match snapshot.source {
-        Some(WorkspaceStatusSource::Cli) if image_saved => {
-            "Image saved. Analysis will stay pending until local Codex CLI becomes idle."
+    match snapshot.owner {
+        SessionStatusOwner::Cli if image_saved => {
+            "Image saved. Analysis will stay pending until the attached CLI session finishes its current turn."
         }
-        Some(WorkspaceStatusSource::Cli) => {
-            "Local Codex CLI is active in this workspace. Wait for it to finish before sending a new Telegram request."
+        SessionStatusOwner::Cli => {
+            "The attached CLI session is already running a turn. Wait for it to finish before sending a new Telegram request."
         }
-        Some(WorkspaceStatusSource::Bot) => {
-            "This workspace is already handling another Telegram request. Wait for it to finish before sending a new one."
-        }
-        None => {
-            "This workspace is currently busy. Wait for it to finish before sending a new request."
+        SessionStatusOwner::Bot => {
+            "This thread's selected Codex session is already handling another Telegram request. Wait for it to finish before sending a new one."
         }
     }
 }
 
-pub(crate) fn busy_command_message(
-    snapshot: &crate::workspace_status::WorkspaceCurrentStatus,
-) -> &'static str {
-    match snapshot.source {
-        Some(WorkspaceStatusSource::Cli) => {
-            "Local Codex CLI is active in this workspace. Wait for it to finish before changing the Telegram session state."
+pub(crate) fn busy_command_message(snapshot: &SessionCurrentStatus) -> &'static str {
+    match snapshot.owner {
+        SessionStatusOwner::Cli => {
+            "The attached CLI session is already running a turn. Wait for it to finish before changing this thread's session selection."
         }
-        Some(WorkspaceStatusSource::Bot) => {
-            "This workspace is already handling another Telegram request. Wait for it to finish before changing the Telegram session state."
-        }
-        None => {
-            "This workspace is currently busy. Wait for it to finish before changing the Telegram session state."
+        SessionStatusOwner::Bot => {
+            "This thread's selected Codex session is already handling another Telegram request. Wait for it to finish before changing session state."
         }
     }
+}
+
+pub(crate) fn cli_owned_text_message(image_saved: bool) -> &'static str {
+    if image_saved {
+        "Image saved. Local Codex CLI currently owns this session. Run /attach_cli_session to take it over before starting analysis."
+    } else {
+        "Local Codex CLI currently owns this session. Run /attach_cli_session to take it over in Telegram."
+    }
+}
+
+pub(crate) fn cli_owned_command_message() -> &'static str {
+    "Local Codex CLI currently owns this session. Run /attach_cli_session to take it over before changing thread session state."
 }
 
 pub async fn spawn_workspace_status_watcher(bot: Bot, state: AppState) {
@@ -165,10 +175,7 @@ async fn sync_workspace_titles_once(
     let records = state.repository.list_active_threads().await?;
     let mut active_conversations = HashSet::new();
     let mut keep_workspaces = Vec::new();
-    let mut snapshot_by_workspace: HashMap<
-        String,
-        crate::workspace_status::WorkspaceCurrentStatus,
-    > = HashMap::new();
+    let mut aggregate_by_workspace: HashMap<String, WorkspaceAggregateStatus> = HashMap::new();
 
     for record in records {
         let Some(message_thread_id) = record.metadata.message_thread_id else {
@@ -176,32 +183,57 @@ async fn sync_workspace_titles_once(
         };
         active_conversations.insert(record.conversation_key.clone());
 
-        let session = state.repository.read_session_binding(&record).await?;
+        let mut session = state.repository.read_session_binding(&record).await?;
         let workspace_path = session
             .as_ref()
             .and_then(|binding| binding.workspace_cwd.as_deref())
             .map(PathBuf::from);
 
-        let snapshot = if let Some(workspace_path) = workspace_path.as_ref() {
+        let aggregate = if let Some(workspace_path) = workspace_path.as_ref() {
             let key = workspace_path
                 .canonicalize()
                 .unwrap_or_else(|_| workspace_path.clone())
                 .display()
                 .to_string();
             keep_workspaces.push(key.clone());
-            if let Some(existing) = snapshot_by_workspace.get(&key) {
+            if let Some(existing) = aggregate_by_workspace.get(&key) {
                 Some(existing.clone())
             } else {
-                let loaded = crate::workspace_status::read_current_status(workspace_path).await?;
+                let loaded =
+                    crate::workspace_status::read_workspace_aggregate_status(workspace_path)
+                        .await?;
                 state.workspace_status_cache.insert(loaded.clone()).await;
-                snapshot_by_workspace.insert(key, loaded.clone());
+                aggregate_by_workspace.insert(key, loaded.clone());
                 Some(loaded)
             }
         } else {
             None
         };
 
-        let rendered = render_topic_title(&record, workspace_path.as_deref(), snapshot.as_ref());
+        if let (Some(binding), Some(aggregate)) = (session.as_ref(), aggregate.as_ref())
+            && binding.attachment_state == SessionAttachmentState::CliHandoff
+        {
+            let selected_session_id = usable_bound_session_id(session.as_ref());
+            if selected_session_id.is_some_and(|session_id| {
+                aggregate
+                    .live_cli_session_ids
+                    .iter()
+                    .any(|item| item == session_id)
+            }) {
+                let released = state
+                    .repository
+                    .clear_cli_handoff_attachment(record.clone())
+                    .await?;
+                session = state.repository.read_session_binding(&released).await?;
+            }
+        }
+
+        let rendered = render_topic_title(
+            &record,
+            workspace_path.as_deref(),
+            session.as_ref(),
+            aggregate.as_ref(),
+        );
         let previous = applied_titles.get(&record.conversation_key);
         if previous.is_some_and(|value| value == &rendered) {
             continue;
@@ -227,10 +259,11 @@ async fn sync_workspace_titles_once(
 #[cfg(test)]
 mod tests {
     use super::render_topic_title;
-    use crate::repository::{ThreadMetadata, ThreadRecord, ThreadScope, ThreadStatus};
-    use crate::workspace_status::{
-        WorkspaceCurrentStatus, WorkspaceStatusPhase, WorkspaceStatusSource,
+    use crate::repository::{
+        SessionAttachmentState, SessionBinding, ThreadMetadata, ThreadRecord, ThreadScope,
+        ThreadStatus,
     };
+    use crate::workspace_status::WorkspaceAggregateStatus;
     use std::path::PathBuf;
 
     fn record(title: Option<&str>, session_broken: bool) -> ThreadRecord {
@@ -259,44 +292,77 @@ mod tests {
         }
     }
 
-    fn snapshot(
-        source: WorkspaceStatusSource,
-        phase: WorkspaceStatusPhase,
-    ) -> WorkspaceCurrentStatus {
-        WorkspaceCurrentStatus {
-            schema_version: 1,
+    fn aggregate(session_ids: &[&str]) -> WorkspaceAggregateStatus {
+        WorkspaceAggregateStatus {
+            schema_version: 2,
             workspace_cwd: "/tmp/workspace".to_owned(),
-            source: Some(source),
-            phase,
-            shell_pid: Some(42),
-            client: Some("codex-cli".to_owned()),
-            session_id: None,
-            turn_id: None,
-            summary: None,
+            live_cli_session_ids: session_ids
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            active_shell_pids: vec![42],
+            updated_at: "2026-03-19T00:00:00.000Z".to_owned(),
+        }
+    }
+
+    fn binding(
+        selected_session_id: Option<&str>,
+        attachment_state: SessionAttachmentState,
+    ) -> SessionBinding {
+        SessionBinding {
+            schema_version: 2,
+            codex_thread_id: selected_session_id.map(str::to_owned),
+            selected_session_id: selected_session_id.map(str::to_owned),
+            attachment_state,
+            workspace_cwd: Some("/tmp/workspace".to_owned()),
+            bound_at: None,
+            initialized_at: None,
+            last_verified_at: None,
+            session_broken: false,
+            session_broken_at: None,
+            session_broken_reason: None,
             updated_at: "2026-03-19T00:00:00.000Z".to_owned(),
         }
     }
 
     #[test]
-    fn render_title_preserves_busy_and_broken_suffixes() {
+    fn render_title_uses_attach_for_cli_handoff_binding() {
         let title = render_topic_title(
             &record(Some("Status Sync"), true),
             Some(PathBuf::from("/tmp/workspace").as_path()),
-            Some(&snapshot(
-                WorkspaceStatusSource::Cli,
-                WorkspaceStatusPhase::TurnRunning,
+            Some(&binding(
+                Some("thr_cli"),
+                SessionAttachmentState::CliHandoff,
             )),
+            Some(&aggregate(&["thr_cli"])),
         );
-        assert_eq!(title, "Status Sync · cli · broken");
+        assert_eq!(title, "Status Sync · attach · broken");
     }
 
     #[test]
-    fn render_title_falls_back_to_workspace_basename() {
+    fn render_title_uses_cli_for_other_live_workspace_session() {
         let title = render_topic_title(
             &record(None, false),
             Some(PathBuf::from("/tmp/example-workspace").as_path()),
-            None,
+            Some(&binding(Some("thr_bot"), SessionAttachmentState::None)),
+            Some(&aggregate(&["thr_cli"])),
         );
-        assert_eq!(title, "example-workspace");
+        assert_eq!(title, "example-workspace · cli");
+    }
+
+    #[test]
+    fn render_title_truncates_before_attach_suffix() {
+        let long_title = "x".repeat(140);
+        let title = render_topic_title(
+            &record(Some(&long_title), false),
+            Some(PathBuf::from("/tmp/workspace").as_path()),
+            Some(&binding(
+                Some("thr_cli"),
+                SessionAttachmentState::CliHandoff,
+            )),
+            Some(&aggregate(&["thr_cli"])),
+        );
+        assert!(title.ends_with(" · attach"));
+        assert!(title.chars().count() <= 128);
     }
 }

@@ -14,13 +14,14 @@ pub(crate) use crate::image_artifacts::{
     render_pending_image_batch,
 };
 pub(crate) use crate::repository::{
-    AppendPendingImageInput, LogDirection, SessionBinding, ThreadRecord, ThreadRepository,
-    ThreadStatus,
+    AppendPendingImageInput, LogDirection, SessionAttachmentState, SessionBinding, ThreadRecord,
+    ThreadRepository, ThreadStatus,
 };
 pub(crate) use crate::tool_results::{TelegramOutboxItem, parse_telegram_outbox};
 pub(crate) use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 pub(crate) use crate::workspace_status::{
-    WorkspaceStatusCache, busy_workspace_status, read_status_with_cache, record_bot_status_event,
+    WorkspaceStatusCache, busy_selected_session_status, list_live_cli_sessions,
+    read_session_status, read_workspace_status_with_cache, record_bot_status_event,
 };
 
 pub mod final_reply;
@@ -49,6 +50,8 @@ pub enum Command {
     RestoreThread,
     #[command(description = "Revalidate the current bound Codex session for this thread")]
     ReconnectCodex,
+    #[command(description = "Take over a live CLI session and continue it in Telegram")]
+    AttachCliSession,
 }
 
 #[derive(Clone)]
@@ -274,7 +277,12 @@ pub(crate) fn disabled_link_preview_options() -> LinkPreviewOptions {
 pub(crate) fn usable_bound_session_id(session: Option<&SessionBinding>) -> Option<&str> {
     session
         .filter(|session| !session.session_broken)
-        .and_then(|session| session.codex_thread_id.as_deref())
+        .and_then(|session| {
+            session
+                .selected_session_id
+                .as_deref()
+                .or(session.codex_thread_id.as_deref())
+        })
 }
 
 pub(crate) fn workspace_path_from_binding(session: &SessionBinding) -> Result<PathBuf> {
@@ -337,6 +345,11 @@ mod tests {
         assert!(commands.iter().any(|command| command == "/new"));
         assert!(commands.iter().any(|command| command == "/new_thread"));
         assert!(
+            commands
+                .iter()
+                .any(|command| command == "/attach_cli_session")
+        );
+        assert!(
             !commands
                 .iter()
                 .any(|command| command == "/reset_codex_session")
@@ -349,6 +362,10 @@ mod tests {
         assert!(matches!(
             Command::parse("/new_thread", ""),
             Ok(Command::NewThread)
+        ));
+        assert!(matches!(
+            Command::parse("/attach_cli_session", ""),
+            Ok(Command::AttachCliSession)
         ));
         assert!(Command::parse("/reset_codex_session", "").is_err());
     }

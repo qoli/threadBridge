@@ -2,7 +2,22 @@
 
 ## 目前進度
 
-這份 Plan 目前是調研完成、尚未實作的草稿。
+這份 Plan 現在是部分落地。
+
+目前已落地：
+
+- threadBridge 已經從 workspace-level 單快照升級到 `workspace aggregate + per-session registry`
+- Telegram thread binding 已經有明確的 `selected_session_id`
+- topic title 已經改成 ownership 標記：
+  - `.cli` = 同 workspace 有 live CLI session，而且 CLI 目前持有輸入權
+  - `.attach` = 當前 thread 已接管原 CLI session，Telegram 目前持有輸入權
+- `/attach_cli_session` 已落地
+- `/attach_cli_session` 現在是排他式 handoff，不是單純選中
+- attach 成功時會結束本地 `codex` TUI，並回覆 `codex resume <session-id>`
+- busy gate 已經拆成：
+  - selected-session turn busy gate
+  - selected live CLI session ownership gate
+- Telegram 對已 attach 的 CLI session 發文字 / 圖片分析時，已經會對同一個 `thread.id` 做 `thread/resume` + `turn/start`
 
 目前已確認：
 
@@ -14,9 +29,10 @@
 
 目前尚未具備：
 
-- threadBridge 與本地 `codex` CLI 共用同一個 live app-server session
-- Telegram 輸入直接進入本地 CLI 正在使用的同一個 session
-- CLI 正在進行中的 turn 事件完整鏡像到 Telegram
+- threadBridge 與本地 `codex` CLI 共用同一個 live app-server runtime
+- CLI 正在進行中的 turn/item/delta 事件完整鏡像到 Telegram
+- Telegram 發出的 turn 在本地 CLI 開著的情況下，被 CLI 以 live attach UI 方式即時看見
+- 真正的 shared live TUI continuity
 
 ## 願景
 
@@ -140,6 +156,8 @@ threadBridge 這邊則需要：
 
 ### Phase 1: threadBridge 端 session registry
 
+目前已大致落地：
+
 - 在 bot-local state 中引入 `session-runtime.json`
 - 區分：
   - persisted `thread.id`
@@ -149,10 +167,14 @@ threadBridge 這邊則需要：
 
 ### Phase 2: CLI / Telegram 同 session 的被動同步
 
+目前已部分落地：
+
 不要求同一個 live runtime，只先做到：
 
 - Telegram 能更準確識別 CLI 正在使用哪個 persisted thread id
-- CLI turn 完成後，Telegram thread 能讀到更完整的 turn 結果與最後狀態
+- Telegram 可以手動 attach 到 live CLI session
+- Telegram 往 attach 後的 session 發 turn 時，會沿用同一個 persisted `thread.id`
+- CLI turn 完成後，Telegram thread 能讀到 session 級狀態與最後摘要
 
 這一階段仍然不能承諾輸入窗口可無縫切換。
 
