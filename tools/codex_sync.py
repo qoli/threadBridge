@@ -437,6 +437,37 @@ def list_active_bound_threads(data_root: Path, workspace: Path) -> list[dict[str
     return records
 
 
+def clear_workspace_cli_handoff_bindings(data_root: Path, workspace: Path) -> int:
+    if not data_root.exists():
+        return 0
+
+    workspace_cwd = str(workspace.resolve())
+    cleared = 0
+    for entry in data_root.iterdir():
+        if not entry.is_dir():
+            continue
+        metadata = read_json_file(entry / "metadata.json")
+        binding_path = entry / "session-binding.json"
+        binding = read_json_file(binding_path)
+        if not metadata or not binding:
+            continue
+        if metadata.get("scope") != "thread":
+            continue
+        if metadata.get("status") != "active":
+            continue
+        if binding.get("workspace_cwd") != workspace_cwd:
+            continue
+        if binding.get("attachment_state") != "cli_handoff":
+            continue
+        binding["attachment_state"] = "none"
+        binding["updated_at"] = now_iso()
+        binding["last_verified_at"] = binding.get("last_verified_at") or binding["updated_at"]
+        atomic_write_json(binding_path, binding)
+        cleared += 1
+
+    return cleared
+
+
 def resolve_owner_thread(
     data_root: Path, workspace: Path, requested_thread_key: str | None
 ) -> str:
@@ -466,6 +497,7 @@ def command_prepare_launch(args: argparse.Namespace) -> int:
     workspace = workspace_root(args.workspace)
     ensure_surface(workspace)
     data_root = Path(args.data_root).resolve()
+    clear_workspace_cli_handoff_bindings(data_root, workspace)
     thread_key = resolve_owner_thread(data_root, workspace, args.thread_key)
     current = read_current(workspace)
     claim = read_owner_claim(workspace)
