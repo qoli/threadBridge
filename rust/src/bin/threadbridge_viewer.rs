@@ -2,30 +2,29 @@ use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use crossterm::event::{self, Event, KeyCode};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use serde::Deserialize;
+use crossterm::terminal;
+use reedline::{DefaultPrompt, DefaultPromptSegment, ExternalPrinter, Reedline, Signal};
+use threadbridge_rust::repository::TranscriptMirrorEntry;
+use threadbridge_rust::viewer_text::{
+    filter_transcript_entries, parse_transcript_mirror_line, read_transcript_mirror_jsonl,
+    render_transcript_lines,
+};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Args {
     data_root: PathBuf,
     workspace: PathBuf,
     thread_key: String,
     session_id: String,
     since: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct MirrorEntry {
-    timestamp: String,
-    origin: String,
-    role: String,
-    text: String,
 }
 
 fn parse_args() -> Result<Args> {
@@ -73,40 +72,15 @@ fn parse_args() -> Result<Args> {
     })
 }
 
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-fn print_header(args: &Args) -> Result<()> {
-    print!("\x1b[2J\x1b[H");
-    println!("threadBridge viewer");
-    println!("workspace: {}", args.workspace.display());
-    println!("thread_key: {}", args.thread_key);
-    println!("session_id: {}", args.session_id);
-    println!();
-    println!("read-only mirror from .attach handoff");
-    println!("press r to resume local Codex CLI");
-    println!();
-    io::stdout().flush()?;
-    Ok(())
-}
-
-fn render_entry(entry: &MirrorEntry) -> Option<String> {
-    let prefix = match (entry.origin.as_str(), entry.role.as_str()) {
-        ("telegram", "user") => "Telegram",
-        ("telegram", "assistant") => "Codex",
-        ("cli", "user") => "CLI",
-        ("cli", "assistant") => "Codex",
-        _ => return None,
-    };
-    Some(format!("{prefix}: {}", entry.text.trim()))
-}
-
 fn mirror_path(args: &Args) -> PathBuf {
     args.data_root
         .join(&args.thread_key)
         .join("state")
         .join("transcript-mirror.jsonl")
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn resume_command(args: &Args) -> Command {
@@ -122,50 +96,190 @@ fn resume_command(args: &Args) -> Command {
     cmd
 }
 
+fn terminal_width() -> u16 {
+    terminal::size()
+        .map(|(width, _)| width)
+        .unwrap_or(100)
+        .max(40)
+}
+
+fn load_entries(path: &Path, since: &str) -> Result<Vec<TranscriptMirrorEntry>> {
+    let entries = read_transcript_mirror_jsonl(path)?;
+    Ok(filter_transcript_entries(&entries, Some(since)))
+}
+
+fn raw_line_count(path: &Path) -> usize {
+    match fs::read_to_string(path) {
+        Ok(content) => content.lines().count(),
+        Err(_) => 0,
+    }
+}
+
+fn render_entries(entries: &[TranscriptMirrorEntry]) -> Vec<String> {
+    render_transcript_lines(entries, terminal_width())
+}
+
+fn print_terminal_title(args: &Args) {
+    let title = format!(
+        "threadBridge viewer | {} | r resume | q quit",
+        args.thread_key
+    );
+    print!("\x1b]0;{title}\x07");
+    let _ = io::stdout().flush();
+}
+
+fn print_header(args: &Args) -> Result<()> {
+    print_terminal_title(args);
+    println!("threadBridge viewer");
+    println!("workspace: {}", args.workspace.display());
+    println!("thread_key: {}", args.thread_key);
+    println!("session_id: {}", args.session_id);
+    println!("mode: reedline viewer");
+    println!("commands: r/resume | q/quit | help | reload");
+    println!();
+    io::stdout().flush()?;
+    Ok(())
+}
+
+fn print_lines(lines: &[String]) -> Result<()> {
+    for line in lines {
+        println!("{line}");
+    }
+    println!();
+    io::stdout().flush()?;
+    Ok(())
+}
+
+fn print_reload_snapshot(path: &Path, since: &str) -> Result<()> {
+    let entries = load_entries(path, since)?;
+    println!("--- reload ---");
+    print_lines(&render_entries(&entries))
+}
+
+fn print_help() -> Result<()> {
+    println!("commands:");
+    println!("  r | resume  resume local Codex CLI");
+    println!("  q | quit    exit viewer");
+    println!("  h | help    show this help");
+    println!("  reload      reprint the current transcript");
+    println!();
+    io::stdout().flush()?;
+    Ok(())
+}
+
+fn spawn_follow_thread(
+    path: PathBuf,
+    since: String,
+    mut seen_lines: usize,
+    stop: Arc<AtomicBool>,
+    printer: ExternalPrinter<String>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) {
+            match fs::read_to_string(&path) {
+                Ok(content) => {
+                    let lines = content.lines().collect::<Vec<_>>();
+                    if lines.len() < seen_lines {
+                        seen_lines = 0;
+                    }
+
+                    let mut appended = Vec::new();
+                    for line in lines.iter().skip(seen_lines) {
+                        match parse_transcript_mirror_line(line) {
+                            Ok(Some(entry)) if entry.timestamp.as_str() >= since.as_str() => {
+                                appended.push(entry);
+                            }
+                            Ok(Some(_)) | Ok(None) => {}
+                            Err(_) => {}
+                        }
+                    }
+
+                    seen_lines = lines.len();
+
+                    if !appended.is_empty() {
+                        let rendered = render_entries(&appended).join("\n");
+                        if printer.print(rendered).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    seen_lines = 0;
+                }
+                Err(_) => {}
+            }
+
+            thread::sleep(Duration::from_millis(250));
+        }
+    })
+}
+
 fn main() -> Result<()> {
     let args = parse_args()?;
-    print_header(&args)?;
-    enable_raw_mode().context("failed to enable terminal raw mode")?;
-
     let path = mirror_path(&args);
-    let mut seen_lines = 0usize;
+
+    print_header(&args)?;
+    let initial_entries = load_entries(&path, &args.since)?;
+    print_lines(&render_entries(&initial_entries))?;
+
+    let printer = ExternalPrinter::default();
+    let stop = Arc::new(AtomicBool::new(false));
+    let _follow_thread = spawn_follow_thread(
+        path.clone(),
+        args.since.clone(),
+        raw_line_count(&path),
+        Arc::clone(&stop),
+        printer.clone(),
+    );
+
+    let prompt = DefaultPrompt::new(
+        DefaultPromptSegment::Basic("viewer".to_owned()),
+        DefaultPromptSegment::Empty,
+    );
+    let mut editor = Reedline::create().with_external_printer(printer);
 
     loop {
-        if let Ok(content) = fs::read_to_string(&path) {
-            let lines = content.lines().collect::<Vec<_>>();
-            for line in lines.iter().skip(seen_lines) {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
+        match editor.read_line(&prompt) {
+            Ok(Signal::Success(line)) => match line.trim() {
+                "" => {}
+                "h" | "help" => {
+                    print_help()?;
                 }
-                let entry: MirrorEntry = match serde_json::from_str(trimmed) {
-                    Ok(entry) => entry,
-                    Err(_) => continue,
-                };
-                if entry.timestamp < args.since {
-                    continue;
+                "reload" => {
+                    print_reload_snapshot(&path, &args.since)?;
                 }
-                if let Some(rendered) = render_entry(&entry) {
-                    println!("{rendered}");
+                "q" | "quit" | "exit" => {
+                    stop.store(true, Ordering::Relaxed);
+                    println!("viewer exited");
+                    io::stdout().flush()?;
+                    break;
                 }
-            }
-            if lines.len() > seen_lines {
+                "r" | "resume" => {
+                    stop.store(true, Ordering::Relaxed);
+                    println!("resuming local Codex CLI...");
+                    io::stdout().flush()?;
+                    let error = resume_command(&args).exec();
+                    return Err(error).context("failed to exec hcodex resume");
+                }
+                other => {
+                    println!("unknown command: {other}");
+                    println!("use help to show available commands");
+                    println!();
+                    io::stdout().flush()?;
+                }
+            },
+            Ok(Signal::CtrlC) | Ok(Signal::CtrlD) => {
+                stop.store(true, Ordering::Relaxed);
+                println!("viewer exited");
                 io::stdout().flush()?;
+                break;
             }
-            seen_lines = lines.len();
-        }
-
-        if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()?
-                && key.code == KeyCode::Char('r')
-            {
-                disable_raw_mode().ok();
-                println!();
-                println!("Resuming local Codex CLI...");
-                io::stdout().flush().ok();
-                let error = resume_command(&args).exec();
-                return Err(error).context("failed to exec hcodex resume");
+            Err(error) => {
+                stop.store(true, Ordering::Relaxed);
+                return Err(error).context("reedline failed");
             }
         }
     }
+
+    Ok(())
 }

@@ -10,7 +10,7 @@
 - Telegram thread binding 已經有明確的 `selected_session_id`
 - topic title 已經改成 ownership 標記：
   - `.cli` = `hcodex live / Telegram viewer`
-  - `.attach` = `Telegram live / threadbridge_viewer`
+  - `.attach` = `Telegram live / threadbridge_viewer`（reedline viewer）
 - `/attach_cli_session` 已落地
 - `/attach_cli_session` 現在是排他式 handoff，不是單純選中
 - attach 成功時會結束本地 `codex` TUI，並回覆 `codex resume <session-id>`
@@ -43,7 +43,7 @@
 - `· attach`
   - Telegram 現在是 live
   - 本地 `codex` TUI 已被 kill
-  - 本地終端改跑 `threadbridge_viewer`
+  - 本地終端改跑 `threadbridge_viewer`（reedline viewer）
   - viewer 只應看到 attach 之後的 `Telegram user + Codex final`
 - viewer 只顯示 `user + assistant`
 - `user` 文本要求在送出後立刻鏡像

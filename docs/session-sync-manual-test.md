@@ -21,9 +21,13 @@
 - `hcodex` 是受管本地 CLI 入口
 - owner thread 透過 `thread_key` 決定
 - `.cli` 狀態下，Telegram viewer 只看 `CLI user + Codex final`
-- `/attach_cli_session` 會 kill `codex` TUI，然後在同一個終端進入只讀 viewer
+- `/attach_cli_session` 會 kill `codex` TUI，然後在同一個終端進入 `reedline` 只讀 viewer
 - `.attach` 狀態下，本地 viewer 只看 attach 之後的 `Telegram user + Codex final`
-- viewer 按 `r` 會在同一終端執行 `hcodex resume <session-id> --thread-key <thread-key>`
+- viewer 命令：
+  - `r` / `resume`
+  - `q` / `quit`
+  - `help`
+  - `reload`
 - `/thread_info` 會暴露 `thread_key`、selected session、marker 和 owner 狀態
 
 目前還沒有落地的是：
@@ -149,7 +153,7 @@ hi
 
 1. Telegram topic title 從 `· cli` 變成 `· attach`
 2. 原本的 `codex` TUI 會被結束
-3. 同一個本地終端不回到普通 prompt，而是直接進入 `threadbridge_viewer`
+3. 同一個本地終端不回到普通 prompt，而是直接進入 `threadbridge_viewer` 的 `reedline` viewer
 4. bot 回覆裡應給出：
 
 ```bash
@@ -164,7 +168,7 @@ hcodex resume <session-id> --thread-key <thread-key>
 
 ## 測試 4: `.attach` 狀態下 Telegram 接手輸入窗口
 
-現在 viewer 已在本地終端中打開，不要按 `r`。改到 Telegram owner thread 發送普通文字，例如：
+現在 viewer 已在本地終端中打開，不要執行 `resume`。改到 Telegram owner thread 發送普通文字，例如：
 
 ```text
 用一句話說明這個 repo 是做什麼的
@@ -184,9 +188,9 @@ hcodex resume <session-id> --thread-key <thread-key>
 - `Telegram -> viewer` 文本鏡像已生效
 - viewer 只顯示普通文字消息與 assistant 最終回覆；不顯示命令、系統事件或圖片分析內部 prompt
 
-## 測試 5: viewer 用 `r` 回到本地 CLI
+## 測試 5: viewer 用 `r` / `resume` 回到本地 CLI
 
-在 viewer 裡按：
+在 viewer prompt 裡輸入：
 
 ```text
 r
@@ -208,7 +212,7 @@ hcodex resume <session-id> --thread-key <thread-key>
 
 這一步驗證的是：
 
-- viewer 的唯一受管熱鍵是 `r`
+- viewer 的正式恢復命令是 `r` / `resume`
 - resume 會把 ownership 奪回給本地 CLI
 
 ## 測試 6: owner gate 生效

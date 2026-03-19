@@ -66,9 +66,27 @@ fn build_codex_sync_manage_wrapper_script(repo_root: &Path) -> String {
     .join("\n")
 }
 
+fn threadbridge_viewer_binary_path(repo_root: &Path) -> PathBuf {
+    if let Ok(current_exe) = std::env::current_exe()
+        && let Some(bin_dir) = current_exe.parent()
+    {
+        return bin_dir.join("threadbridge_viewer");
+    }
+
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_root.join("target"));
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    target_root.join(profile).join("threadbridge_viewer")
+}
+
 fn build_codex_shell_snippet(workspace_path: &Path, repo_root: &Path, data_root: &Path) -> String {
     let workspace = shell_single_quote(&workspace_path.display().to_string());
-    let repo_root = shell_single_quote(&repo_root.display().to_string());
+    let repo_root_quoted = shell_single_quote(&repo_root.display().to_string());
     let data_root = shell_single_quote(&data_root.display().to_string());
     let event_wrapper = shell_single_quote(
         &workspace_path
@@ -92,17 +110,23 @@ fn build_codex_shell_snippet(workspace_path: &Path, repo_root: &Path, data_root:
             .display()
             .to_string(),
     );
+    let viewer_binary = shell_single_quote(
+        &threadbridge_viewer_binary_path(repo_root)
+            .display()
+            .to_string(),
+    );
     let notify_json = serde_json::to_string(&vec![notify_wrapper]).unwrap_or_else(|_| "[]".into());
     let notify_json = shell_single_quote(&notify_json);
     [
         "# threadBridge Codex CLI sync",
         &format!("export THREADBRIDGE_WORKSPACE_ROOT={workspace}"),
-        &format!("export THREADBRIDGE_REPO_ROOT={repo_root}"),
+        &format!("export THREADBRIDGE_REPO_ROOT={repo_root_quoted}"),
         &format!("export THREADBRIDGE_DATA_ROOT={data_root}"),
         &format!("export THREADBRIDGE_CODEX_SYNC_EVENT={event_wrapper}"),
         &format!("export THREADBRIDGE_CODEX_SYNC_MANAGE={manage_wrapper}"),
         &format!("export THREADBRIDGE_CODEX_NOTIFY_JSON={notify_json}"),
         &format!("export THREADBRIDGE_MANAGED_CODEX={managed_codex}"),
+        &format!("export THREADBRIDGE_VIEWER_BIN={viewer_binary}"),
         "",
         "__threadbridge_codex_in_workspace() {",
         "  local current_dir",
@@ -162,6 +186,9 @@ fn build_codex_shell_snippet(workspace_path: &Path, repo_root: &Path, data_root:
         "  if [ -n \"$attach_payload\" ]; then",
         "    local attach_thread_key attach_session_id attach_since",
         "    IFS=$'\\t' read -r attach_thread_key attach_session_id attach_since <<< \"$attach_payload\"",
+        "    if [ -x \"$THREADBRIDGE_VIEWER_BIN\" ]; then",
+        "      exec \"$THREADBRIDGE_VIEWER_BIN\" --repo-root \"$THREADBRIDGE_REPO_ROOT\" --data-root \"$THREADBRIDGE_DATA_ROOT\" --workspace \"$THREADBRIDGE_WORKSPACE_ROOT\" --thread-key \"$attach_thread_key\" --session-id \"$attach_session_id\" --since \"$attach_since\"",
+        "    fi",
         "    exec cargo run --manifest-path \"$THREADBRIDGE_REPO_ROOT/Cargo.toml\" --bin threadbridge_viewer -- --repo-root \"$THREADBRIDGE_REPO_ROOT\" --data-root \"$THREADBRIDGE_DATA_ROOT\" --workspace \"$THREADBRIDGE_WORKSPACE_ROOT\" --thread-key \"$attach_thread_key\" --session-id \"$attach_session_id\" --since \"$attach_since\"",
         "  fi",
         "  return \"$exit_code\"",
