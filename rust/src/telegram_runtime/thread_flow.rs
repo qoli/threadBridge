@@ -8,6 +8,8 @@ use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant, sleep};
 use tracing::{error, info};
 
+use crate::workspace_status::WorkspaceAggregateStatus;
+
 use super::final_reply::send_final_assistant_reply;
 use super::media::{self, dispatch_workspace_telegram_outbox};
 use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
@@ -346,7 +348,35 @@ pub(crate) async fn selected_live_cli_owned_session(
     if binding.attachment_state == SessionAttachmentState::CliHandoff {
         return Ok(None);
     }
-    current_thread_cli_owner_claim(state, record, binding).await
+    let Some(owner_claim) = current_thread_cli_owner_claim(state, record, binding).await? else {
+        return Ok(None);
+    };
+    let workspace_path = workspace_path_from_binding(binding)?;
+    let aggregate =
+        read_workspace_status_with_cache(&state.workspace_status_cache, &workspace_path).await?;
+    if cli_owner_claim_is_live(&aggregate, &owner_claim) {
+        return Ok(Some(owner_claim));
+    }
+    Ok(None)
+}
+
+fn cli_owner_claim_is_live(
+    aggregate: &WorkspaceAggregateStatus,
+    owner_claim: &CliOwnerClaim,
+) -> bool {
+    aggregate
+        .active_shell_pids
+        .iter()
+        .any(|shell_pid| *shell_pid == owner_claim.shell_pid)
+        || owner_claim
+            .session_id
+            .as_deref()
+            .is_some_and(|owner_session_id| {
+                aggregate
+                    .live_cli_session_ids
+                    .iter()
+                    .any(|session_id| session_id == owner_session_id)
+            })
 }
 
 pub(crate) fn log_cli_owned_rejection(
@@ -1370,7 +1400,10 @@ pub(crate) async fn run_text_message(
 
 #[cfg(test)]
 mod tests {
-    use super::{command_binary_name, parse_process_rows, resolve_codex_process};
+    use super::{
+        cli_owner_claim_is_live, command_binary_name, parse_process_rows, resolve_codex_process,
+    };
+    use crate::workspace_status::{CliOwnerClaim, WorkspaceAggregateStatus};
 
     #[test]
     fn parse_process_rows_keeps_full_command() {
@@ -1389,5 +1422,47 @@ mod tests {
         let process = resolve_codex_process(&rows, 21345).expect("codex child");
         assert_eq!(process.pid, 33298);
         assert_eq!(command_binary_name(&process.command), Some("codex"));
+    }
+
+    #[test]
+    fn cli_owner_claim_is_live_when_shell_is_active_before_session_start() {
+        let aggregate = WorkspaceAggregateStatus {
+            schema_version: 2,
+            workspace_cwd: "/tmp/workspace".into(),
+            live_cli_session_ids: Vec::new(),
+            active_shell_pids: vec![53249],
+            updated_at: "2026-03-19T00:00:00.000Z".into(),
+        };
+        let owner_claim = CliOwnerClaim {
+            schema_version: 2,
+            workspace_cwd: "/tmp/workspace".into(),
+            thread_key: "thread-1".into(),
+            shell_pid: 53249,
+            session_id: None,
+            started_at: "2026-03-19T00:00:00.000Z".into(),
+            updated_at: "2026-03-19T00:00:00.000Z".into(),
+        };
+        assert!(cli_owner_claim_is_live(&aggregate, &owner_claim));
+    }
+
+    #[test]
+    fn cli_owner_claim_is_not_live_when_shell_and_session_are_both_absent() {
+        let aggregate = WorkspaceAggregateStatus {
+            schema_version: 2,
+            workspace_cwd: "/tmp/workspace".into(),
+            live_cli_session_ids: vec!["session-b".into()],
+            active_shell_pids: vec![12345],
+            updated_at: "2026-03-19T00:00:00.000Z".into(),
+        };
+        let owner_claim = CliOwnerClaim {
+            schema_version: 2,
+            workspace_cwd: "/tmp/workspace".into(),
+            thread_key: "thread-1".into(),
+            shell_pid: 53249,
+            session_id: Some("session-a".into()),
+            started_at: "2026-03-19T00:00:00.000Z".into(),
+            updated_at: "2026-03-19T00:00:00.000Z".into(),
+        };
+        assert!(!cli_owner_claim_is_live(&aggregate, &owner_claim));
     }
 }
