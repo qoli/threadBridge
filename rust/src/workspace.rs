@@ -69,6 +69,7 @@ fn build_hcodex_launcher_script(
     workspace_path: &Path,
     repo_root: &Path,
     data_root: &Path,
+    threadbridge_executable: &Path,
     codex_source_preference: CodexSourcePreference,
 ) -> String {
     let workspace = shell_single_quote(&workspace_path.display().to_string());
@@ -79,12 +80,8 @@ fn build_hcodex_launcher_script(
             .display()
             .to_string(),
     );
-    let bridge = shell_single_quote(
-        &repo_root
-            .join("tools/hcodex_ws_bridge.py")
-            .display()
-            .to_string(),
-    );
+    let threadbridge_executable =
+        shell_single_quote(&threadbridge_executable.display().to_string());
     let managed_codex = shell_single_quote(
         &workspace_path
             .join(".threadbridge/bin/codex")
@@ -101,7 +98,7 @@ fn build_hcodex_launcher_script(
         format!("THREADBRIDGE_WORKSPACE_ROOT={workspace}"),
         format!("THREADBRIDGE_DATA_ROOT={data_root}"),
         format!("THREADBRIDGE_HCODEX_RESOLVER={resolver}"),
-        format!("THREADBRIDGE_HCODEX_WS_BRIDGE={bridge}"),
+        format!("THREADBRIDGE_EXECUTABLE={threadbridge_executable}"),
         format!(
             "THREADBRIDGE_CODEX_SOURCE={}",
             shell_single_quote(codex_source)
@@ -165,7 +162,7 @@ fn build_hcodex_launcher_script(
         "case \"$daemon_ws_url\" in".to_owned(),
         "  ws://*/*|wss://*/*)".to_owned(),
         "    ready_file=\"$(mktemp -t threadbridge-hcodex-ws-bridge.XXXXXX)\"".to_owned(),
-        "    python3 \"$THREADBRIDGE_HCODEX_WS_BRIDGE\" --upstream \"$daemon_ws_url\" --ready-file \"$ready_file\" >/dev/null 2>&1 &".to_owned(),
+        "    \"$THREADBRIDGE_EXECUTABLE\" hcodex-ws-bridge --upstream \"$daemon_ws_url\" --ready-file \"$ready_file\" >/dev/null 2>&1 &".to_owned(),
         "    bridge_pid=$!".to_owned(),
         "    ready_json=\"\"".to_owned(),
         "    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do".to_owned(),
@@ -286,6 +283,8 @@ pub async fn ensure_workspace_runtime(
     workspace_path: &Path,
 ) -> Result<PathBuf> {
     let codex_source_preference = read_codex_source_preference(repo_root).await?;
+    let threadbridge_executable = std::env::current_exe()
+        .context("failed to resolve current threadBridge executable path")?;
     fs::create_dir_all(workspace_path).await.with_context(|| {
         format!(
             "failed to create workspace directory: {}",
@@ -360,6 +359,7 @@ pub async fn ensure_workspace_runtime(
             workspace_path,
             repo_root,
             data_root,
+            &threadbridge_executable,
             codex_source_preference,
         ),
     )
@@ -525,12 +525,12 @@ mod tests {
                 .await
                 .unwrap();
         assert!(hcodex_launcher.contains("THREADBRIDGE_HCODEX_RESOLVER"));
-        assert!(hcodex_launcher.contains("THREADBRIDGE_HCODEX_WS_BRIDGE"));
+        assert!(hcodex_launcher.contains("THREADBRIDGE_EXECUTABLE"));
         assert!(hcodex_launcher.contains("THREADBRIDGE_CODEX_SOURCE='brew'"));
         assert!(hcodex_launcher.contains("THREADBRIDGE_MANAGED_CODEX"));
         assert!(hcodex_launcher.contains(".threadbridge/bin/codex"));
         assert!(hcodex_launcher.contains("remote_ws_url=\"$daemon_ws_url\""));
-        assert!(hcodex_launcher.contains("python3 \"$THREADBRIDGE_HCODEX_WS_BRIDGE\""));
+        assert!(hcodex_launcher.contains("\"$THREADBRIDGE_EXECUTABLE\" hcodex-ws-bridge"));
         assert!(hcodex_launcher.contains("--remote \"$remote_ws_url\""));
         assert!(hcodex_launcher.contains("codex_bin=\"$(command -v codex 2>/dev/null || true)\""));
         assert!(compat_shell.contains("hcodex() {"));
