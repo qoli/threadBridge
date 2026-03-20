@@ -66,6 +66,9 @@
 - 驗證返回的 `cwd` 是否仍等於保存的 `workspace_cwd`
 - 成功則清除 broken 狀態
 - 失敗則保留原 binding，但標成 broken，要求 `/new` 或重試
+- `/reconnect_codex` 目前也會重寫 workspace runtime state
+- 但現階段不能把它理解成「保證 shared ws endpoint 之後持續存活」
+- 如果 `current.json` 指到 stale endpoint，本地 `hcodex` 會再做 self-heal
 
 ## `session-binding.json`
 
@@ -114,4 +117,5 @@
 ## 後續工作
 
 1. 把 `session-lifecycle`、`session-level-cli-telegram-sync`、`runtime-state-machine` 的狀態語義完全收斂。
-2. 清理仍描述舊 viewer/attach handoff 的歷史文檔。
+2. 把 `/reconnect_codex`、shared runtime state、實際 runtime owner 的語義收斂成單一主模型。
+3. 清理仍描述舊 viewer/attach handoff 的歷史文檔。

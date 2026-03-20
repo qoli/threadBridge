@@ -10,6 +10,7 @@
 - `/bind_workspace`、`/new`、`/reconnect_codex`、`/archive_thread`、`/restore_thread` 已有既定語義
 - bot-local repository 已經保存 thread metadata、`session-binding.json`、archive 狀態
 - topic title、busy gate、session continuity 已經開始形成可供 UI 消費的狀態訊號
+- 本地 `hcodex` 已具備 shared runtime self-heal，能在 `current.json` stale 時自行拉起 shared daemon / proxy
 
 目前仍缺：
 
@@ -17,6 +18,7 @@
 - 給本地管理面使用的 query / control API
 - thread list 與 thread state 的正式 view model
 - 非 Telegram surface 的即時狀態推送機制
+- shared daemon / TUI proxy 的正式長壽命 owner
 
 ## 問題
 
@@ -33,7 +35,7 @@
 
 ## 定位
 
-這份文檔定義的是本地 macOS 管理 surface，不是新的聊天入口，也不是完整 observability 平台。
+這份文檔定義的是本地 macOS 管理 surface 與 runtime owner 候選，不是新的聊天入口，也不是完整 observability 平台。
 
 這裡說的「托盤」在 macOS 上實際比較接近：
 
@@ -45,6 +47,7 @@
 - thread list 與 thread 摘要狀態
 - thread 級 control action
 - 本地快捷入口，例如開啟 Telegram thread 或 workspace
+- shared app-server runtime 的長壽命 ownership / health management
 
 這份 plan 不處理：
 
@@ -150,7 +153,28 @@ menu bar icon 或選單標題可以考慮承載非常少量的全域訊號，例
   - native folder picker
   - 本地通知
 
-### 3. UI 技術方向
+### 3. macOS 常駐進程作為 shared runtime owner 候選
+
+這是這份 plan 現在新增的重要責任邊界。
+
+目前實測已知：
+
+- Telegram bot 發 turn 時，已經是連共享 websocket app-server，不再是 per-turn `stdio://`
+- `/reconnect_codex` 會重寫 `./.threadbridge/state/app-server/current.json`
+- 但 bot 目前仍可能留下 dead ws endpoint
+- `hcodex` 已經用 self-heal 補上本地入口可用性
+
+這表示真正缺的不是「再補一個 ws bridge」，而是 shared runtime ownership。
+
+對 macOS 本機環境來說，menu bar 常駐進程是最合理的 owner 候選。它應負責：
+
+- 持有 `codex app-server`
+- 持有 TUI proxy
+- 做 healthcheck / restart
+- 對外發布穩定的 `current.json` / 本地狀態面
+- 在 bot 或 `hcodex` 需要時提供既存 runtime，而不是讓每個 client 自己補救
+
+### 4. UI 技術方向
 
 如果未來真的落地 macOS 原生 UI，v1 比較自然的方向是：
 
@@ -174,6 +198,7 @@ menu bar icon 或選單標題可以考慮承載非常少量的全域訊號，例
 所以 v1 的實際目標應理解成：
 
 - 先把既有操作做成本地管理入口
+- 先把 shared runtime owner 做穩
 - 再決定是否要加入托盤專屬的新能力
 
 ## 與其他計劃的關係
@@ -196,11 +221,14 @@ menu bar icon 或選單標題可以考慮承載非常少量的全域訊號，例
 - archived threads 應該直接出現在 menu 裡，還是需要獨立視窗？
 - `Open in Telegram` 是否有穩定可用的 deep link 形式，還是只能先提供 thread metadata / copy action？
 - 如果 threadBridge bot 沒在跑，托盤程式要負責啟動它，還是只顯示 disconnected？
+- shared daemon / TUI proxy 是由 menubar app 單獨持有，還是由 menubar 協調現有 Rust runtime 進程持有？
+- `hcodex` 的 self-heal 應保留到什麼程度，何時退化成純 fallback？
 - local 管理面是否需要任何額外權限確認，還是預設信任本機登入使用者？
 
 ## 建議的下一步
 
-1. 先把最小 `ThreadStateView` 與 control action 命名收斂到 [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)。
-2. 在 Rust runtime 補一組最小本地查詢能力，至少能列出 threads 與 archived threads。
-3. 先做 read-only 的 macOS menu bar prototype，驗證 thread list、狀態摘要、open workspace 這些核心流程。
-4. 確認本地 API 與 UX 成形後，再加上 bind / reconnect / archive / restore 類控制操作。
+1. 先把 shared runtime owner 的責任邊界寫進主規格，明確區分 bot client、`hcodex` fallback、menubar owner。
+2. 先把最小 `ThreadStateView` 與 control action 命名收斂到 [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)。
+3. 在 Rust runtime 補一組最小本地查詢能力，至少能列出 threads 與 archived threads。
+4. 先做 read-only 的 macOS menu bar prototype，驗證 thread list、狀態摘要、open workspace、runtime health 這些核心流程。
+5. 確認本地 API 與 UX 成形後，再加上 bind / reconnect / archive / restore 類控制操作。
