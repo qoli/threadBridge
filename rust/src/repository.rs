@@ -725,8 +725,105 @@ impl ThreadRepository {
         Ok(Some(self.build_record(folder_name, metadata)))
     }
 
+    pub async fn find_active_thread_by_key(&self, thread_key: &str) -> Result<Option<ThreadRecord>> {
+        let folder_name = folder_name_for(&ThreadScope::Thread, thread_key);
+        let metadata_path = self.data_root_path.join(&folder_name).join("metadata.json");
+        if !fs::try_exists(&metadata_path).await? {
+            return Ok(None);
+        }
+        let metadata: ThreadMetadata =
+            serde_json::from_str(&fs::read_to_string(&metadata_path).await?)?;
+        if !matches!(metadata.scope, ThreadScope::Thread)
+            || !matches!(metadata.status, ThreadStatus::Active)
+        {
+            return Ok(None);
+        }
+        Ok(Some(self.build_record(folder_name, metadata)))
+    }
+
     pub fn data_root_path(&self) -> &Path {
         &self.data_root_path
+    }
+
+    pub async fn set_tui_active_session_for_thread_key(
+        &self,
+        thread_key: &str,
+        session_id: impl Into<String>,
+    ) -> Result<Option<ThreadRecord>> {
+        let Some(record) = self.find_active_thread_by_key(thread_key).await? else {
+            return Ok(None);
+        };
+        let mut binding = self
+            .read_session_binding(&record)
+            .await?
+            .context("session binding is missing")?;
+        let now = now_iso();
+        binding.tui_active_codex_thread_id = Some(session_id.into());
+        binding.tui_session_adoption_pending = false;
+        binding.tui_session_adoption_prompt_message_id = None;
+        binding.updated_at = now;
+        self.write_session_binding(&record, &binding).await?;
+        Ok(Some(record))
+    }
+
+    pub async fn mark_tui_adoption_pending_for_thread_key(
+        &self,
+        thread_key: &str,
+    ) -> Result<Option<ThreadRecord>> {
+        let Some(record) = self.find_active_thread_by_key(thread_key).await? else {
+            return Ok(None);
+        };
+        let mut binding = self
+            .read_session_binding(&record)
+            .await?
+            .context("session binding is missing")?;
+        let should_prompt = binding.tui_active_codex_thread_id.is_some()
+            && binding.tui_active_codex_thread_id != binding.current_codex_thread_id;
+        binding.tui_session_adoption_pending = should_prompt;
+        binding.tui_session_adoption_prompt_message_id = None;
+        binding.updated_at = now_iso();
+        self.write_session_binding(&record, &binding).await?;
+        Ok(Some(record))
+    }
+
+    pub async fn set_tui_adoption_prompt_message_id(
+        &self,
+        record: ThreadRecord,
+        message_id: i32,
+    ) -> Result<ThreadRecord> {
+        let mut binding = self
+            .read_session_binding(&record)
+            .await?
+            .context("session binding is missing")?;
+        binding.tui_session_adoption_prompt_message_id = Some(message_id);
+        binding.updated_at = now_iso();
+        self.write_session_binding(&record, &binding).await?;
+        Ok(record)
+    }
+
+    pub async fn clear_tui_adoption_state(&self, record: ThreadRecord) -> Result<ThreadRecord> {
+        let mut binding = self
+            .read_session_binding(&record)
+            .await?
+            .context("session binding is missing")?;
+        binding.tui_active_codex_thread_id = None;
+        binding.tui_session_adoption_pending = false;
+        binding.tui_session_adoption_prompt_message_id = None;
+        binding.updated_at = now_iso();
+        self.write_session_binding(&record, &binding).await?;
+        Ok(record)
+    }
+
+    pub async fn adopt_tui_active_session(&self, record: ThreadRecord) -> Result<ThreadRecord> {
+        let binding = self
+            .read_session_binding(&record)
+            .await?
+            .context("session binding is missing")?;
+        let session_id = binding
+            .tui_active_codex_thread_id
+            .clone()
+            .context("tui_active_codex_thread_id is missing")?;
+        self.select_session_binding_session(record, session_id).await
     }
 
     pub async fn update_metadata(&self, record: ThreadRecord) -> Result<ThreadRecord> {
@@ -967,6 +1064,44 @@ mod tests {
         );
         assert_eq!(binding.tui_active_codex_thread_id, None);
         assert!(!binding.tui_session_adoption_pending);
+    }
+
+    #[tokio::test]
+    async fn tui_adoption_state_roundtrip() {
+        let root = temp_path();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+        let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
+        let record = repo
+            .bind_workspace(record, "/tmp/workspace".to_owned(), "thr_bot".to_owned())
+            .await
+            .unwrap();
+
+        let _ = repo
+            .set_tui_active_session_for_thread_key(&record.metadata.thread_key, "thr_tui")
+            .await
+            .unwrap();
+        let record = repo
+            .mark_tui_adoption_pending_for_thread_key(&record.metadata.thread_key)
+            .await
+            .unwrap()
+            .unwrap();
+        let binding = repo.read_session_binding(&record).await.unwrap().unwrap();
+        assert_eq!(binding.tui_active_codex_thread_id.as_deref(), Some("thr_tui"));
+        assert!(binding.tui_session_adoption_pending);
+
+        let record = repo
+            .set_tui_adoption_prompt_message_id(record, 42)
+            .await
+            .unwrap();
+        let binding = repo.read_session_binding(&record).await.unwrap().unwrap();
+        assert_eq!(binding.tui_session_adoption_prompt_message_id, Some(42));
+
+        let record = repo.adopt_tui_active_session(record).await.unwrap();
+        let binding = repo.read_session_binding(&record).await.unwrap().unwrap();
+        assert_eq!(binding.current_codex_thread_id.as_deref(), Some("thr_tui"));
+        assert_eq!(binding.tui_active_codex_thread_id, None);
+        assert!(!binding.tui_session_adoption_pending);
+        assert_eq!(binding.tui_session_adoption_prompt_message_id, None);
     }
 
     #[tokio::test]

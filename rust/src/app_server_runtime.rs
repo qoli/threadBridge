@@ -29,6 +29,8 @@ pub struct WorkspaceRuntimeState {
     pub schema_version: u32,
     pub workspace_cwd: String,
     pub daemon_ws_url: String,
+    #[serde(default)]
+    pub tui_proxy_base_ws_url: Option<String>,
 }
 
 const APP_SERVER_STATE_DIR: &str = ".threadbridge/state/app-server";
@@ -53,8 +55,9 @@ impl WorkspaceRuntimeManager {
                 schema_version: 1,
                 workspace_cwd: existing.workspace_path.display().to_string(),
                 daemon_ws_url: existing.daemon_url.clone(),
+                tui_proxy_base_ws_url: None,
             };
-            write_workspace_runtime_state(&existing.workspace_path, &state).await?;
+            write_workspace_runtime_state_file(&existing.workspace_path, &state).await?;
             return Ok(state);
         }
 
@@ -63,8 +66,9 @@ impl WorkspaceRuntimeManager {
             schema_version: 1,
             workspace_cwd: runtime.workspace_path.display().to_string(),
             daemon_ws_url: runtime.daemon_url.clone(),
+            tui_proxy_base_ws_url: None,
         };
-        write_workspace_runtime_state(&runtime.workspace_path, &state).await?;
+        write_workspace_runtime_state_file(&runtime.workspace_path, &state).await?;
         self.inner.lock().await.insert(key, runtime);
         Ok(state)
     }
@@ -159,7 +163,7 @@ fn canonical_workspace_key(workspace_path: &Path) -> Result<String> {
         .to_string())
 }
 
-async fn write_workspace_runtime_state(
+pub async fn write_workspace_runtime_state_file(
     workspace_path: &Path,
     state: &WorkspaceRuntimeState,
 ) -> Result<()> {

@@ -18,6 +18,28 @@ use crate::image_artifacts::PendingImageBatch;
 pub(crate) const CALLBACK_IMAGE_BATCH_ANALYZE: &str = "image_batch_analyze";
 const TELEGRAM_OUTBOX_FILE: &str = ".threadbridge/tool_results/telegram_outbox.json";
 
+async fn busy_snapshot_for_binding(
+    state: &AppState,
+    binding: &SessionBinding,
+) -> Result<Option<crate::workspace_status::BusySelectedSessionStatus>> {
+    let workspace_path = workspace_path_from_binding(binding)?;
+    if let Some(session_id) = usable_bound_session_id(Some(binding))
+        && let Some(busy) =
+            busy_selected_session_status(&state.workspace_status_cache, &workspace_path, session_id)
+                .await?
+    {
+        return Ok(Some(busy));
+    }
+    let Some(tui_session_id) = binding.tui_active_codex_thread_id.as_deref() else {
+        return Ok(None);
+    };
+    if Some(tui_session_id) == usable_bound_session_id(Some(binding)) {
+        return Ok(None);
+    }
+    busy_selected_session_status(&state.workspace_status_cache, &workspace_path, tui_session_id)
+        .await
+}
+
 #[derive(Clone)]
 pub(crate) struct IncomingImage {
     caption: Option<String>,
@@ -260,6 +282,25 @@ pub(crate) async fn queue_image_for_thread(
         return Ok(());
     }
     let session = state.repository.read_session_binding(&record).await?;
+    let (record, session) = if session
+        .as_ref()
+        .is_some_and(|binding| binding.tui_session_adoption_pending)
+    {
+        let updated = state.repository.adopt_tui_active_session(record).await?;
+        state
+            .repository
+            .append_log(
+                &updated,
+                LogDirection::System,
+                "Auto-adopted the pending TUI session on the next Telegram image message.",
+                None,
+            )
+            .await?;
+        let session = state.repository.read_session_binding(&updated).await?;
+        (updated, session)
+    } else {
+        (record, session)
+    };
     if usable_bound_session_id(session.as_ref()).is_none() {
         send_scoped_message(
             bot,
@@ -270,7 +311,7 @@ pub(crate) async fn queue_image_for_thread(
         .await?;
         return Ok(());
     }
-    let workspace_path =
+    let _workspace_path =
         ensure_bound_workspace_runtime(state, session.as_ref().context("missing session binding")?)
             .await?;
     let pending = state
@@ -331,10 +372,8 @@ pub(crate) async fn queue_image_for_thread(
             )
             .await?;
     }
-    if let Some(session_id) = usable_bound_session_id(session.as_ref())
-        && let Some(busy) =
-            busy_selected_session_status(&state.workspace_status_cache, &workspace_path, session_id)
-                .await?
+    if let Some(binding) = session.as_ref()
+        && let Some(busy) = busy_snapshot_for_binding(state, binding).await?
     {
         send_scoped_message(
             bot,
@@ -378,12 +417,8 @@ pub(crate) async fn analyze_pending_image_batch(
     let workspace_path =
         ensure_bound_workspace_runtime(state, session.as_ref().context("missing session binding")?)
             .await?;
-    if let Some(busy) = busy_selected_session_status(
-        &state.workspace_status_cache,
-        &workspace_path,
-        existing_thread_id,
-    )
-    .await?
+    if let Some(binding) = session.as_ref()
+        && let Some(busy) = busy_snapshot_for_binding(state, binding).await?
     {
         let text = status_sync::busy_text_message(&busy.snapshot, false);
         if let Some(callback_query_id) = callback_query_id {

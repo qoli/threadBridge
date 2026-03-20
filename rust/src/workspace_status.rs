@@ -521,6 +521,140 @@ pub async fn record_bot_status_event(
     Ok(next)
 }
 
+pub async fn record_tui_proxy_connected(
+    workspace_path: &Path,
+    thread_key: &str,
+    session_id: &str,
+) -> Result<SessionCurrentStatus> {
+    ensure_workspace_status_surface(workspace_path).await?;
+    let mut owner_claim = default_cli_owner_claim(workspace_path, thread_key.to_owned(), 0);
+    owner_claim.session_id = Some(session_id.to_owned());
+    owner_claim.updated_at = now_iso();
+    write_cli_owner_claim(workspace_path, &owner_claim).await?;
+
+    let mut current = read_session_status(workspace_path, session_id)
+        .await?
+        .unwrap_or_else(|| default_session_status(workspace_path, session_id, SessionStatusOwner::Cli));
+    current.schema_version = STATUS_SCHEMA_VERSION;
+    current.workspace_cwd = canonical_workspace_string(workspace_path);
+    current.owner = SessionStatusOwner::Cli;
+    current.live = true;
+    current.phase = WorkspaceStatusPhase::ShellActive;
+    current.shell_pid = Some(0);
+    current.child_pid = None;
+    current.child_pgid = None;
+    current.child_command = None;
+    current.client = Some("threadbridge-tui-proxy".to_owned());
+    current.turn_id = None;
+    current.updated_at = now_iso();
+    write_session_status(workspace_path, &current).await?;
+    let aggregate = read_workspace_aggregate_status(workspace_path).await?;
+    let _ = refresh_workspace_aggregate_status(workspace_path, aggregate).await?;
+    Ok(current)
+}
+
+pub async fn record_tui_proxy_prompt(
+    workspace_path: &Path,
+    session_id: &str,
+    prompt: &str,
+) -> Result<SessionCurrentStatus> {
+    ensure_workspace_status_surface(workspace_path).await?;
+    let mut current = read_session_status(workspace_path, session_id)
+        .await?
+        .unwrap_or_else(|| default_session_status(workspace_path, session_id, SessionStatusOwner::Cli));
+    current.schema_version = STATUS_SCHEMA_VERSION;
+    current.workspace_cwd = canonical_workspace_string(workspace_path);
+    current.owner = SessionStatusOwner::Cli;
+    current.live = true;
+    current.phase = WorkspaceStatusPhase::TurnRunning;
+    current.shell_pid = Some(0);
+    current.client = Some("threadbridge-tui-proxy".to_owned());
+    current.summary = summarize_prompt(prompt);
+    current.updated_at = now_iso();
+    write_session_status(workspace_path, &current).await?;
+    let record = WorkspaceStatusEventRecord {
+        schema_version: STATUS_SCHEMA_VERSION,
+        event: "user_prompt_submitted".to_owned(),
+        source: SessionStatusOwner::Cli,
+        workspace_cwd: canonical_workspace_string(workspace_path),
+        occurred_at: now_iso(),
+        payload: json!({
+            "session_id": session_id,
+            "prompt": prompt,
+        }),
+    };
+    append_status_event(workspace_path, &record).await?;
+    let aggregate = read_workspace_aggregate_status(workspace_path).await?;
+    let _ = refresh_workspace_aggregate_status(workspace_path, aggregate).await?;
+    Ok(current)
+}
+
+pub async fn record_tui_proxy_completed(
+    workspace_path: &Path,
+    session_id: &str,
+    last_assistant_message: Option<&str>,
+) -> Result<SessionCurrentStatus> {
+    ensure_workspace_status_surface(workspace_path).await?;
+    let mut current = read_session_status(workspace_path, session_id)
+        .await?
+        .unwrap_or_else(|| default_session_status(workspace_path, session_id, SessionStatusOwner::Cli));
+    current.schema_version = STATUS_SCHEMA_VERSION;
+    current.workspace_cwd = canonical_workspace_string(workspace_path);
+    current.owner = SessionStatusOwner::Cli;
+    current.live = true;
+    current.phase = WorkspaceStatusPhase::Idle;
+    current.shell_pid = Some(0);
+    current.client = Some("threadbridge-tui-proxy".to_owned());
+    current.turn_id = None;
+    current.summary = last_assistant_message
+        .and_then(summarize_prompt)
+        .or(current.summary);
+    current.updated_at = now_iso();
+    write_session_status(workspace_path, &current).await?;
+    let record = WorkspaceStatusEventRecord {
+        schema_version: STATUS_SCHEMA_VERSION,
+        event: "turn_completed".to_owned(),
+        source: SessionStatusOwner::Cli,
+        workspace_cwd: canonical_workspace_string(workspace_path),
+        occurred_at: now_iso(),
+        payload: json!({
+            "thread-id": session_id,
+            "last-assistant-message": last_assistant_message,
+        }),
+    };
+    append_status_event(workspace_path, &record).await?;
+    let aggregate = read_workspace_aggregate_status(workspace_path).await?;
+    let _ = refresh_workspace_aggregate_status(workspace_path, aggregate).await?;
+    Ok(current)
+}
+
+pub async fn record_tui_proxy_disconnected(
+    workspace_path: &Path,
+    thread_key: &str,
+    session_id: Option<&str>,
+) -> Result<()> {
+    ensure_workspace_status_surface(workspace_path).await?;
+    let existing_claim = read_cli_owner_claim(workspace_path).await?;
+    if existing_claim
+        .as_ref()
+        .is_some_and(|claim| claim.thread_key == thread_key)
+    {
+        remove_cli_owner_claim(workspace_path).await?;
+    }
+    if let Some(session_id) = session_id
+        && let Some(mut current) = read_session_status(workspace_path, session_id).await?
+    {
+        current.live = false;
+        current.phase = WorkspaceStatusPhase::Idle;
+        current.turn_id = None;
+        current.updated_at = now_iso();
+        write_session_status(workspace_path, &current).await?;
+    }
+    let aggregate = read_workspace_aggregate_status(workspace_path).await?;
+    let _ = refresh_workspace_aggregate_status(workspace_path, aggregate).await?;
+    Ok(())
+}
+
 impl WorkspaceStatusCache {
     pub fn new() -> Self {
         Self::default()

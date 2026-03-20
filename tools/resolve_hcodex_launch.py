@@ -68,6 +68,7 @@ def main() -> int:
 
     state = read_json(state_path)
     daemon_ws_url = state.get("daemon_ws_url")
+    tui_proxy_base_ws_url = state.get("tui_proxy_base_ws_url")
     if not daemon_ws_url:
         print("hcodex: app-server state is missing daemon_ws_url", file=sys.stderr)
         return 2
@@ -103,10 +104,14 @@ def main() -> int:
         )
         return 2
 
+    launch_ws_url = daemon_ws_url
+    if tui_proxy_base_ws_url:
+        launch_ws_url = f"{tui_proxy_base_ws_url.rstrip('/')}/thread/{matches[0]['thread_key']}"
+
     print(
         "\t".join(
             [
-                daemon_ws_url,
+                launch_ws_url,
                 matches[0]["thread_key"] or "",
                 current_thread,
             ]

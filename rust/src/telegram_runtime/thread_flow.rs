@@ -55,10 +55,52 @@ async fn busy_snapshot_for_binding(
     binding: &SessionBinding,
 ) -> Result<Option<crate::workspace_status::BusySelectedSessionStatus>> {
     let workspace_path = workspace_path_from_binding(binding)?;
-    let Some(session_id) = usable_bound_session_id(Some(binding)) else {
+    if let Some(session_id) = usable_bound_session_id(Some(binding))
+        && let Some(busy) =
+            busy_selected_session_status(&state.workspace_status_cache, &workspace_path, session_id)
+                .await?
+    {
+        return Ok(Some(busy));
+    }
+    let Some(tui_session_id) = binding.tui_active_codex_thread_id.as_deref() else {
         return Ok(None);
     };
-    busy_selected_session_status(&state.workspace_status_cache, &workspace_path, session_id).await
+    if Some(tui_session_id) == usable_bound_session_id(Some(binding)) {
+        return Ok(None);
+    }
+    busy_selected_session_status(&state.workspace_status_cache, &workspace_path, tui_session_id)
+        .await
+}
+
+async fn maybe_auto_adopt_tui_session_for_text(
+    state: &AppState,
+    record: ThreadRecord,
+    session: Option<SessionBinding>,
+) -> Result<(ThreadRecord, Option<SessionBinding>)> {
+    let Some(binding) = session.as_ref() else {
+        return Ok((record, session));
+    };
+    if !binding.tui_session_adoption_pending {
+        return Ok((record, session));
+    }
+    let Some(tui_session_id) = binding.tui_active_codex_thread_id.clone() else {
+        return Ok((record, session));
+    };
+    let updated = state.repository.adopt_tui_active_session(record).await?;
+    let session = state.repository.read_session_binding(&updated).await?;
+    state
+        .repository
+        .append_log(
+            &updated,
+            LogDirection::System,
+            format!(
+                "Auto-adopted TUI session `{}` on the next Telegram message.",
+                tui_session_id
+            ),
+            None,
+        )
+        .await?;
+    Ok((updated, session))
 }
 
 async fn render_thread_info(state: &AppState, record: &ThreadRecord) -> Result<String> {
@@ -700,6 +742,7 @@ pub(crate) async fn run_text_message(
         return Ok(());
     }
     let session = state.repository.read_session_binding(&record).await?;
+    let (record, session) = maybe_auto_adopt_tui_session_for_text(state, record, session).await?;
     let Some(existing_thread_id) = usable_bound_session_id(session.as_ref()) else {
         send_scoped_message(
             bot,

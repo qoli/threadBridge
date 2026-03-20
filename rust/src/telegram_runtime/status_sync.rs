@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use teloxide::prelude::*;
-use teloxide::types::{MessageId, ThreadId};
+use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ThreadId};
 use tracing::{info, warn};
 
 use super::*;
@@ -21,6 +21,8 @@ use crate::workspace_status::{
 const TELEGRAM_TOPIC_TITLE_MAX_CHARS: usize = 128;
 const STARTUP_STALE_BUSY_RECOVERED_LOG: &str =
     "Recovered stale busy state from previous threadBridge process during startup.";
+pub(crate) const CALLBACK_TUI_ADOPT_ACCEPT: &str = "tui_adopt_accept";
+pub(crate) const CALLBACK_TUI_ADOPT_REJECT: &str = "tui_adopt_reject";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StaleBusyReconciliationReport {
@@ -135,6 +137,23 @@ pub(crate) fn cli_marker_label(marker: CliTopicMarker) -> &'static str {
         CliTopicMarker::None => "none",
         CliTopicMarker::Busy => "busy",
     }
+}
+
+pub(crate) fn tui_adoption_prompt_text() -> &'static str {
+    "詢問：後續對話是否以 TUI session"
+}
+
+pub(crate) fn tui_adoption_prompt_markup(thread_key: &str) -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback(
+            "繼續 TUI 對話 (默認)",
+            format!("{CALLBACK_TUI_ADOPT_ACCEPT}:{thread_key}"),
+        ),
+        InlineKeyboardButton::callback(
+            "恢復原對話",
+            format!("{CALLBACK_TUI_ADOPT_REJECT}:{thread_key}"),
+        ),
+    ]])
 }
 
 pub(crate) async fn refresh_thread_topic_title(
@@ -362,6 +381,9 @@ pub async fn spawn_workspace_status_watcher(bot: Bot, state: AppState) {
             {
                 warn!(event = "workspace_mirror.sync.failed", error = %error);
             }
+            if let Err(error) = sync_tui_adoption_prompts_once(&bot, &state).await {
+                warn!(event = "tui_adoption.sync.failed", error = %error);
+            }
             tokio::time::sleep(Duration::from_millis(
                 state.config.workspace_status_poll_interval_ms,
             ))
@@ -443,6 +465,36 @@ async fn sync_workspace_titles_once(
         .workspace_status_cache
         .remove_missing_workspaces(&keep_workspaces)
         .await;
+    Ok(())
+}
+
+async fn sync_tui_adoption_prompts_once(bot: &Bot, state: &AppState) -> Result<()> {
+    let records = state.repository.list_active_threads().await?;
+    for record in records {
+        let Some(thread_id) = record.metadata.message_thread_id else {
+            continue;
+        };
+        let Some(binding) = state.repository.read_session_binding(&record).await? else {
+            continue;
+        };
+        if !binding.tui_session_adoption_pending
+            || binding.tui_session_adoption_prompt_message_id.is_some()
+        {
+            continue;
+        }
+        let message = bot
+            .send_message(
+                ChatId(record.metadata.chat_id),
+                tui_adoption_prompt_text().to_owned(),
+            )
+            .message_thread_id(thread_id_from_i32(thread_id))
+            .reply_markup(tui_adoption_prompt_markup(&record.metadata.thread_key))
+            .await?;
+        let _ = state
+            .repository
+            .set_tui_adoption_prompt_message_id(record, message.id.0)
+            .await?;
+    }
     Ok(())
 }
 

@@ -20,6 +20,7 @@ pub(crate) use crate::repository::{
     TranscriptMirrorRole,
 };
 pub(crate) use crate::tool_results::{TelegramOutboxItem, parse_telegram_outbox};
+use crate::tui_proxy::TuiProxyManager;
 pub(crate) use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 pub(crate) use crate::workspace_status::{
     WorkspaceStatusCache, busy_selected_session_status, read_session_status,
@@ -62,6 +63,7 @@ pub struct AppState {
     pub(crate) repository: ThreadRepository,
     pub(crate) codex: CodexRunner,
     pub(crate) app_server_runtime: WorkspaceRuntimeManager,
+    pub(crate) tui_proxy: TuiProxyManager,
     pub(crate) seed_template_path: PathBuf,
     pub(crate) workspace_status_cache: WorkspaceStatusCache,
 }
@@ -79,6 +81,7 @@ impl AppState {
         Ok(Self {
             codex: CodexRunner::new(config.runtime.codex_model.clone()),
             app_server_runtime: WorkspaceRuntimeManager::new(),
+            tui_proxy: TuiProxyManager::new(repository.clone()),
             repository,
             seed_template_path,
             workspace_status_cache: WorkspaceStatusCache::new(),
@@ -278,6 +281,56 @@ async fn run_callback_query(bot: &Bot, query: &CallbackQuery, state: &AppState) 
                 .unwrap_or(0);
             restore::restore_thread(bot, message, query, state, thread_key, offset).await?;
         }
+        status_sync::CALLBACK_TUI_ADOPT_ACCEPT => {
+            let thread_key = parts.get(1).copied().unwrap_or_default();
+            let Some(record) = state
+                .repository
+                .get_thread_by_key(message.chat.id.0, thread_key)
+                .await?
+            else {
+                bot.answer_callback_query(query.id.clone())
+                    .text("Thread not found.")
+                    .show_alert(true)
+                    .await?;
+                return Ok(());
+            };
+            let updated = state.repository.adopt_tui_active_session(record).await?;
+            bot.edit_message_text(
+                message.chat.id,
+                message.id,
+                "已採納 TUI session，後續 Telegram 對話將接續該 session。",
+            )
+            .await?;
+            let _ =
+                status_sync::refresh_thread_topic_title(bot, state, &updated, "tui_adopt_accept")
+                    .await;
+            bot.answer_callback_query(query.id.clone()).await?;
+        }
+        status_sync::CALLBACK_TUI_ADOPT_REJECT => {
+            let thread_key = parts.get(1).copied().unwrap_or_default();
+            let Some(record) = state
+                .repository
+                .get_thread_by_key(message.chat.id.0, thread_key)
+                .await?
+            else {
+                bot.answer_callback_query(query.id.clone())
+                    .text("Thread not found.")
+                    .show_alert(true)
+                    .await?;
+                return Ok(());
+            };
+            let updated = state.repository.clear_tui_adoption_state(record).await?;
+            bot.edit_message_text(
+                message.chat.id,
+                message.id,
+                "已保留原對話，TUI session 不會被採納為目前 Telegram session。",
+            )
+            .await?;
+            let _ =
+                status_sync::refresh_thread_topic_title(bot, state, &updated, "tui_adopt_reject")
+                    .await;
+            bot.answer_callback_query(query.id.clone()).await?;
+        }
         _ => {}
     }
     Ok(())
@@ -392,6 +445,10 @@ pub(crate) async fn shared_codex_workspace(
     let runtime = state
         .app_server_runtime
         .ensure_workspace_daemon(&workspace)
+        .await?;
+    let _ = state
+        .tui_proxy
+        .ensure_workspace_proxy(&workspace, &runtime.daemon_ws_url)
         .await?;
     Ok(CodexWorkspace {
         working_directory: workspace,
