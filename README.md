@@ -35,10 +35,13 @@ Or use the local helper script:
 ```bash
 scripts/local_threadbridge.sh start
 scripts/local_threadbridge.sh restart --codex-source brew
-scripts/local_threadbridge.sh restart --codex-source alpha
+scripts/local_threadbridge.sh restart --codex-source source
 ```
 
-`--codex-source brew|alpha` controls which local `codex` binary `hcodex` should prefer. The choice is persisted in `.threadbridge/codex/source.txt` and is picked up the next time a workspace runtime is bootstrapped.
+`--codex-source brew|source` controls which local `codex` binary `hcodex` should prefer. The choice is persisted in `.threadbridge/codex/source.txt` and is picked up the next time a workspace runtime is bootstrapped.
+
+- `brew`: prefer the system `codex` on `PATH`, with the managed copy as fallback.
+- `source`: build `codex-cli` from the local Codex source tree and cache it under `.threadbridge/codex/codex`, then prefer that managed copy.
 
 ## Behavior
 

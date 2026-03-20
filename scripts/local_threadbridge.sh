@@ -15,12 +15,18 @@ RUSTUP_HOME_DIR="${RUSTUP_HOME:-$HOME/.rustup}"
 RUNTIME_PATH="$HOME/.cargo/bin:$REPO_ROOT/bin:$PATH"
 MANAGED_CODEX_DIR="$REPO_ROOT/.threadbridge/codex"
 MANAGED_CODEX_BIN="$MANAGED_CODEX_DIR/codex"
-MANAGED_CODEX_TAG_FILE="$MANAGED_CODEX_DIR/release-tag.txt"
 MANAGED_CODEX_SOURCE_FILE="$MANAGED_CODEX_DIR/source.txt"
+MANAGED_CODEX_BUILD_INFO_FILE="$MANAGED_CODEX_DIR/build-info.txt"
+CODEX_SOURCE_REPO="${CODEX_SOURCE_REPO:-/Volumes/Data/Github/codex}"
+CODEX_SOURCE_RS_DIR="${CODEX_SOURCE_RS_DIR:-$CODEX_SOURCE_REPO/codex-rs}"
+CODEX_BUILD_PROFILE="${CODEX_BUILD_PROFILE:-$BUILD_PROFILE}"
+CODEX_CARGO_HOME_DIR="${CODEX_CARGO_HOME:-$HOME/.cargo}"
+CODEX_CARGO_TARGET_DIR_PATH="${CODEX_CARGO_TARGET_DIR:-$CODEX_SOURCE_RS_DIR/target}"
+CODEX_RUSTUP_HOME_DIR="${CODEX_RUSTUP_HOME:-$RUSTUP_HOME_DIR}"
 
 usage() {
   cat <<'EOF'
-Usage: local_threadbridge.sh <command> [--codex-source brew|alpha]
+Usage: local_threadbridge.sh <command> [--codex-source brew|source]
 
 Commands:
   start
@@ -30,11 +36,15 @@ Commands:
   logs
 
 Options:
-  --codex-source brew|alpha   Choose which local codex binary hcodex should prefer.
+  --codex-source brew|source  Choose which local codex binary hcodex should prefer.
                               The choice is persisted in .threadbridge/codex/source.txt.
 
 Environment overrides:
-  BUILD_PROFILE=dev|release   Build profile to run. Default: dev
+  BUILD_PROFILE=dev|release      Build profile to run threadBridge. Default: dev
+  CODEX_BUILD_PROFILE=dev|release
+                                 Build profile for source-built Codex. Default: BUILD_PROFILE
+  CODEX_SOURCE_REPO=/abs/path    Codex repo root. Default: /Volumes/Data/Github/codex
+  CODEX_SOURCE_RS_DIR=/abs/path  Codex Rust workspace. Default: $CODEX_SOURCE_REPO/codex-rs
 EOF
 }
 
@@ -60,8 +70,13 @@ resolve_codex_source() {
   local requested=${1:-}
   if [[ -n "$requested" ]]; then
     case "$requested" in
-      brew|alpha)
+      brew|source)
         printf '%s\n' "$requested"
+        return 0
+        ;;
+      alpha)
+        log "codex source 'alpha' is deprecated; using 'source' instead"
+        printf '%s\n' 'source'
         return 0
         ;;
       *)
@@ -74,8 +89,11 @@ resolve_codex_source() {
   local persisted
   persisted=$(read_codex_source_preference)
   case "$persisted" in
-    brew|alpha)
+    brew|source)
       printf '%s\n' "$persisted"
+      ;;
+    alpha)
+      printf '%s\n' 'source'
       ;;
     *)
       printf '%s\n' 'brew'
@@ -83,83 +101,67 @@ resolve_codex_source() {
   esac
 }
 
-managed_codex_asset_name() {
-  local system arch
-  system=$(uname -s)
-  arch=$(uname -m)
-  case "$system:$arch" in
-    Darwin:arm64)
-      printf '%s\n' 'codex-aarch64-apple-darwin.tar.gz'
-      ;;
-    Darwin:x86_64)
-      printf '%s\n' 'codex-x86_64-apple-darwin.tar.gz'
-      ;;
-    Linux:aarch64|Linux:arm64)
-      printf '%s\n' 'codex-aarch64-unknown-linux-gnu.tar.gz'
-      ;;
-    Linux:x86_64)
-      printf '%s\n' 'codex-x86_64-unknown-linux-gnu.tar.gz'
-      ;;
-    *)
-      printf 'Unsupported platform for managed Codex binary: %s %s\n' "$system" "$arch" >&2
-      exit 1
-      ;;
-  esac
-}
+ensure_source_codex_binary() {
+  require_command cargo
 
-latest_managed_codex_tag() {
-  gh api "repos/openai/codex/releases?per_page=100" | python3 -c '
-import json, sys
-for release in json.load(sys.stdin):
-    if release.get("prerelease") and not release.get("draft"):
-        tag = release.get("tag_name")
-        if tag:
-            print(tag)
-            break
-'
-}
+  if [[ ! -d "$CODEX_SOURCE_RS_DIR" ]]; then
+    printf 'Missing Codex source workspace: %s\n' "$CODEX_SOURCE_RS_DIR" >&2
+    exit 1
+  fi
 
-ensure_managed_codex_binary() {
-  require_command gh
-  require_command tar
+  if [[ ! -f "$CODEX_SOURCE_RS_DIR/Cargo.toml" ]]; then
+    printf 'Missing Codex Cargo.toml: %s\n' "$CODEX_SOURCE_RS_DIR/Cargo.toml" >&2
+    exit 1
+  fi
 
   mkdir -p "$MANAGED_CODEX_DIR"
 
-  local tag asset current_tag tmpdir archive extracted_binary
-  tag=$(latest_managed_codex_tag)
-  if [[ -z "$tag" ]]; then
-    printf 'Failed to discover latest pre-release Codex tag.\n' >&2
+  local source_binary profile_flag build_info git_rev
+  case "$CODEX_BUILD_PROFILE" in
+    dev)
+      profile_flag=""
+      source_binary="$CODEX_CARGO_TARGET_DIR_PATH/debug/codex"
+      ;;
+    release)
+      profile_flag="--release"
+      source_binary="$CODEX_CARGO_TARGET_DIR_PATH/release/codex"
+      ;;
+    *)
+      printf 'Unsupported CODEX_BUILD_PROFILE: %s\n' "$CODEX_BUILD_PROFILE" >&2
+      exit 1
+      ;;
+  esac
+
+  log "building Codex from source ($CODEX_BUILD_PROFILE): $CODEX_SOURCE_RS_DIR"
+  (
+    cd "$CODEX_SOURCE_RS_DIR"
+    export CARGO_HOME="$CODEX_CARGO_HOME_DIR"
+    export CARGO_TARGET_DIR="$CODEX_CARGO_TARGET_DIR_PATH"
+    export RUSTUP_HOME="$CODEX_RUSTUP_HOME_DIR"
+    if [[ -n "$profile_flag" ]]; then
+      cargo build "$profile_flag" -p codex-cli
+    else
+      cargo build -p codex-cli
+    fi
+  )
+
+  if [[ ! -x "$source_binary" ]]; then
+    printf 'Expected built Codex binary at %s\n' "$source_binary" >&2
     exit 1
   fi
 
-  asset=$(managed_codex_asset_name)
-  current_tag=""
-  if [[ -f "$MANAGED_CODEX_TAG_FILE" ]]; then
-    current_tag=$(tr -d '\n' < "$MANAGED_CODEX_TAG_FILE")
-  fi
-
-  if [[ -x "$MANAGED_CODEX_BIN" && "$current_tag" == "$tag" ]]; then
-    log "managed Codex binary up to date ($tag)"
-    return 0
-  fi
-
-  log "downloading managed Codex binary ($tag, $asset)"
-  tmpdir=$(mktemp -d)
-
-  gh release download "$tag" --repo openai/codex --pattern "$asset" --dir "$tmpdir" --clobber
-  archive="$tmpdir/$asset"
-  mkdir -p "$tmpdir/extract"
-  tar -xzf "$archive" -C "$tmpdir/extract"
-  extracted_binary=$(find "$tmpdir/extract" -type f | head -n 1)
-  if [[ -z "$extracted_binary" || ! -f "$extracted_binary" ]]; then
-    printf 'Failed to locate extracted codex binary inside %s\n' "$asset" >&2
-    exit 1
-  fi
-
-  install -m 755 "$extracted_binary" "$MANAGED_CODEX_BIN"
-  printf '%s\n' "$tag" > "$MANAGED_CODEX_TAG_FILE"
-  rm -rf "$tmpdir"
-  log "managed Codex binary ready: $MANAGED_CODEX_BIN"
+  install -m 755 "$source_binary" "$MANAGED_CODEX_BIN"
+  git_rev=$(git -C "$CODEX_SOURCE_REPO" rev-parse --short HEAD 2>/dev/null || printf 'unknown')
+  build_info=$(cat <<EOF
+source_repo=$CODEX_SOURCE_REPO
+source_rs_dir=$CODEX_SOURCE_RS_DIR
+build_profile=$CODEX_BUILD_PROFILE
+git_rev=$git_rev
+binary=$source_binary
+EOF
+)
+  printf '%s\n' "$build_info" > "$MANAGED_CODEX_BUILD_INFO_FILE"
+  log "source-built Codex binary ready: $MANAGED_CODEX_BIN"
 }
 
 require_command() {
@@ -245,8 +247,8 @@ start_bot() {
   codex_source=$(resolve_codex_source "$codex_source")
   write_codex_source_preference "$codex_source"
 
-  if [[ "$codex_source" == "alpha" ]]; then
-    ensure_managed_codex_binary
+  if [[ "$codex_source" == "source" ]]; then
+    ensure_source_codex_binary
   else
     log "using brew/system codex as primary local CLI source"
   fi
@@ -322,8 +324,10 @@ status_bot() {
     fi
   fi
   log "codex source preference: $codex_source"
-  if [[ "$codex_source" == "alpha" && -f "$MANAGED_CODEX_TAG_FILE" ]]; then
-    log "managed Codex tag: $(tr -d '\n' < "$MANAGED_CODEX_TAG_FILE")"
+  if [[ "$codex_source" == "source" && -f "$MANAGED_CODEX_BUILD_INFO_FILE" ]]; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && log "managed Codex $line"
+    done < "$MANAGED_CODEX_BUILD_INFO_FILE"
   fi
 
   if [[ -f "$EVENT_LOG" ]]; then

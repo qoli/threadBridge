@@ -14,7 +14,7 @@ const MANAGED_CODEX_SOURCE_FILE: &str = ".threadbridge/codex/source.txt";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CodexSourcePreference {
     Brew,
-    Alpha,
+    Source,
 }
 
 fn shell_single_quote(value: &str) -> String {
@@ -55,7 +55,7 @@ async fn read_codex_source_preference(repo_root: &Path) -> Result<CodexSourcePre
         }
     };
     match value.trim() {
-        "alpha" => Ok(CodexSourcePreference::Alpha),
+        "alpha" | "source" => Ok(CodexSourcePreference::Source),
         "brew" | "" => Ok(CodexSourcePreference::Brew),
         other => Err(anyhow!(
             "unsupported Codex source preference in {}: {}",
@@ -90,7 +90,7 @@ fn build_hcodex_launcher_script(
     );
     let codex_source = match codex_source_preference {
         CodexSourcePreference::Brew => "brew",
-        CodexSourcePreference::Alpha => "alpha",
+        CodexSourcePreference::Source => "source",
     };
     let mut lines = vec![
         "#!/usr/bin/env bash".to_owned(),
@@ -114,7 +114,7 @@ fn build_hcodex_launcher_script(
             "  codex_bin=\"$THREADBRIDGE_MANAGED_CODEX\"".to_owned(),
             "fi".to_owned(),
         ]),
-        CodexSourcePreference::Alpha => lines.extend([
+        CodexSourcePreference::Source => lines.extend([
             "if [ -x \"$THREADBRIDGE_MANAGED_CODEX\" ]; then".to_owned(),
             "  codex_bin=\"$THREADBRIDGE_MANAGED_CODEX\"".to_owned(),
             "else".to_owned(),
@@ -204,7 +204,11 @@ fn build_hcodex_launcher_script(
         "    fi".to_owned(),
         "    ;;".to_owned(),
         "esac".to_owned(),
-        "\"$THREADBRIDGE_EXECUTABLE\" run-hcodex-session --workspace \"$THREADBRIDGE_WORKSPACE_ROOT\" --data-root \"$THREADBRIDGE_DATA_ROOT\" --thread-key \"$resolved_thread_key\" --codex-bin \"$codex_bin\" --remote-ws-url \"$remote_ws_url\" -- \"${codex_args[@]}\"".to_owned(),
+        "if [ \"${#codex_args[@]}\" -gt 0 ]; then".to_owned(),
+        "  \"$THREADBRIDGE_EXECUTABLE\" run-hcodex-session --workspace \"$THREADBRIDGE_WORKSPACE_ROOT\" --data-root \"$THREADBRIDGE_DATA_ROOT\" --thread-key \"$resolved_thread_key\" --codex-bin \"$codex_bin\" --remote-ws-url \"$remote_ws_url\" -- \"${codex_args[@]}\"".to_owned(),
+        "else".to_owned(),
+        "  \"$THREADBRIDGE_EXECUTABLE\" run-hcodex-session --workspace \"$THREADBRIDGE_WORKSPACE_ROOT\" --data-root \"$THREADBRIDGE_DATA_ROOT\" --thread-key \"$resolved_thread_key\" --codex-bin \"$codex_bin\" --remote-ws-url \"$remote_ws_url\" --".to_owned(),
+        "fi".to_owned(),
         "".to_owned(),
     ]);
     lines.join("\n")
@@ -219,7 +223,10 @@ fn build_hcodex_shell_compat_script(workspace_path: &Path) -> String {
     );
     [
         "# threadBridge hcodex compatibility shim",
-        &format!("export THREADBRIDGE_WORKSPACE_ROOT={}", shell_single_quote(&workspace_path.display().to_string())),
+        &format!(
+            "export THREADBRIDGE_WORKSPACE_ROOT={}",
+            shell_single_quote(&workspace_path.display().to_string())
+        ),
         "hcodex() {",
         &format!("  {launcher} \"$@\""),
         "}",
@@ -530,10 +537,9 @@ mod tests {
                 .unwrap(),
             "*\n!.gitignore\n"
         );
-        let hcodex_launcher =
-            fs::read_to_string(workspace.join(".threadbridge/bin/hcodex"))
-                .await
-                .unwrap();
+        let hcodex_launcher = fs::read_to_string(workspace.join(".threadbridge/bin/hcodex"))
+            .await
+            .unwrap();
         let compat_shell =
             fs::read_to_string(workspace.join(".threadbridge/shell/codex-sync.bash"))
                 .await
@@ -549,6 +555,7 @@ mod tests {
         assert!(hcodex_launcher.contains("\"$THREADBRIDGE_EXECUTABLE\" hcodex-ws-bridge"));
         assert!(hcodex_launcher.contains("run-hcodex-session"));
         assert!(hcodex_launcher.contains("--remote-ws-url \"$remote_ws_url\""));
+        assert!(hcodex_launcher.contains("if [ \"${#codex_args[@]}\" -gt 0 ]; then"));
         assert!(hcodex_launcher.contains("codex_bin=\"$(command -v codex 2>/dev/null || true)\""));
         assert!(compat_shell.contains("hcodex() {"));
         assert!(compat_shell.contains(".threadbridge/bin/hcodex"));
@@ -588,7 +595,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_runtime_respects_alpha_codex_source_preference() {
+    async fn workspace_runtime_respects_source_codex_source_preference() {
+        let root = temp_path();
+        let repo_root = root.join("repo");
+        let workspace = root.join("workspace");
+        let template = root.join("template.md");
+        let source_file = repo_root.join(".threadbridge/codex/source.txt");
+
+        fs::create_dir_all(source_file.parent().unwrap())
+            .await
+            .unwrap();
+        fs::write(&source_file, "source\n").await.unwrap();
+        fs::write(&template, "runtime appendix\n").await.unwrap();
+
+        ensure_workspace_runtime(&repo_root, &repo_root.join("data"), &template, &workspace)
+            .await
+            .unwrap();
+
+        let hcodex_launcher = fs::read_to_string(workspace.join(".threadbridge/bin/hcodex"))
+            .await
+            .unwrap();
+        assert!(hcodex_launcher.contains("THREADBRIDGE_CODEX_SOURCE='source'"));
+        assert!(hcodex_launcher.contains("if [ -x \"$THREADBRIDGE_MANAGED_CODEX\" ]; then"));
+    }
+
+    #[tokio::test]
+    async fn workspace_runtime_maps_legacy_alpha_codex_source_to_source() {
         let root = temp_path();
         let repo_root = root.join("repo");
         let workspace = root.join("workspace");
@@ -605,11 +637,10 @@ mod tests {
             .await
             .unwrap();
 
-        let hcodex_launcher =
-            fs::read_to_string(workspace.join(".threadbridge/bin/hcodex"))
-                .await
-                .unwrap();
-        assert!(hcodex_launcher.contains("THREADBRIDGE_CODEX_SOURCE='alpha'"));
+        let hcodex_launcher = fs::read_to_string(workspace.join(".threadbridge/bin/hcodex"))
+            .await
+            .unwrap();
+        assert!(hcodex_launcher.contains("THREADBRIDGE_CODEX_SOURCE='source'"));
         assert!(hcodex_launcher.contains("if [ -x \"$THREADBRIDGE_MANAGED_CODEX\" ]; then"));
     }
 
