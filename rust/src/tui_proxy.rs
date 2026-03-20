@@ -393,16 +393,30 @@ async fn maybe_track_server_message(
         }
     }
 
-    if is_turn_completed(message)?
-        && let Some(session_id) = current_session_id.as_deref()
-    {
-        let final_text = if latest_assistant_message.trim().is_empty() {
-            None
-        } else {
-            Some(latest_assistant_message.as_str())
-        };
-        record_tui_proxy_completed(workspace_path, session_id, final_text).await?;
-        latest_assistant_message.clear();
+    if let Some(session_id) = current_session_id.as_deref() {
+        if let Some(completed_turn_id) = extract_completed_turn_id(message)? {
+            let final_text = if latest_assistant_message.trim().is_empty() {
+                None
+            } else {
+                Some(latest_assistant_message.as_str())
+            };
+            record_tui_proxy_completed(
+                workspace_path,
+                session_id,
+                Some(&completed_turn_id),
+                final_text,
+            )
+            .await?;
+            latest_assistant_message.clear();
+        } else if is_turn_completed(message)? {
+            let final_text = if latest_assistant_message.trim().is_empty() {
+                None
+            } else {
+                Some(latest_assistant_message.as_str())
+            };
+            record_tui_proxy_completed(workspace_path, session_id, None, final_text).await?;
+            latest_assistant_message.clear();
+        }
     }
     Ok(())
 }
@@ -456,6 +470,29 @@ fn is_agent_message_delta(message: &WsMessage) -> Result<bool> {
         Err(_) => return Ok(false),
     };
     Ok(payload.get("method").and_then(Value::as_str) == Some("item/agentMessage/delta"))
+}
+
+fn extract_completed_turn_id(message: &WsMessage) -> Result<Option<String>> {
+    let text = match message {
+        WsMessage::Text(text) => text.as_str(),
+        WsMessage::Binary(bytes) => {
+            std::str::from_utf8(bytes).context("invalid utf8 daemon frame")?
+        }
+        _ => return Ok(None),
+    };
+    let payload: Value = match serde_json::from_str(text) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(None),
+    };
+    if payload.get("method").and_then(Value::as_str) != Some("turn/completed") {
+        return Ok(None);
+    }
+    Ok(payload
+        .get("params")
+        .and_then(|params| params.get("turn"))
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned))
 }
 
 fn is_turn_completed(message: &WsMessage) -> Result<bool> {

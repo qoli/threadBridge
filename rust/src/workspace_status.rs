@@ -283,6 +283,45 @@ pub async fn append_status_event(
     Ok(())
 }
 
+async fn last_status_event(workspace_path: &Path) -> Result<Option<WorkspaceStatusEventRecord>> {
+    let path = events_path(workspace_path);
+    let contents = match fs::read_to_string(&path).await {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    let Some(line) = contents.lines().rev().find(|line| !line.trim().is_empty()) else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::from_str(line).with_context(|| {
+        format!("failed to parse trailing event from {}", path.display())
+    })?))
+}
+
+async fn should_skip_duplicate_turn_completed_event(
+    workspace_path: &Path,
+    session_id: &str,
+    turn_id: Option<&str>,
+) -> Result<bool> {
+    let Some(turn_id) = turn_id else {
+        return Ok(false);
+    };
+    let Some(previous) = last_status_event(workspace_path).await? else {
+        return Ok(false);
+    };
+    if previous.event != "turn_completed" || previous.source != SessionStatusOwner::Cli {
+        return Ok(false);
+    }
+    Ok(previous
+        .payload
+        .get("thread-id")
+        .and_then(Value::as_str)
+        == Some(session_id)
+        && previous.payload.get("turn-id").and_then(Value::as_str) == Some(turn_id))
+}
+
 pub async fn ensure_workspace_status_surface(workspace_path: &Path) -> Result<()> {
     let dir = status_dir(workspace_path);
     fs::create_dir_all(&dir).await?;
@@ -546,6 +585,7 @@ pub async fn record_tui_proxy_prompt(
 pub async fn record_tui_proxy_completed(
     workspace_path: &Path,
     session_id: &str,
+    turn_id: Option<&str>,
     last_assistant_message: Option<&str>,
 ) -> Result<SessionCurrentStatus> {
     ensure_workspace_status_surface(workspace_path).await?;
@@ -567,19 +607,22 @@ pub async fn record_tui_proxy_completed(
         .or(current.summary);
     current.updated_at = now_iso();
     write_session_status(workspace_path, &current).await?;
-    let record = WorkspaceStatusEventRecord {
-        schema_version: STATUS_SCHEMA_VERSION,
-        event: "turn_completed".to_owned(),
-        source: SessionStatusOwner::Cli,
-        workspace_cwd: canonical_workspace_string(workspace_path),
-        occurred_at: now_iso(),
-        payload: json!({
-            "thread-id": session_id,
-            "last-assistant-message": last_assistant_message,
-            "client": "threadbridge-tui-proxy",
-        }),
-    };
-    append_status_event(workspace_path, &record).await?;
+    if !should_skip_duplicate_turn_completed_event(workspace_path, session_id, turn_id).await? {
+        let record = WorkspaceStatusEventRecord {
+            schema_version: STATUS_SCHEMA_VERSION,
+            event: "turn_completed".to_owned(),
+            source: SessionStatusOwner::Cli,
+            workspace_cwd: canonical_workspace_string(workspace_path),
+            occurred_at: now_iso(),
+            payload: json!({
+                "thread-id": session_id,
+                "turn-id": turn_id,
+                "last-assistant-message": last_assistant_message,
+                "client": "threadbridge-tui-proxy",
+            }),
+        };
+        append_status_event(workspace_path, &record).await?;
+    }
     let aggregate = read_workspace_aggregate_status(workspace_path).await?;
     let _ = refresh_workspace_aggregate_status(workspace_path, aggregate).await?;
     Ok(current)
@@ -731,8 +774,8 @@ pub async fn busy_selected_session_status(
 mod tests {
     use super::{
         SessionCurrentStatus, SessionStatusOwner, WorkspaceStatusCache, WorkspaceStatusPhase,
-        busy_selected_session_status, current_status_path, ensure_workspace_status_surface,
-        list_live_cli_sessions, read_cli_owner_claim, read_session_status,
+        busy_selected_session_status, current_status_path, ensure_workspace_status_surface, events_path,
+        list_live_cli_sessions, read_cli_owner_claim, read_session_status, record_tui_proxy_completed,
         read_workspace_aggregate_status, record_bot_status_event, record_hcodex_launcher_ended,
         record_hcodex_launcher_started, record_tui_proxy_connected, session_status_path,
     };
@@ -997,5 +1040,25 @@ mod tests {
         assert!(owner_claim.is_none());
         assert!(!session.live);
         assert_eq!(session.phase, WorkspaceStatusPhase::Idle);
+    }
+
+    #[tokio::test]
+    async fn tui_proxy_completed_deduplicates_same_turn_id() {
+        let workspace = temp_path();
+        ensure_workspace_status_surface(&workspace).await.unwrap();
+
+        record_tui_proxy_completed(&workspace, "thr_same", Some("turn-1"), Some("hello"))
+            .await
+            .unwrap();
+        record_tui_proxy_completed(&workspace, "thr_same", Some("turn-1"), Some("hello"))
+            .await
+            .unwrap();
+
+        let lines = fs::read_to_string(events_path(&workspace)).await.unwrap();
+        let turn_completed_count = lines
+            .lines()
+            .filter(|line| line.contains("\"event\":\"turn_completed\""))
+            .count();
+        assert_eq!(turn_completed_count, 1);
     }
 }
