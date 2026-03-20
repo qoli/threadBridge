@@ -4,10 +4,16 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result, anyhow, bail};
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStdin, Command};
+use tokio_tungstenite::MaybeTlsStream;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, info, warn};
 
 const APP_SERVER_CLIENT_NAME: &str = "threadbridge";
@@ -17,6 +23,7 @@ const WORKSPACE_READY_PROMPT: &str = "Read and follow the workspace AGENTS.md, i
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexWorkspace {
     pub working_directory: PathBuf,
+    pub app_server_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,10 +74,20 @@ pub struct CodexThreadBinding {
 
 #[derive(Debug)]
 struct AppServerClient {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<tokio::process::ChildStdout>,
+    transport: AppServerTransport,
     next_request_id: i64,
+}
+
+#[derive(Debug)]
+enum AppServerTransport {
+    Stdio {
+        child: Child,
+        stdin: ChildStdin,
+        stdout: BufReader<tokio::process::ChildStdout>,
+    },
+    WebSocket {
+        stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    },
 }
 
 #[derive(Debug)]
@@ -114,7 +131,14 @@ fn log_item_event(lifecycle: &str, item: &Value) {
 }
 
 impl AppServerClient {
-    async fn start(workspace: &Path) -> Result<Self> {
+    async fn start(workspace: &CodexWorkspace) -> Result<Self> {
+        if let Some(app_server_url) = workspace.app_server_url.as_deref() {
+            return Self::start_websocket(app_server_url).await;
+        }
+        Self::start_stdio(&workspace.working_directory).await
+    }
+
+    async fn start_stdio(workspace: &Path) -> Result<Self> {
         let mut child = Command::new("codex")
             .args(["app-server", "--listen", "stdio://"])
             .current_dir(workspace)
@@ -137,9 +161,23 @@ impl AppServerClient {
         }
 
         let mut client = Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
+            transport: AppServerTransport::Stdio {
+                child,
+                stdin,
+                stdout: BufReader::new(stdout),
+            },
+            next_request_id: 0,
+        };
+        client.initialize().await?;
+        Ok(client)
+    }
+
+    async fn start_websocket(app_server_url: &str) -> Result<Self> {
+        let (stream, _) = connect_async(app_server_url)
+            .await
+            .with_context(|| format!("failed to connect to shared app-server at {app_server_url}"))?;
+        let mut client = Self {
+            transport: AppServerTransport::WebSocket { stream },
             next_request_id: 0,
         };
         client.initialize().await?;
@@ -218,18 +256,26 @@ impl AppServerClient {
 
     async fn send_payload(&mut self, payload: Value) -> Result<()> {
         let text = serde_json::to_string(&payload)?;
-        self.stdin
-            .write_all(text.as_bytes())
-            .await
-            .context("failed writing to app-server stdin")?;
-        self.stdin
-            .write_all(b"\n")
-            .await
-            .context("failed writing newline to app-server stdin")?;
-        self.stdin
-            .flush()
-            .await
-            .context("failed flushing app-server stdin")
+        match &mut self.transport {
+            AppServerTransport::Stdio { stdin, .. } => {
+                stdin
+                    .write_all(text.as_bytes())
+                    .await
+                    .context("failed writing to app-server stdin")?;
+                stdin
+                    .write_all(b"\n")
+                    .await
+                    .context("failed writing newline to app-server stdin")?;
+                stdin
+                    .flush()
+                    .await
+                    .context("failed flushing app-server stdin")
+            }
+            AppServerTransport::WebSocket { stream } => stream
+                .send(WsMessage::Text(text))
+                .await
+                .context("failed sending app-server websocket payload"),
+        }
     }
 
     async fn reject_server_request(&mut self, request_id: i64, method: &str) -> Result<()> {
@@ -248,56 +294,84 @@ impl AppServerClient {
     }
 
     async fn read_message(&mut self) -> Result<RpcMessage> {
-        let mut line = String::new();
-        let bytes = self
-            .stdout
-            .read_line(&mut line)
-            .await
-            .context("failed to read app-server stdout")?;
-        if bytes == 0 {
-            let status = self.child.wait().await.ok();
-            bail!("codex app-server exited unexpectedly: {status:?}");
-        }
-
-        let raw: Value = serde_json::from_str(&line)
-            .with_context(|| format!("invalid app-server json: {line}"))?;
-
-        if raw.get("method").is_some() {
-            let method = raw
-                .get("method")
-                .and_then(Value::as_str)
-                .context("app-server message missing method")?
-                .to_owned();
-            if let Some(id) = raw.get("id").and_then(Value::as_i64) {
-                return Ok(RpcMessage::Request { id, method });
+        loop {
+            let mut line = String::new();
+            match &mut self.transport {
+                AppServerTransport::Stdio { child, stdout, .. } => {
+                    let bytes = stdout
+                        .read_line(&mut line)
+                        .await
+                        .context("failed to read app-server stdout")?;
+                    if bytes == 0 {
+                        let status = child.wait().await.ok();
+                        bail!("codex app-server exited unexpectedly: {status:?}");
+                    }
+                }
+                AppServerTransport::WebSocket { stream } => {
+                    let Some(message) = stream.next().await else {
+                        bail!("shared codex app-server websocket closed unexpectedly");
+                    };
+                    match message.context("failed to read app-server websocket message")? {
+                        WsMessage::Text(text) => line = text,
+                        WsMessage::Binary(bytes) => {
+                            line =
+                                String::from_utf8(bytes).context("invalid utf8 websocket frame")?
+                        }
+                        WsMessage::Ping(payload) => {
+                            stream
+                                .send(WsMessage::Pong(payload))
+                                .await
+                                .context("failed responding to websocket ping")?;
+                            continue;
+                        }
+                        WsMessage::Pong(_) | WsMessage::Frame(_) => continue,
+                        WsMessage::Close(frame) => {
+                            bail!("shared codex app-server websocket closed: {frame:?}");
+                        }
+                    }
+                }
             }
-            let params = raw.get("params").cloned();
-            return Ok(RpcMessage::Notification { method, params });
-        }
 
-        let id = raw
-            .get("id")
-            .and_then(Value::as_i64)
-            .context("app-server response missing numeric id")?;
-        if let Some(result) = raw.get("result") {
-            return Ok(RpcMessage::Response {
-                id,
-                result: result.clone(),
-            });
-        }
-        if let Some(error) = raw.get("error") {
-            return Ok(RpcMessage::Error {
-                id,
-                message: error
-                    .get("message")
+            let raw: Value = serde_json::from_str(&line)
+                .with_context(|| format!("invalid app-server json: {line}"))?;
+
+            if raw.get("method").is_some() {
+                let method = raw
+                    .get("method")
                     .and_then(Value::as_str)
-                    .unwrap_or("unknown app-server error")
-                    .to_owned(),
-                data: error.get("data").cloned(),
-            });
-        }
+                    .context("app-server message missing method")?
+                    .to_owned();
+                if let Some(id) = raw.get("id").and_then(Value::as_i64) {
+                    return Ok(RpcMessage::Request { id, method });
+                }
+                let params = raw.get("params").cloned();
+                return Ok(RpcMessage::Notification { method, params });
+            }
 
-        Err(anyhow!("unknown app-server message shape: {raw}"))
+            let id = raw
+                .get("id")
+                .and_then(Value::as_i64)
+                .context("app-server response missing numeric id")?;
+            if let Some(result) = raw.get("result") {
+                return Ok(RpcMessage::Response {
+                    id,
+                    result: result.clone(),
+                });
+            }
+            if let Some(error) = raw.get("error") {
+                return Ok(RpcMessage::Error {
+                    id,
+                    message: error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown app-server error")
+                        .to_owned(),
+                    data: error.get("data").cloned(),
+                });
+            }
+
+            return Err(anyhow!("unknown app-server message shape: {raw}"));
+        }
     }
 }
 
@@ -408,7 +482,7 @@ impl CodexRunner {
     }
 
     pub async fn start_thread(&self, workspace: &CodexWorkspace) -> Result<CodexThreadBinding> {
-        let mut client = AppServerClient::start(&workspace.working_directory).await?;
+        let mut client = AppServerClient::start(workspace).await?;
         let result = client
             .request_simple(
                 "thread/start",
@@ -436,7 +510,7 @@ impl CodexRunner {
         workspace: &CodexWorkspace,
         existing_thread_id: &str,
     ) -> Result<()> {
-        let mut client = AppServerClient::start(&workspace.working_directory).await?;
+        let mut client = AppServerClient::start(workspace).await?;
         let result = client
             .request_simple(
                 "thread/read",
@@ -465,7 +539,7 @@ impl CodexRunner {
         F: FnMut(CodexThreadEvent) -> Fut,
         Fut: Future<Output = ()>,
     {
-        let mut client = AppServerClient::start(&workspace.working_directory).await?;
+        let mut client = AppServerClient::start(workspace).await?;
         let (binding, selected_factory) = match existing_thread_id {
             Some(thread_id) => {
                 let result = client
@@ -845,6 +919,7 @@ mod tests {
     fn workspace() -> CodexWorkspace {
         CodexWorkspace {
             working_directory: PathBuf::from("/tmp/workspace"),
+            app_server_url: None,
         }
     }
 

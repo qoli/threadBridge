@@ -7,9 +7,9 @@ Telegram bot that maps Telegram threads to Codex app-server threads bound to rea
 - Uses Telegram as the UI layer for thread-based interaction.
 - Stores bot-local thread metadata under `data/`.
 - Binds each Telegram thread to a real workspace path with `/bind_workspace <absolute-path>`.
-- Starts and resumes Codex threads through `codex app-server --listen stdio://`.
+- Starts workspace-scoped shared Codex app-server daemons on loopback websocket and connects the bot over JSON-RPC.
 - Installs a managed runtime appendix and `.threadbridge/` wrapper surface into the bound workspace.
-- Can mirror local Codex CLI activity back into Telegram thread status through workspace-local Bash and Codex hooks.
+- Exposes a managed `hcodex` launcher that resumes the bound Codex thread through `codex --remote <ws-url>`.
 
 ## Requirements
 
@@ -46,10 +46,11 @@ scripts/local_threadbridge.sh restart --codex-source alpha
 - Only Telegram user IDs listed in `AUTHORIZED_TELEGRAM_USER_IDS` can trigger the bot.
 - `/new_thread` creates a Telegram topic and bot-local metadata only.
 - `/bind_workspace <absolute-path>` installs the runtime appendix into the target workspace and starts a fresh Codex thread for it.
-- Normal thread messages resume the saved Codex thread instead of creating a new one.
+- Normal thread messages resume the saved `current_codex_thread_id` instead of creating a new one.
 - `/new` starts a fresh Codex thread for the already bound workspace.
 - `/reconnect_codex` verifies that the saved Codex thread still matches the stored workspace path.
-- When the shared workspace status shows local CLI activity, Telegram blocks new turns and reflects the status in the topic title.
+- Topic titles currently reflect `busy` and `broken` state.
+- `hcodex` is the managed local TUI path. It resolves the workspace daemon from `.threadbridge/state/app-server/current.json` and launches `codex --remote ...`.
 
 ## Runtime Layout
 
@@ -64,22 +65,19 @@ scripts/local_threadbridge.sh restart --codex-source alpha
   - `.threadbridge/bin/generate_image`
   - `.threadbridge/bin/send_telegram_media`
   - `.threadbridge/shell/codex-sync.bash`
+  - `.threadbridge/state/app-server/current.json`
   - `.threadbridge/state/codex-sync/current.json`
   - `.threadbridge/state/codex-sync/events.jsonl`
   - `.threadbridge/tool_requests/`
   - `.threadbridge/tool_results/`
   - `.codex/hooks.json`
 
-## Local Codex CLI Sync
+## Local TUI Path
 
-- After `/bind_workspace`, source `./.threadbridge/shell/codex-sync.bash` inside that workspace and use `hcodex` if you want managed local CLI / Telegram sync.
-- `· cli` means `hcodex` is live and Telegram is only the viewer.
-- Entering `· cli` sends `as shell <pid> viewer` to the owner thread; leaving `· cli` without `/attach_cli_session` sends `exit session viewer`.
-- `· attach` means Telegram is live and the local terminal has been handed off to the `threadbridge_viewer` reedline viewer.
-- The generated shell wrapper injects `features.codex_hooks=true` and a workspace-local `notify` override, then writes CLI lifecycle state into `.threadbridge/state/codex-sync/`.
-- This v1 sync path is Bash-only. Raw `codex` launches that bypass the sourced wrapper are not guaranteed to update Telegram status.
-- Manual test flow for `.cli` / `.attach` session behavior: [docs/session-sync-manual-test.md](/Volumes/Data/Github/threadBridge/docs/session-sync-manual-test.md)
-- Alpha CLI investigation note: [docs/codex-alpha-cli-exit-investigation-2026-03-19.md](/Volumes/Data/Github/threadBridge/docs/codex-alpha-cli-exit-investigation-2026-03-19.md)
+- After `/bind_workspace`, source `./.threadbridge/shell/codex-sync.bash` inside that workspace and use `hcodex`.
+- With no extra args, `hcodex` resumes the thread's current Codex session through the shared workspace daemon.
+- The shell snippet still installs legacy `codex-sync` hooks and state files for compatibility while the shared-runtime migration is in progress, but `/attach_cli_session` and viewer handoff are no longer part of the supported command surface.
+- Raw `codex` launches that bypass `hcodex` are not part of the managed local path.
 
 ## Commands
 

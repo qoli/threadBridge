@@ -9,8 +9,8 @@ use tracing::{info, warn};
 
 use super::*;
 use crate::repository::{
-    SessionAttachmentState, ThreadStatus, TranscriptMirrorDelivery, TranscriptMirrorEntry,
-    TranscriptMirrorOrigin, TranscriptMirrorRole,
+    ThreadStatus, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
+    TranscriptMirrorRole,
 };
 use crate::workspace_status::{
     CliOwnerClaim, SessionCurrentStatus, SessionStatusOwner, WorkspaceAggregateStatus,
@@ -34,24 +34,7 @@ pub struct StaleBusyReconciliationReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CliTopicMarker {
     None,
-    Cli,
-    CliConflict,
-    Attach,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CliViewerInjectionState {
-    lifecycle_id: String,
-    shell_pid: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum CliViewerInjectionTransition {
-    None,
-    Enter(CliViewerInjectionState),
-    Exit,
-    ExitAndEnter(CliViewerInjectionState),
-    ClearSilently,
+    Busy,
 }
 
 fn thread_id_from_i32(value: i32) -> ThreadId {
@@ -87,6 +70,14 @@ fn truncate_topic_base(base: &str, suffix: &str) -> String {
     format!("{truncated}{suffix}")
 }
 
+pub(crate) fn topic_marker_for_snapshot(snapshot: Option<&SessionCurrentStatus>) -> CliTopicMarker {
+    if snapshot.is_some_and(|snapshot| snapshot.phase.is_turn_busy()) {
+        CliTopicMarker::Busy
+    } else {
+        CliTopicMarker::None
+    }
+}
+
 fn workspace_cli_conflict(
     aggregate: Option<&WorkspaceAggregateStatus>,
     owner_claim: Option<&CliOwnerClaim>,
@@ -112,25 +103,6 @@ fn workspace_cli_conflict(
         .all(|item| item != expected_session_id)
 }
 
-pub(crate) fn cli_topic_marker_for_record(
-    record: &ThreadRecord,
-    session: Option<&SessionBinding>,
-    aggregate: Option<&WorkspaceAggregateStatus>,
-    owner_claim: Option<&CliOwnerClaim>,
-) -> CliTopicMarker {
-    if session.is_some_and(|binding| binding.attachment_state == SessionAttachmentState::CliHandoff)
-    {
-        return CliTopicMarker::Attach;
-    }
-    if workspace_cli_conflict(aggregate, owner_claim) {
-        return CliTopicMarker::CliConflict;
-    }
-    if owner_claim.is_some_and(|claim| claim.thread_key == record.metadata.thread_key) {
-        return CliTopicMarker::Cli;
-    }
-    CliTopicMarker::None
-}
-
 pub(crate) fn render_topic_title(
     record: &ThreadRecord,
     workspace_path: Option<&Path>,
@@ -148,9 +120,7 @@ pub(crate) fn render_topic_title(
 
     let mut suffix = String::new();
     match marker {
-        CliTopicMarker::Attach => suffix.push_str(" · attach"),
-        CliTopicMarker::Cli => suffix.push_str(" · cli"),
-        CliTopicMarker::CliConflict => suffix.push_str(" · cli!"),
+        CliTopicMarker::Busy => suffix.push_str(" · busy"),
         CliTopicMarker::None => {}
     }
     if record.metadata.session_broken {
@@ -163,72 +133,8 @@ pub(crate) fn render_topic_title(
 pub(crate) fn cli_marker_label(marker: CliTopicMarker) -> &'static str {
     match marker {
         CliTopicMarker::None => "none",
-        CliTopicMarker::Cli => ".cli",
-        CliTopicMarker::CliConflict => ".cli!",
-        CliTopicMarker::Attach => ".attach",
+        CliTopicMarker::Busy => "busy",
     }
-}
-
-fn cli_viewer_injection_state(
-    marker: CliTopicMarker,
-    record: &ThreadRecord,
-    owner_claim: Option<&CliOwnerClaim>,
-) -> Option<CliViewerInjectionState> {
-    if marker != CliTopicMarker::Cli {
-        return None;
-    }
-    let owner_claim = owner_claim?;
-    if owner_claim.thread_key != record.metadata.thread_key {
-        return None;
-    }
-    Some(CliViewerInjectionState {
-        lifecycle_id: format!(
-            "{}:{}:{}",
-            owner_claim.thread_key, owner_claim.shell_pid, owner_claim.started_at
-        ),
-        shell_pid: owner_claim.shell_pid,
-    })
-}
-
-fn cli_viewer_injection_transition(
-    previous: Option<&CliViewerInjectionState>,
-    marker: CliTopicMarker,
-    record: &ThreadRecord,
-    owner_claim: Option<&CliOwnerClaim>,
-) -> CliViewerInjectionTransition {
-    let current = cli_viewer_injection_state(marker, record, owner_claim);
-    match marker {
-        CliTopicMarker::Attach | CliTopicMarker::CliConflict => {
-            if previous.is_some() {
-                CliViewerInjectionTransition::ClearSilently
-            } else {
-                CliViewerInjectionTransition::None
-            }
-        }
-        CliTopicMarker::Cli => match (previous, current) {
-            (None, Some(current)) => CliViewerInjectionTransition::Enter(current),
-            (Some(previous), Some(current)) if previous.lifecycle_id == current.lifecycle_id => {
-                CliViewerInjectionTransition::None
-            }
-            (Some(_), Some(current)) => CliViewerInjectionTransition::ExitAndEnter(current),
-            _ => CliViewerInjectionTransition::None,
-        },
-        CliTopicMarker::None => {
-            if previous.is_some() {
-                CliViewerInjectionTransition::Exit
-            } else {
-                CliViewerInjectionTransition::None
-            }
-        }
-    }
-}
-
-fn cli_viewer_enter_message(shell_pid: u32) -> String {
-    format!("as shell {shell_pid} viewer")
-}
-
-fn cli_viewer_exit_message() -> &'static str {
-    "exit session viewer"
 }
 
 pub(crate) async fn refresh_thread_topic_title(
@@ -245,25 +151,21 @@ pub(crate) async fn refresh_thread_topic_title(
         .as_ref()
         .and_then(|binding| binding.workspace_cwd.as_deref())
         .map(PathBuf::from);
-    let aggregate = if let Some(path) = workspace_path.as_ref() {
-        Some(read_workspace_status_with_cache(&state.workspace_status_cache, path).await?)
-    } else {
-        None
-    };
-    let owner_claim = if let Some(path) = workspace_path.as_ref() {
-        read_cli_owner_claim(path).await?
+    let current_snapshot = if let Some(path) = workspace_path.as_ref() {
+        let _ = read_workspace_status_with_cache(&state.workspace_status_cache, path).await?;
+        let current_session_id = usable_bound_session_id(session.as_ref());
+        if let Some(current_session_id) = current_session_id {
+            read_session_status(path, current_session_id).await?
+        } else {
+            None
+        }
     } else {
         None
     };
     let title = render_topic_title(
         record,
         workspace_path.as_deref(),
-        cli_topic_marker_for_record(
-            record,
-            session.as_ref(),
-            aggregate.as_ref(),
-            owner_claim.as_ref(),
-        ),
+        topic_marker_for_snapshot(current_snapshot.as_ref()),
     );
     apply_thread_topic_title(
         bot,
@@ -321,13 +223,13 @@ pub(crate) fn busy_text_message(
 ) -> &'static str {
     match snapshot.owner {
         SessionStatusOwner::Cli if image_saved => {
-            "Image saved. Analysis will stay pending until the attached CLI session finishes its current turn."
+            "Image saved. Analysis will stay pending until the shared TUI session finishes its current turn."
         }
         SessionStatusOwner::Cli => {
-            "The attached CLI session is already running a turn. Wait for it to finish before sending a new Telegram request."
+            "The shared TUI session is already running a turn. Wait for it to finish before sending a new Telegram request."
         }
         SessionStatusOwner::Bot => {
-            "This thread's selected Codex session is already handling another Telegram request. Wait for it to finish before sending a new one."
+            "This thread's current Codex session is already handling another Telegram request. Wait for it to finish before sending a new one."
         }
     }
 }
@@ -335,24 +237,12 @@ pub(crate) fn busy_text_message(
 pub(crate) fn busy_command_message(snapshot: &SessionCurrentStatus) -> &'static str {
     match snapshot.owner {
         SessionStatusOwner::Cli => {
-            "The attached CLI session is already running a turn. Wait for it to finish before changing this thread's session selection."
+            "The shared TUI session is already running a turn. Wait for it to finish before changing this thread's session state."
         }
         SessionStatusOwner::Bot => {
-            "This thread's selected Codex session is already handling another Telegram request. Wait for it to finish before changing session state."
+            "This thread's current Codex session is already handling another Telegram request. Wait for it to finish before changing session state."
         }
     }
-}
-
-pub(crate) fn cli_owned_text_message(image_saved: bool) -> &'static str {
-    if image_saved {
-        "Image saved. Local Codex CLI currently owns this session. Run /attach_cli_session to take it over before starting analysis."
-    } else {
-        "Local Codex CLI currently owns this session. Run /attach_cli_session to take it over in Telegram."
-    }
-}
-
-pub(crate) fn cli_owned_command_message() -> &'static str {
-    "Local Codex CLI currently owns this session. Run /attach_cli_session to take it over before changing thread session state."
 }
 
 fn session_reconciliation_key(workspace_path: &Path, session_id: &str) -> String {
@@ -455,17 +345,10 @@ async fn reconcile_stale_bot_busy_sessions_for_repository(
 pub async fn spawn_workspace_status_watcher(bot: Bot, state: AppState) {
     tokio::spawn(async move {
         let mut applied_titles: HashMap<String, String> = HashMap::new();
-        let mut viewer_injections: HashMap<String, CliViewerInjectionState> = HashMap::new();
         let mut workspace_event_offsets: HashMap<String, usize> = HashMap::new();
         let mut pending_cli_user_prompts: HashSet<String> = HashSet::new();
         loop {
-            if let Err(error) = sync_workspace_titles_once(
-                &bot,
-                &state,
-                &mut applied_titles,
-                &mut viewer_injections,
-            )
-            .await
+            if let Err(error) = sync_workspace_titles_once(&bot, &state, &mut applied_titles).await
             {
                 warn!(event = "workspace_status.sync.failed", error = %error);
             }
@@ -491,13 +374,11 @@ async fn sync_workspace_titles_once(
     bot: &Bot,
     state: &AppState,
     applied_titles: &mut HashMap<String, String>,
-    viewer_injections: &mut HashMap<String, CliViewerInjectionState>,
 ) -> Result<()> {
     let records = state.repository.list_active_threads().await?;
     let mut active_conversations = HashSet::new();
     let mut keep_workspaces = Vec::new();
     let mut aggregate_by_workspace: HashMap<String, WorkspaceAggregateStatus> = HashMap::new();
-    let mut owner_claim_by_workspace: HashMap<String, Option<CliOwnerClaim>> = HashMap::new();
 
     for record in records {
         let Some(message_thread_id) = record.metadata.message_thread_id else {
@@ -505,23 +386,19 @@ async fn sync_workspace_titles_once(
         };
         active_conversations.insert(record.conversation_key.clone());
 
-        let mut session = state.repository.read_session_binding(&record).await?;
+        let session = state.repository.read_session_binding(&record).await?;
         let workspace_path = session
             .as_ref()
             .and_then(|binding| binding.workspace_cwd.as_deref())
             .map(PathBuf::from);
 
-        let aggregate = if let Some(workspace_path) = workspace_path.as_ref() {
+        let _aggregate = if let Some(workspace_path) = workspace_path.as_ref() {
             let key = workspace_path
                 .canonicalize()
                 .unwrap_or_else(|_| workspace_path.clone())
                 .display()
                 .to_string();
             keep_workspaces.push(key.clone());
-            if !owner_claim_by_workspace.contains_key(&key) {
-                owner_claim_by_workspace
-                    .insert(key.clone(), read_cli_owner_claim(workspace_path).await?);
-            }
             if let Some(existing) = aggregate_by_workspace.get(&key) {
                 Some(existing.clone())
             } else {
@@ -535,113 +412,14 @@ async fn sync_workspace_titles_once(
         } else {
             None
         };
-
-        if let (Some(binding), Some(aggregate)) = (session.as_ref(), aggregate.as_ref())
-            && binding.attachment_state == SessionAttachmentState::CliHandoff
+        let current_snapshot = if let (Some(workspace_path), Some(session_id)) =
+            (workspace_path.as_ref(), usable_bound_session_id(session.as_ref()))
         {
-            let selected_session_id = usable_bound_session_id(session.as_ref());
-            if selected_session_id.is_some_and(|session_id| {
-                aggregate
-                    .live_cli_session_ids
-                    .iter()
-                    .any(|item| item == session_id)
-            }) {
-                let released = state
-                    .repository
-                    .clear_cli_handoff_attachment(record.clone())
-                    .await?;
-                session = state.repository.read_session_binding(&released).await?;
-            }
-        }
-
-        let owner_claim = workspace_path.as_ref().and_then(|path| {
-            let key = path
-                .canonicalize()
-                .unwrap_or_else(|_| path.clone())
-                .display()
-                .to_string();
-            owner_claim_by_workspace
-                .get(&key)
-                .and_then(|claim| claim.as_ref())
-        });
-        let marker =
-            cli_topic_marker_for_record(&record, session.as_ref(), aggregate.as_ref(), owner_claim);
-        match cli_viewer_injection_transition(
-            viewer_injections.get(&record.conversation_key),
-            marker,
-            &record,
-            owner_claim,
-        ) {
-            CliViewerInjectionTransition::None => {}
-            CliViewerInjectionTransition::Enter(current) => {
-                let text = cli_viewer_enter_message(current.shell_pid);
-                if let Some(message_thread_id) = record.metadata.message_thread_id {
-                    send_scoped_message(
-                        bot,
-                        ChatId(record.metadata.chat_id),
-                        Some(thread_id_from_i32(message_thread_id)),
-                        text.clone(),
-                    )
-                    .await?;
-                }
-                state
-                    .repository
-                    .append_log(&record, LogDirection::System, text, None)
-                    .await?;
-                viewer_injections.insert(record.conversation_key.clone(), current);
-            }
-            CliViewerInjectionTransition::Exit => {
-                let text = cli_viewer_exit_message();
-                if let Some(message_thread_id) = record.metadata.message_thread_id {
-                    send_scoped_message(
-                        bot,
-                        ChatId(record.metadata.chat_id),
-                        Some(thread_id_from_i32(message_thread_id)),
-                        text,
-                    )
-                    .await?;
-                }
-                state
-                    .repository
-                    .append_log(&record, LogDirection::System, text, None)
-                    .await?;
-                viewer_injections.remove(&record.conversation_key);
-            }
-            CliViewerInjectionTransition::ExitAndEnter(current) => {
-                let exit_text = cli_viewer_exit_message();
-                if let Some(message_thread_id) = record.metadata.message_thread_id {
-                    send_scoped_message(
-                        bot,
-                        ChatId(record.metadata.chat_id),
-                        Some(thread_id_from_i32(message_thread_id)),
-                        exit_text,
-                    )
-                    .await?;
-                }
-                state
-                    .repository
-                    .append_log(&record, LogDirection::System, exit_text, None)
-                    .await?;
-                let enter_text = cli_viewer_enter_message(current.shell_pid);
-                if let Some(message_thread_id) = record.metadata.message_thread_id {
-                    send_scoped_message(
-                        bot,
-                        ChatId(record.metadata.chat_id),
-                        Some(thread_id_from_i32(message_thread_id)),
-                        enter_text.clone(),
-                    )
-                    .await?;
-                }
-                state
-                    .repository
-                    .append_log(&record, LogDirection::System, enter_text, None)
-                    .await?;
-                viewer_injections.insert(record.conversation_key.clone(), current);
-            }
-            CliViewerInjectionTransition::ClearSilently => {
-                viewer_injections.remove(&record.conversation_key);
-            }
-        }
+            read_session_status(workspace_path, session_id).await?
+        } else {
+            None
+        };
+        let marker = topic_marker_for_snapshot(current_snapshot.as_ref());
         let rendered = render_topic_title(&record, workspace_path.as_deref(), marker);
         let previous = applied_titles.get(&record.conversation_key);
         if previous.is_some_and(|value| value == &rendered) {
@@ -661,7 +439,6 @@ async fn sync_workspace_titles_once(
     }
 
     applied_titles.retain(|conversation, _| active_conversations.contains(conversation));
-    viewer_injections.retain(|conversation, _| active_conversations.contains(conversation));
     state
         .workspace_status_cache
         .remove_missing_workspaces(&keep_workspaces)
@@ -910,19 +687,18 @@ fn cli_mirror_entry_from_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        CliTopicMarker, CliViewerInjectionState, CliViewerInjectionTransition,
-        STARTUP_STALE_BUSY_RECOVERED_LOG, cli_mirror_entry_from_event, cli_topic_marker_for_record,
-        cli_viewer_injection_transition, reconcile_stale_bot_busy_sessions_for_repository,
-        render_topic_title,
+        CliTopicMarker, STARTUP_STALE_BUSY_RECOVERED_LOG, cli_mirror_entry_from_event,
+        reconcile_stale_bot_busy_sessions_for_repository, render_topic_title,
+        topic_marker_for_snapshot,
     };
     use crate::repository::{
-        SessionAttachmentState, SessionBinding, ThreadMetadata, ThreadRecord, ThreadRepository,
-        ThreadScope, ThreadStatus, TranscriptMirrorOrigin, TranscriptMirrorRole,
+        ThreadMetadata, ThreadRecord, ThreadRepository, ThreadScope, ThreadStatus,
+        TranscriptMirrorOrigin, TranscriptMirrorRole,
     };
     use crate::workspace_status::{
-        CliOwnerClaim, SessionCurrentStatus, SessionStatusOwner, WorkspaceAggregateStatus,
-        WorkspaceStatusEventRecord, WorkspaceStatusPhase, ensure_workspace_status_surface,
-        read_session_status, record_bot_status_event, session_status_path,
+        SessionCurrentStatus, SessionStatusOwner, WorkspaceStatusEventRecord,
+        WorkspaceStatusPhase, ensure_workspace_status_surface, read_session_status,
+        record_bot_status_event, session_status_path,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -982,106 +758,68 @@ mod tests {
         }
     }
 
-    fn aggregate(session_ids: &[&str]) -> WorkspaceAggregateStatus {
-        WorkspaceAggregateStatus {
+    #[test]
+    fn render_title_uses_busy_suffix_for_running_snapshot() {
+        let snapshot = SessionCurrentStatus {
             schema_version: 2,
             workspace_cwd: "/tmp/workspace".to_owned(),
-            live_cli_session_ids: session_ids
-                .iter()
-                .map(|value| (*value).to_owned())
-                .collect(),
-            active_shell_pids: vec![42],
-            updated_at: "2026-03-19T00:00:00.000Z".to_owned(),
-        }
-    }
-
-    fn owner_claim(thread_key: &str, session_id: Option<&str>) -> CliOwnerClaim {
-        CliOwnerClaim {
-            schema_version: 2,
-            workspace_cwd: "/tmp/workspace".to_owned(),
-            thread_key: thread_key.to_owned(),
-            shell_pid: 42,
-            session_id: session_id.map(str::to_owned),
+            session_id: "thr_bot".to_owned(),
+            owner: SessionStatusOwner::Bot,
+            live: false,
+            phase: WorkspaceStatusPhase::TurnRunning,
+            shell_pid: None,
             child_pid: None,
             child_pgid: None,
             child_command: None,
-            started_at: "2026-03-19T00:00:00.000Z".to_owned(),
+            client: Some("threadbridge".to_owned()),
+            turn_id: Some("turn-1".to_owned()),
+            summary: Some("hello".to_owned()),
             updated_at: "2026-03-19T00:00:00.000Z".to_owned(),
-        }
-    }
-
-    fn binding(
-        selected_session_id: Option<&str>,
-        attachment_state: SessionAttachmentState,
-    ) -> SessionBinding {
-        SessionBinding {
-            schema_version: 2,
-            codex_thread_id: selected_session_id.map(str::to_owned),
-            selected_session_id: selected_session_id.map(str::to_owned),
-            attachment_state,
-            workspace_cwd: Some("/tmp/workspace".to_owned()),
-            bound_at: None,
-            initialized_at: None,
-            last_verified_at: None,
-            session_broken: false,
-            session_broken_at: None,
-            session_broken_reason: None,
-            updated_at: "2026-03-19T00:00:00.000Z".to_owned(),
-        }
-    }
-
-    #[test]
-    fn render_title_uses_attach_for_cli_handoff_binding() {
-        let title = render_topic_title(
-            &record(Some("Status Sync"), true),
-            Some(PathBuf::from("/tmp/workspace").as_path()),
-            CliTopicMarker::Attach,
-        );
-        assert_eq!(title, "Status Sync · attach · broken");
-    }
-
-    #[test]
-    fn render_title_uses_cli_for_owner_thread() {
-        let marker = cli_topic_marker_for_record(
-            &record(None, false),
-            Some(&binding(Some("thr_bot"), SessionAttachmentState::None)),
-            Some(&aggregate(&["thr_cli"])),
-            Some(&owner_claim("thread-key", Some("thr_cli"))),
-        );
+        };
         let title = render_topic_title(
             &record(None, false),
             Some(PathBuf::from("/tmp/example-workspace").as_path()),
-            marker,
+            topic_marker_for_snapshot(Some(&snapshot)),
         );
-        assert_eq!(title, "example-workspace · cli");
+        assert_eq!(title, "example-workspace · busy");
     }
 
     #[test]
-    fn render_title_truncates_before_attach_suffix() {
+    fn render_title_truncates_before_busy_suffix() {
         let long_title = "x".repeat(140);
         let title = render_topic_title(
             &record(Some(&long_title), false),
             Some(PathBuf::from("/tmp/workspace").as_path()),
-            CliTopicMarker::Attach,
+            CliTopicMarker::Busy,
         );
-        assert!(title.ends_with(" · attach"));
+        assert!(title.ends_with(" · busy"));
         assert!(title.chars().count() <= 128);
     }
 
     #[test]
-    fn cli_conflict_marker_appears_when_live_cli_has_no_owner_claim() {
-        let marker = cli_topic_marker_for_record(
-            &record(Some("Conflict"), false),
-            Some(&binding(Some("thr_bot"), SessionAttachmentState::None)),
-            Some(&aggregate(&["thr_cli"])),
-            None,
-        );
+    fn render_title_includes_broken_and_busy() {
+        let snapshot = SessionCurrentStatus {
+            schema_version: 2,
+            workspace_cwd: "/tmp/workspace".to_owned(),
+            session_id: "thr_bot".to_owned(),
+            owner: SessionStatusOwner::Bot,
+            live: false,
+            phase: WorkspaceStatusPhase::TurnRunning,
+            shell_pid: None,
+            child_pid: None,
+            child_pgid: None,
+            child_command: None,
+            client: Some("threadbridge".to_owned()),
+            turn_id: Some("turn-1".to_owned()),
+            summary: None,
+            updated_at: "2026-03-19T00:00:00.000Z".to_owned(),
+        };
         let title = render_topic_title(
-            &record(Some("Conflict"), false),
+            &record(Some("Broken"), true),
             Some(PathBuf::from("/tmp/workspace").as_path()),
-            marker,
+            topic_marker_for_snapshot(Some(&snapshot)),
         );
-        assert_eq!(title, "Conflict · cli!");
+        assert_eq!(title, "Broken · busy · broken");
     }
 
     #[test]
@@ -1101,52 +839,6 @@ mod tests {
         assert_eq!(entry.origin, TranscriptMirrorOrigin::Cli);
         assert_eq!(entry.role, TranscriptMirrorRole::User);
         assert_eq!(entry.text, "inspect this repo");
-    }
-
-    #[test]
-    fn cli_viewer_transition_enters_for_owner_thread_cli_marker() {
-        let record = record(Some("Viewer"), false);
-        let transition = cli_viewer_injection_transition(
-            None,
-            CliTopicMarker::Cli,
-            &record,
-            Some(&owner_claim("thread-key", Some("thr_cli"))),
-        );
-        assert_eq!(
-            transition,
-            CliViewerInjectionTransition::Enter(CliViewerInjectionState {
-                lifecycle_id: "thread-key:42:2026-03-19T00:00:00.000Z".to_owned(),
-                shell_pid: 42,
-            })
-        );
-    }
-
-    #[test]
-    fn cli_viewer_transition_exits_when_marker_returns_to_none() {
-        let record = record(Some("Viewer"), false);
-        let previous = CliViewerInjectionState {
-            lifecycle_id: "thread-key:42:2026-03-19T00:00:00.000Z".to_owned(),
-            shell_pid: 42,
-        };
-        let transition =
-            cli_viewer_injection_transition(Some(&previous), CliTopicMarker::None, &record, None);
-        assert_eq!(transition, CliViewerInjectionTransition::Exit);
-    }
-
-    #[test]
-    fn cli_viewer_transition_clears_silently_on_attach() {
-        let record = record(Some("Viewer"), false);
-        let previous = CliViewerInjectionState {
-            lifecycle_id: "thread-key:42:2026-03-19T00:00:00.000Z".to_owned(),
-            shell_pid: 42,
-        };
-        let transition = cli_viewer_injection_transition(
-            Some(&previous),
-            CliTopicMarker::Attach,
-            &record,
-            Some(&owner_claim("thread-key", Some("thr_cli"))),
-        );
-        assert_eq!(transition, CliViewerInjectionTransition::ClearSilently);
     }
 
     #[test]

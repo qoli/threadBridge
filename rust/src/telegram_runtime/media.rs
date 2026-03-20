@@ -344,24 +344,6 @@ pub(crate) async fn queue_image_for_thread(
         )
         .await?;
     }
-    if let Some(binding) = session.as_ref()
-        && let Some(owner_claim) =
-            super::thread_flow::selected_live_cli_owned_session(state, &record, binding).await?
-    {
-        super::thread_flow::log_cli_owned_rejection(
-            &record,
-            binding,
-            &owner_claim,
-            "image_batch_saved",
-        );
-        send_scoped_message(
-            bot,
-            msg.chat.id,
-            Some(thread_id),
-            status_sync::cli_owned_text_message(true),
-        )
-        .await?;
-    }
     Ok(())
 }
 
@@ -404,28 +386,6 @@ pub(crate) async fn analyze_pending_image_batch(
     .await?
     {
         let text = status_sync::busy_text_message(&busy.snapshot, false);
-        if let Some(callback_query_id) = callback_query_id {
-            bot.answer_callback_query(callback_query_id.clone())
-                .text(text)
-                .show_alert(true)
-                .await?;
-        } else {
-            send_scoped_message(bot, ChatId(record.metadata.chat_id), Some(thread_id), text)
-                .await?;
-        }
-        return Ok(());
-    }
-    if let Some(binding) = session.as_ref()
-        && let Some(owner_claim) =
-            super::thread_flow::selected_live_cli_owned_session(state, &record, binding).await?
-    {
-        super::thread_flow::log_cli_owned_rejection(
-            &record,
-            binding,
-            &owner_claim,
-            "image_batch_analyze",
-        );
-        let text = status_sync::cli_owned_text_message(true);
         if let Some(callback_query_id) = callback_query_id {
             bot.answer_callback_query(callback_query_id.clone())
                 .text(text)
@@ -523,6 +483,7 @@ async fn execute_image_analysis_turn(
 ) -> Result<()> {
     let chat_id = ChatId(record.metadata.chat_id);
     let typing = TypingHeartbeat::start(bot.clone(), chat_id, Some(thread_id));
+    let codex_workspace = shared_codex_workspace(state, workspace_path.clone()).await?;
     let prompt = build_image_analysis_prompt(&batch, user_prompt);
     let preview = Arc::new(Mutex::new(TurnPreviewController::new(
         bot.clone(),
@@ -548,9 +509,7 @@ async fn execute_image_analysis_turn(
     let result = state
         .codex
         .run_locked_with_events(
-            &CodexWorkspace {
-                working_directory: workspace_path.clone(),
-            },
+            &codex_workspace,
             existing_thread_id,
             input,
             |event| {

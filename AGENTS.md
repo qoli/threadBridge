@@ -9,7 +9,7 @@ It is not the runtime appendix followed inside a bound project workspace. That a
 The runtime is organized in three layers:
 
 - Telegram orchestration: the Rust bot receives Telegram updates, enforces authorization, manages thread commands, streams live Codex previews, and sends results back to Telegram.
-- Codex thread control: the Rust runtime maps each Telegram thread to bot-local metadata under `data/`, binds it to a real workspace path, starts or resumes Codex threads through `codex app-server --listen stdio://`, and validates thread `cwd` against the stored workspace binding.
+- Codex thread control: the Rust runtime maps each Telegram thread to bot-local metadata under `data/`, binds it to a real workspace path, starts workspace-scoped shared `codex app-server` daemons on loopback websocket, resumes Codex threads through that shared runtime, and validates thread `cwd` against the stored workspace binding.
 - Tool executors: workspace-local wrapper commands under `.threadbridge/bin/` call Python scripts in `tools/` to materialize prompt configs, generated images, and Telegram outbox payloads.
 
 Important repo areas:
@@ -40,7 +40,7 @@ From a maintainer perspective:
 
 - `/new_thread` creates a Telegram topic and a bot-local folder under `data/<thread-key>/`.
 - `/bind_workspace <absolute-path>` installs the runtime appendix and `.threadbridge/` surface into that real workspace, then starts a fresh Codex thread for that workspace through app-server.
-- `session-binding.json` stores the mapping between the Telegram thread, the real workspace path, and the Codex `thread.id`.
+- `session-binding.json` stores the mapping between the Telegram thread, the real workspace path, and the current Codex `thread.id`.
 - Normal thread messages resume the saved Codex thread through app-server and run turns in the bound workspace.
 - Uploaded images are stored under `data/<thread-key>/state/`, accumulated into a pending batch, and analyzed by Codex in the same bound workspace context.
 - If Codex session continuity breaks or the returned `thread.cwd` no longer matches the stored workspace path, the binding is marked broken and requires `/reconnect_codex` or `/new`.
@@ -130,6 +130,7 @@ This managed block is appended by threadBridge to a real project workspace `AGEN
   - `./.threadbridge/bin/send_telegram_media`
 - threadBridge installs local shell/runtime sync files under:
   - `./.threadbridge/shell/codex-sync.bash`
+  - `./.threadbridge/state/app-server/current.json`
   - `./.threadbridge/state/codex-sync/current.json`
   - `./.threadbridge/state/codex-sync/events.jsonl`
   - `./.codex/hooks.json`
@@ -138,13 +139,12 @@ This managed block is appended by threadBridge to a real project workspace `AGEN
   - `./.threadbridge/tool_results/`
 - Keep these wrapper names and paths stable.
 
-### Local Codex CLI Sync
+### Local Codex TUI
 
-- If you want local Bash `codex` runs in this workspace to sync back into Telegram status, source `./.threadbridge/shell/codex-sync.bash`.
-- The managed Bash wrapper injects threadBridge's `notify` override and enables Codex hooks for that workspace.
-- The managed `.codex/hooks.json` belongs to threadBridge. Do not repurpose it for unrelated project hooks.
-- Shared CLI/bot status snapshots live in `./.threadbridge/state/codex-sync/current.json`.
-- Shared status events append to `./.threadbridge/state/codex-sync/events.jsonl`.
+- Source `./.threadbridge/shell/codex-sync.bash` before using `hcodex` in this workspace.
+- `hcodex` resolves the shared workspace daemon from `./.threadbridge/state/app-server/current.json` and launches `codex --remote ...`.
+- With no extra args, `hcodex` resumes the current Telegram-bound Codex thread for this workspace.
+- The managed `.codex/hooks.json` and `codex-sync` state files are still installed as compatibility surfaces during the migration, but viewer handoff and `/attach_cli_session` are no longer part of the supported path.
 
 ### `./.threadbridge/bin/build_prompt_config`
 
@@ -256,6 +256,7 @@ The request file must look like this:
 - threadBridge-owned runtime surface inside this workspace:
   - `.threadbridge/bin/`
   - `.threadbridge/shell/`
+  - `.threadbridge/state/app-server/`
   - `.threadbridge/state/codex-sync/`
   - `.threadbridge/tool_requests/`
   - `.threadbridge/tool_results/`

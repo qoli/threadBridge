@@ -4,6 +4,12 @@
 
 這份 Plan 的 `v1` 已完成並已落地到代碼。
 
+目前定位已改成：
+
+- shared-runtime 遷移期間的兼容層
+- 仍可提供 workspace-level busy signal 與 legacy CLI mirror
+- 但不再是正式的本地 TUI 主路徑
+
 目前已實作：
 
 - `/bind_workspace` 安裝 `.threadbridge/state/codex-sync/`
@@ -69,7 +75,7 @@ V1 只修改 `threadBridge`。
 - Telegram thread 和某一個特定 CLI session 的精確一對一映射
 - 哪些 session 是只讀、哪些 session 會改文件的差異化策略
 
-所以 ` · cli` 的語義應理解成：
+所以這層兼容 busy signal 的語義應理解成：
 
 - 這個 workspace 目前被某個本地 Codex CLI 活躍使用
 - Telegram 端應暫停新的 turn，以避免和本地工作撞車
@@ -152,8 +158,7 @@ topic title 規則：
 
 - 基底：thread title，否則 workspace basename，否則 `Unbound`
 - suffix：
-  - ` · cli`
-  - ` · bot`
+  - ` · busy`
   - ` · broken`
 
 ### 6. Busy Gate

@@ -47,11 +47,8 @@ pub struct ThreadMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionBinding {
     pub schema_version: u32,
-    pub codex_thread_id: Option<String>,
     #[serde(default)]
-    pub selected_session_id: Option<String>,
-    #[serde(default)]
-    pub attachment_state: SessionAttachmentState,
+    pub current_codex_thread_id: Option<String>,
     pub workspace_cwd: Option<String>,
     pub bound_at: Option<String>,
     pub initialized_at: Option<String>,
@@ -59,7 +56,19 @@ pub struct SessionBinding {
     pub session_broken: bool,
     pub session_broken_at: Option<String>,
     pub session_broken_reason: Option<String>,
+    #[serde(default)]
+    pub tui_active_codex_thread_id: Option<String>,
+    #[serde(default)]
+    pub tui_session_adoption_pending: bool,
+    #[serde(default)]
+    pub tui_session_adoption_prompt_message_id: Option<i32>,
     pub updated_at: String,
+    #[serde(default, skip_serializing, rename = "codex_thread_id")]
+    legacy_codex_thread_id: Option<String>,
+    #[serde(default, skip_serializing, rename = "selected_session_id")]
+    legacy_selected_session_id: Option<String>,
+    #[serde(default, skip_serializing, rename = "attachment_state")]
+    legacy_attachment_state: Option<SessionAttachmentState>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -163,6 +172,44 @@ fn conversation_key_for(scope: &ThreadScope, thread_key: &str) -> String {
     }
 }
 
+impl SessionBinding {
+    fn normalize_legacy_fields(mut self) -> Self {
+        if self.current_codex_thread_id.is_none() {
+            self.current_codex_thread_id = self
+                .legacy_selected_session_id
+                .take()
+                .or(self.legacy_codex_thread_id.take());
+        }
+        self.legacy_codex_thread_id = None;
+        self.legacy_selected_session_id = None;
+        self.legacy_attachment_state = None;
+        self
+    }
+
+    fn fresh(workspace_cwd: Option<String>, current_codex_thread_id: Option<String>) -> Self {
+        let now = now_iso();
+        Self {
+            schema_version: 3,
+            current_codex_thread_id,
+            workspace_cwd,
+            bound_at: Some(now.clone()),
+            initialized_at: Some(now.clone()),
+            last_verified_at: Some(now.clone()),
+            session_broken: false,
+            session_broken_at: None,
+            session_broken_reason: None,
+            tui_active_codex_thread_id: None,
+            tui_session_adoption_pending: false,
+            tui_session_adoption_prompt_message_id: None,
+            updated_at: now,
+            legacy_codex_thread_id: None,
+            legacy_selected_session_id: None,
+            legacy_attachment_state: None,
+        }
+    }
+
+}
+
 impl ThreadRepository {
     pub async fn open(data_root_path: impl AsRef<Path>) -> Result<Self> {
         let data_root_path = data_root_path.as_ref().to_path_buf();
@@ -251,7 +298,7 @@ impl ThreadRepository {
             codex_thread_id: self
                 .read_session_binding(record)
                 .await?
-                .and_then(|binding| binding.selected_session_id.or(binding.codex_thread_id)),
+                .and_then(|binding| binding.current_codex_thread_id),
             scope: record.metadata.scope.clone(),
             message_thread_id: record.metadata.message_thread_id,
             direction,
@@ -447,7 +494,10 @@ impl ThreadRepository {
     ) -> Result<Option<SessionBinding>> {
         let path = self.session_binding_path(record);
         match fs::read_to_string(&path).await {
-            Ok(content) => Ok(Some(serde_json::from_str(&content)?)),
+            Ok(content) => {
+                let binding: SessionBinding = serde_json::from_str(&content)?;
+                Ok(Some(binding.normalize_legacy_fields()))
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
         }
@@ -460,20 +510,8 @@ impl ThreadRepository {
         codex_thread_id: String,
     ) -> Result<ThreadRecord> {
         let now = now_iso();
-        let binding = SessionBinding {
-            schema_version: 2,
-            codex_thread_id: Some(codex_thread_id.clone()),
-            selected_session_id: Some(codex_thread_id),
-            attachment_state: SessionAttachmentState::None,
-            workspace_cwd: Some(workspace_cwd),
-            bound_at: Some(now.clone()),
-            initialized_at: Some(now.clone()),
-            last_verified_at: Some(now.clone()),
-            session_broken: false,
-            session_broken_at: None,
-            session_broken_reason: None,
-            updated_at: now.clone(),
-        };
+        let mut binding = SessionBinding::fresh(Some(workspace_cwd), Some(codex_thread_id));
+        binding.updated_at = now.clone();
         self.write_session_binding(&record, &binding).await?;
         self.update_metadata(ThreadRecord {
             metadata: ThreadMetadata {
@@ -527,13 +565,14 @@ impl ThreadRepository {
             .context("session binding is missing")?;
         let now = now_iso();
         let session_id = session_id.into();
-        binding.codex_thread_id = Some(session_id.clone());
-        binding.selected_session_id = Some(session_id);
-        binding.attachment_state = SessionAttachmentState::None;
+        binding.current_codex_thread_id = Some(session_id);
         binding.last_verified_at = Some(now.clone());
         binding.session_broken = false;
         binding.session_broken_at = None;
         binding.session_broken_reason = None;
+        binding.tui_active_codex_thread_id = None;
+        binding.tui_session_adoption_pending = false;
+        binding.tui_session_adoption_prompt_message_id = None;
         binding.updated_at = now.clone();
         self.write_session_binding(&record, &binding).await?;
         self.update_metadata(ThreadRecord {
@@ -542,62 +581,6 @@ impl ThreadRepository {
                 session_broken: false,
                 session_broken_at: None,
                 session_broken_reason: None,
-                ..record.metadata.clone()
-            },
-            ..record
-        })
-        .await
-    }
-
-    pub async fn attach_cli_session_binding_session(
-        &self,
-        record: ThreadRecord,
-        session_id: impl Into<String>,
-    ) -> Result<ThreadRecord> {
-        let mut binding = self
-            .read_session_binding(&record)
-            .await?
-            .context("session binding is missing")?;
-        let now = now_iso();
-        let session_id = session_id.into();
-        binding.codex_thread_id = Some(session_id.clone());
-        binding.selected_session_id = Some(session_id);
-        binding.attachment_state = SessionAttachmentState::CliHandoff;
-        binding.last_verified_at = Some(now.clone());
-        binding.session_broken = false;
-        binding.session_broken_at = None;
-        binding.session_broken_reason = None;
-        binding.updated_at = now.clone();
-        self.write_session_binding(&record, &binding).await?;
-        self.update_metadata(ThreadRecord {
-            metadata: ThreadMetadata {
-                last_codex_turn_at: Some(now),
-                session_broken: false,
-                session_broken_at: None,
-                session_broken_reason: None,
-                ..record.metadata.clone()
-            },
-            ..record
-        })
-        .await
-    }
-
-    pub async fn clear_cli_handoff_attachment(&self, record: ThreadRecord) -> Result<ThreadRecord> {
-        let mut binding = self
-            .read_session_binding(&record)
-            .await?
-            .context("session binding is missing")?;
-        if binding.attachment_state != SessionAttachmentState::CliHandoff {
-            return Ok(record);
-        }
-        let now = now_iso();
-        binding.attachment_state = SessionAttachmentState::None;
-        binding.updated_at = now.clone();
-        binding.last_verified_at = Some(now.clone());
-        self.write_session_binding(&record, &binding).await?;
-        self.update_metadata(ThreadRecord {
-            metadata: ThreadMetadata {
-                last_codex_turn_at: Some(now),
                 ..record.metadata.clone()
             },
             ..record
@@ -615,20 +598,7 @@ impl ThreadRepository {
         let mut binding = self
             .read_session_binding(&record)
             .await?
-            .unwrap_or(SessionBinding {
-                schema_version: 2,
-                codex_thread_id: None,
-                selected_session_id: None,
-                attachment_state: SessionAttachmentState::None,
-                workspace_cwd: None,
-                bound_at: None,
-                initialized_at: None,
-                last_verified_at: None,
-                session_broken: true,
-                session_broken_at: Some(now.clone()),
-                session_broken_reason: Some(reason.clone()),
-                updated_at: now.clone(),
-            });
+            .unwrap_or_else(|| SessionBinding::fresh(None, None));
         binding.session_broken = true;
         binding.session_broken_at = Some(now.clone());
         binding.session_broken_reason = Some(reason.clone());
@@ -737,29 +707,6 @@ impl ThreadRepository {
         Ok(records)
     }
 
-    pub async fn find_active_cli_handoff_owner(
-        &self,
-        workspace_cwd: &str,
-        session_id: &str,
-    ) -> Result<Option<ThreadRecord>> {
-        for record in self.list_active_threads().await? {
-            let Some(binding) = self.read_session_binding(&record).await? else {
-                continue;
-            };
-            if binding.attachment_state != SessionAttachmentState::CliHandoff {
-                continue;
-            }
-            if binding.workspace_cwd.as_deref() != Some(workspace_cwd) {
-                continue;
-            }
-            if binding.selected_session_id.as_deref() != Some(session_id) {
-                continue;
-            }
-            return Ok(Some(record));
-        }
-        Ok(None)
-    }
-
     pub async fn get_thread_by_key(
         &self,
         chat_id: i64,
@@ -859,9 +806,10 @@ impl ThreadRepository {
         session: &SessionBinding,
     ) -> Result<()> {
         let path = self.session_binding_path(record);
+        let session = session.clone().normalize_legacy_fields();
         fs::write(
             path,
-            format!("{}\n", serde_json::to_string_pretty(session)?),
+            format!("{}\n", serde_json::to_string_pretty(&session)?),
         )
         .await?;
         Ok(())
@@ -939,10 +887,7 @@ pub struct AppendPendingImageInput {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AppendPendingImageInput, SessionAttachmentState, ThreadRepository, ThreadScope,
-        ThreadStatus,
-    };
+    use super::{AppendPendingImageInput, ThreadRepository, ThreadScope, ThreadStatus};
     use crate::image_artifacts::ImageAnalysisArtifact;
     use std::path::PathBuf;
     use tokio::fs;
@@ -991,15 +936,18 @@ mod tests {
             .unwrap();
 
         let binding = repo.read_session_binding(&updated).await.unwrap().unwrap();
-        assert_eq!(binding.codex_thread_id.as_deref(), Some("thr_123"));
-        assert_eq!(binding.selected_session_id.as_deref(), Some("thr_123"));
-        assert_eq!(binding.attachment_state, SessionAttachmentState::None);
+        assert_eq!(
+            binding.current_codex_thread_id.as_deref(),
+            Some("thr_123")
+        );
+        assert_eq!(binding.tui_active_codex_thread_id, None);
+        assert!(!binding.tui_session_adoption_pending);
         assert_eq!(binding.workspace_cwd.as_deref(), Some("/tmp/workspace"));
         assert!(!binding.session_broken);
     }
 
     #[tokio::test]
-    async fn attach_cli_session_marks_binding_as_handoff() {
+    async fn select_session_rewrites_current_codex_thread_id() {
         let root = temp_path();
         let repo = ThreadRepository::open(&root).await.unwrap();
         let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
@@ -1009,12 +957,16 @@ mod tests {
             .unwrap();
 
         let updated = repo
-            .attach_cli_session_binding_session(record, "thr_cli".to_owned())
+            .select_session_binding_session(record, "thr_cli".to_owned())
             .await
             .unwrap();
         let binding = repo.read_session_binding(&updated).await.unwrap().unwrap();
-        assert_eq!(binding.selected_session_id.as_deref(), Some("thr_cli"));
-        assert_eq!(binding.attachment_state, SessionAttachmentState::CliHandoff);
+        assert_eq!(
+            binding.current_codex_thread_id.as_deref(),
+            Some("thr_cli")
+        );
+        assert_eq!(binding.tui_active_codex_thread_id, None);
+        assert!(!binding.tui_session_adoption_pending);
     }
 
     #[tokio::test]

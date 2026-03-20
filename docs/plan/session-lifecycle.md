@@ -1,8 +1,8 @@
-# Session 生命週期草稿
+# Session 生命週期
 
 ## 目前進度
 
-這份文檔已部分落地，但仍不是完整主規格。
+這份文檔已部分落地。
 
 目前已實作：
 
@@ -11,143 +11,111 @@
 - `/new`
 - `/reconnect_codex`
 - `session-binding.json` 持久化 Telegram thread / workspace / Codex thread 關聯
+- canonical pointer 已收斂到 `current_codex_thread_id`
 
 目前尚未完成：
 
-- 與 `runtime-state-machine` 的正式對齊
-- 更清晰的 runtime 層抽象，而不是由 Telegram flow 直接承載主要生命週期
+- `tui_active_codex_thread_id` 的正式 runtime 更新
+- TUI adoption flow
+- 與 `runtime-state-machine` 的完整對齊
 
-## 問題
+## 核心模型
 
-`threadBridge` 最早的模型比較接近：
-
-- Telegram thread 綁定到一個已經存在的 Codex session
-- bot 只是負責接上那個 session
-
-但在改成對接 Codex app-server 之後，這個前提已經不對了。
-
-現在 bot 自己已經可以明確控制：
-
-- 建立新的 Codex thread
-- 把 Telegram thread 綁定到一個 workspace path
-- 對同一個 workspace 重建一個新的 Codex thread
-- 驗證目前記錄的 Codex thread 是否還能 resume
-
-所以未來的 runtime 應該用 `new / bind / resume / reset` 來描述，而不是再用「接上一個本地已存在 session」的角度來理解。
-
-## 方向
-
-把 Codex thread 的生命週期，明確變成產品模型的一部分。
-
-核心觀念：
-
-- Telegram thread 是 UI 容器
-- workspace binding 是本地目錄選擇
-- Codex thread 是由 threadBridge 管理建立的 runtime 資源
-- `session-binding.json` 只是 Telegram thread、workspace path、Codex `thread.id` 之間的對照關係
-
-## 建議的心智模型
-
-建議把術語固定成下面這幾層：
+應固定用下面這幾層理解：
 
 - `Telegram thread`
   - Telegram 裡的 topic / 討論串
 - `Workspace binding`
   - 由 `/bind_workspace` 選定的真實本地目錄
 - `Codex thread`
-  - threadBridge 透過 app-server 建立的 Codex thread
-- `Reset`
-  - 放棄舊的 Codex continuity，為同一個 workspace 建立新的 Codex thread
-- `Reconnect`
-  - 驗證目前保存的 Codex thread 是否仍然可以 resume，且 `cwd` 是否仍然對得上
+  - 由 threadBridge 透過 app-server 建立與續接的 Codex `thread.id`
+- `current_codex_thread_id`
+  - 這個 Telegram thread 目前正式採用的 Codex 對話
+- `tui_active_codex_thread_id`
+  - 受管本地 TUI 最近一次使用的 Codex 對話
 
-應該避免的說法：
+## 指令語義
 
-- 把 `data/` 描述成可以恢復 Codex runtime 的來源
-- 把主要流程描述成「綁定一個現成 session」
-- 把 `data/` 誤認成真正的 workspace
+### `/new_thread`
 
-## 預期的使用流程
+- 只建立 Telegram thread 與 bot-local metadata
+- 不建立 Codex thread
+- 不綁定 workspace
 
-### 新 Thread
+### `/bind_workspace`
 
-1. 使用者透過 `/new_thread` 建立 Telegram thread
-2. bot 只建立 bot-local metadata
-3. 這時候還沒有 Codex thread
-4. 使用者透過 `/bind_workspace <absolute-path>` 綁定 workspace
-5. bot 安裝 runtime appendix、建立新的 Codex thread、materialize 它，然後寫入 binding
+- 綁定 workspace path
+- 安裝 runtime appendix 與 `.threadbridge/`
+- 確保共享 app-server daemon 可用
+- 建立 fresh Codex thread
+- 將該 `thread.id` 寫進 `current_codex_thread_id`
 
 ### 一般延續對話
 
-1. 使用者在已綁定的 Telegram thread 裡發訊息
-2. bot resume 目前保存的 Codex thread
-3. bot 在綁定的 workspace 裡開始新 turn
-4. bot 串流 preview，最後把結果送回 Telegram
+- Telegram 在已綁定 thread 收到文字或圖片分析請求
+- 使用 `current_codex_thread_id`
+- 透過共享 workspace daemon 對同一個 Codex thread 發 turn
 
-### Reset
+### `/new`
 
-1. 目前的 Codex thread 壞掉、過時，或不再適合繼續
-2. 使用者執行 `/new`
-3. bot 對同一個 workspace 建立新的 Codex thread
-4. 舊 continuity 直接放棄
+- 對同一個 workspace 建立 fresh Codex thread
+- 原子替換 `current_codex_thread_id`
+- 清除殘留的 adoption 狀態
 
-### Reconnect
+### `/reconnect_codex`
 
-1. 使用者或 bot 懷疑目前 binding 已經失效
-2. 使用者執行 `/reconnect_codex`
-3. bot 驗證 resume 是否成功，並確認 `thread.cwd` 是否仍然等於保存的 `workspace_cwd`
-4. 成功就清除 broken 狀態，失敗就要求 reset
+- 驗證 `current_codex_thread_id` 是否仍能 `thread/read`
+- 驗證返回的 `cwd` 是否仍等於保存的 `workspace_cwd`
+- 成功則清除 broken 狀態
+- 失敗則保留原 binding，但標成 broken，要求 `/new` 或重試
 
-## 對實作的影響
+## `session-binding.json`
 
-### 指令面
+目前應理解成：
 
-目前的指令面已經接近這個方向：
+- 最小但明確的 binding 文件
+- source of truth 是 Telegram thread 對 workspace 與 current Codex thread 的綁定
 
-- `/bind_workspace`
-- `/new`
-- `/reconnect_codex`
-
-可能的後續增強：
-
-- 一個更清楚的 `/status`
-- 顯示目前 workspace path 與 Codex thread id
-- 提供明確的「替換目前 Codex thread，但不改 workspace」操作
-
-### 資料模型
-
-`session-binding.json` 應該保持最小且明確：
+現行欄位重點：
 
 - `workspace_cwd`
+- `current_codex_thread_id`
+- `last_verified_at`
+- `session_broken`
+- `session_broken_at`
+- `session_broken_reason`
+- `tui_active_codex_thread_id`
+- `tui_session_adoption_pending`
+- `tui_session_adoption_prompt_message_id`
+
+舊欄位：
+
+- `selected_session_id`
 - `codex_thread_id`
-- 驗證時間
-- broken 狀態相關欄位
 
-它不應該暗示 threadBridge 可以只靠 `data/` 自己恢復 Codex runtime。
+已經進入兼容讀取、統一寫回新欄位的過渡狀態。
 
-### 使用者文案
+## `/new` 與 TUI 的關係
 
-使用者看見的說法應該逐步固定成：
+這是目前最容易混淆的點。
 
-- 綁定 workspace
-- 建立新的 Codex session
-- 重新連接目前的 Codex session
-- 目前的 workspace binding
+- `/new`
+  - 永遠代表 Telegram thread 的 canonical continuity 切換
+  - 也就是替換 `current_codex_thread_id`
+- TUI 內部的 `new session`
+  - 最終目標不是立刻覆蓋 `current_codex_thread_id`
+  - 而是先更新 `tui_active_codex_thread_id`
+  - 等 TUI 結束後再走 adoption flow
 
-而不是：
+所以未來的正確語義是：
 
-- 從本地資料恢復 session
-- 綁定現有的本地 session
+- `current_codex_thread_id` 是 Telegram continuity
+- `tui_active_codex_thread_id` 是 TUI runtime state
+- 兩者可以暫時不同
 
-## 開放問題
+## 後續工作
 
-- `/new_thread` 之後，未來要不要支援直接帶入 workspace path？
-- 要不要把目前的 Codex `thread.id` 暴露在 `/status` 裡？
-- `/new` 之後，bot 端要不要保留某些本地摘要或狀態？
-- 當錯誤是 `no rollout found for thread id ...` 時，要不要直接把 `/new` 作為主建議？
-
-## 建議的下一步
-
-1. 增加一個 thread 狀態指令，顯示 workspace path、目前 binding 狀態、Codex thread 是否健康。
-2. 收斂所有使用者文案，統一用 `workspace binding` 和 `Codex thread` 的語言。
-3. 收斂 `/new` 的文案與 Telegram UX，讓 fresh session 語意固定下來。
+1. 為 shared remote TUI 補正式 thread tracking。
+2. 讓 `tui_active_codex_thread_id` 不再只是資料模型欄位。
+3. 完成 TUI adoption prompt 與 auto-adopt。
+4. 把 `session-lifecycle`、`session-level-cli-telegram-sync`、`runtime-state-machine` 的狀態語義完全收斂。

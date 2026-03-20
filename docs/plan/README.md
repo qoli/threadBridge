@@ -15,7 +15,7 @@
 - [codex-cli-telegram-status-sync-hooks.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-cli-telegram-status-sync-hooks.md)
   - 已完成 v1
   - Bash wrapper、Codex hooks、notify、workspace shared status、topic title watcher、busy gate 都已落地
-  - 這份 v1 只是 workspace-level busy signal，不是多 session / 多 agent 協調模型
+  - 現在已退到 shared-runtime 遷移期的兼容層，不再代表正式的本地 TUI 主路徑
 
 ## 部分落地
 
@@ -27,16 +27,16 @@
   - Telegram 文字 turn / 圖片分析已改成 background 執行，後續輸入現在會命中 reject
   - 但 queue 模型、更完整的狀態語義、`STOP` / 提示類互動控制面、更乾淨的 ingress / dispatcher 邊界，以及 bot crash 後 stale busy gate recovery 仍未收斂
 - [topic-title-status.md](/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md)
-  - 已落地 `workspace/title + cli/cli!/attach/broken suffix`
+  - 已落地 `workspace/title + busy/broken suffix`
   - 已落地新產生的 topic rename service message best-effort cleanup
   - context ratio 仍未實作
 - [session-lifecycle.md](/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md)
   - `/new_thread`、`/bind_workspace`、`/new`、`/reconnect_codex` 的基本生命週期已存在
-  - 更完整的 runtime 主模型仍待收斂
+  - `current_codex_thread_id` 已成為 canonical pointer，但 TUI adoption flow 仍待完成
 - [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md)
-  - threadBridge 側的 session registry、`.cli/.attach` title、selected-session gate、排他式 `/attach_cli_session` handoff 已落地
-  - 但完整 live turn/item/delta 鏡像仍需要 upstream `codex` 暴露更完整的 remote attach / shared runtime 能力
-  - bot-owned selected-session busy snapshot 的 crash-safe recovery 也還沒定義完成
+  - shared app-server daemon、`hcodex -> codex --remote`、`current_codex_thread_id` 重命名已落地
+  - `/attach_cli_session`、viewer handoff、`.cli/.attach` title 已退場
+  - TUI proxy、`tui_active_codex_thread_id` 真正追蹤、adoption prompt 與 auto-adopt 仍未完成
 
 ## 純草稿
 
@@ -56,6 +56,9 @@
   - runtime 協議草稿
 - [telegram-adapter-migration.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-adapter-migration.md)
   - Telegram adapter 遷移草稿
+- [macos-menubar-thread-manager.md](/Volumes/Data/Github/threadBridge/docs/plan/macos-menubar-thread-manager.md)
+  - macOS 托盤 thread 管理面草稿
+  - 以本地 menu bar 管理面集中 thread list、binding 狀態與既有 control actions
 
 ## 主規格
 

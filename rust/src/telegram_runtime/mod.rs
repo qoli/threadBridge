@@ -13,18 +13,17 @@ pub(crate) use crate::image_artifacts::{
     ImageAnalysisArtifact, ImageAnalysisImage, build_image_analysis_prompt,
     render_pending_image_batch,
 };
+use crate::app_server_runtime::WorkspaceRuntimeManager;
 pub(crate) use crate::repository::{
-    AppendPendingImageInput, LogDirection, SessionAttachmentState, SessionBinding, ThreadRecord,
-    ThreadRepository, ThreadStatus, TranscriptMirrorDelivery, TranscriptMirrorEntry,
-    TranscriptMirrorOrigin, TranscriptMirrorRole,
+    AppendPendingImageInput, LogDirection, SessionBinding, ThreadRecord, ThreadRepository,
+    ThreadStatus, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
+    TranscriptMirrorRole,
 };
 pub(crate) use crate::tool_results::{TelegramOutboxItem, parse_telegram_outbox};
 pub(crate) use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 pub(crate) use crate::workspace_status::{
-    CliOwnerClaim, WorkspaceStatusCache, busy_selected_session_status, default_attach_intent,
-    list_live_cli_sessions, read_cli_owner_claim, read_session_status,
-    read_workspace_status_with_cache, record_bot_status_event, remove_attach_intent,
-    write_attach_intent,
+    WorkspaceStatusCache, busy_selected_session_status, read_session_status,
+    read_workspace_status_with_cache, record_bot_status_event,
 };
 
 pub mod final_reply;
@@ -53,8 +52,6 @@ pub enum Command {
     RestoreThread,
     #[command(description = "Revalidate the current bound Codex session for this thread")]
     ReconnectCodex,
-    #[command(description = "Take over a live CLI session and continue it in Telegram")]
-    AttachCliSession,
     #[command(description = "Show this thread's key, workspace, session, and CLI owner state")]
     ThreadInfo,
 }
@@ -64,6 +61,7 @@ pub struct AppState {
     pub(crate) config: AppConfig,
     pub(crate) repository: ThreadRepository,
     pub(crate) codex: CodexRunner,
+    pub(crate) app_server_runtime: WorkspaceRuntimeManager,
     pub(crate) seed_template_path: PathBuf,
     pub(crate) workspace_status_cache: WorkspaceStatusCache,
 }
@@ -80,6 +78,7 @@ impl AppState {
         )?;
         Ok(Self {
             codex: CodexRunner::new(config.runtime.codex_model.clone()),
+            app_server_runtime: WorkspaceRuntimeManager::new(),
             repository,
             seed_template_path,
             workspace_status_cache: WorkspaceStatusCache::new(),
@@ -333,12 +332,7 @@ pub(crate) fn disabled_link_preview_options() -> LinkPreviewOptions {
 pub(crate) fn usable_bound_session_id(session: Option<&SessionBinding>) -> Option<&str> {
     session
         .filter(|session| !session.session_broken)
-        .and_then(|session| {
-            session
-                .selected_session_id
-                .as_deref()
-                .or(session.codex_thread_id.as_deref())
-        })
+        .and_then(|session| session.current_codex_thread_id.as_deref())
 }
 
 pub(crate) fn workspace_path_from_binding(session: &SessionBinding) -> Result<PathBuf> {
@@ -384,7 +378,25 @@ pub(crate) async fn ensure_bound_workspace_runtime(
         &workspace,
     )
     .await?;
+    let _ = state
+        .app_server_runtime
+        .ensure_workspace_daemon(&workspace)
+        .await?;
     Ok(workspace)
+}
+
+pub(crate) async fn shared_codex_workspace(
+    state: &AppState,
+    workspace: PathBuf,
+) -> Result<CodexWorkspace> {
+    let runtime = state
+        .app_server_runtime
+        .ensure_workspace_daemon(&workspace)
+        .await?;
+    Ok(CodexWorkspace {
+        working_directory: workspace,
+        app_server_url: Some(runtime.daemon_ws_url),
+    })
 }
 
 #[cfg(test)]
@@ -452,11 +464,6 @@ mod tests {
 
         assert!(commands.iter().any(|command| command == "/new"));
         assert!(commands.iter().any(|command| command == "/new_thread"));
-        assert!(
-            commands
-                .iter()
-                .any(|command| command == "/attach_cli_session")
-        );
         assert!(commands.iter().any(|command| command == "/thread_info"));
         assert!(
             !commands
@@ -471,10 +478,6 @@ mod tests {
         assert!(matches!(
             Command::parse("/new_thread", ""),
             Ok(Command::NewThread)
-        ));
-        assert!(matches!(
-            Command::parse("/attach_cli_session", ""),
-            Ok(Command::AttachCliSession)
         ));
         assert!(matches!(
             Command::parse("/thread_info", ""),

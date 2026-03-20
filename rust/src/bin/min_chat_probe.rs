@@ -59,6 +59,7 @@ async fn main() -> Result<()> {
     let runner = CodexRunner::new(runtime.codex_model.clone());
     let workspace = CodexWorkspace {
         working_directory: workspace_path.clone(),
+        app_server_url: None,
     };
 
     let mut turns = Vec::new();
