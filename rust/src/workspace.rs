@@ -199,6 +199,24 @@ fn build_hcodex_launcher_script(
     lines.join("\n")
 }
 
+fn build_hcodex_shell_compat_script(workspace_path: &Path) -> String {
+    let launcher = shell_single_quote(
+        &workspace_path
+            .join(".threadbridge/bin/hcodex")
+            .display()
+            .to_string(),
+    );
+    [
+        "# threadBridge hcodex compatibility shim",
+        &format!("export THREADBRIDGE_WORKSPACE_ROOT={}", shell_single_quote(&workspace_path.display().to_string())),
+        "hcodex() {",
+        &format!("  \"{launcher}\" \"$@\""),
+        "}",
+        "",
+    ]
+    .join("\n")
+}
+
 fn build_runtime_gitignore() -> &'static str {
     "*\n!.gitignore\n"
 }
@@ -307,9 +325,11 @@ pub async fn ensure_workspace_runtime(
 
     let runtime_root = workspace_path.join(THREADBRIDGE_RUNTIME_DIR);
     let bin_dir = runtime_root.join("bin");
+    let shell_dir = runtime_root.join("shell");
     let tool_requests_dir = runtime_root.join("tool_requests");
     let tool_results_dir = runtime_root.join("tool_results");
     fs::create_dir_all(&bin_dir).await?;
+    fs::create_dir_all(&shell_dir).await?;
     fs::create_dir_all(&tool_requests_dir).await?;
     fs::create_dir_all(&tool_results_dir).await?;
     write_text_file(&runtime_root.join(".gitignore"), build_runtime_gitignore()).await?;
@@ -345,6 +365,14 @@ pub async fn ensure_workspace_runtime(
     )
     .await?;
     set_mode(&hcodex_path, 0o755).await?;
+
+    let shell_snippet_path = shell_dir.join("codex-sync.bash");
+    write_text_file(
+        &shell_snippet_path,
+        &build_hcodex_shell_compat_script(workspace_path),
+    )
+    .await?;
+    set_mode(&shell_snippet_path, 0o644).await?;
 
     let managed_codex_source = repo_root.join(MANAGED_CODEX_CACHE_BINARY);
     if fs::try_exists(&managed_codex_source)
@@ -463,6 +491,11 @@ mod tests {
                 .unwrap()
         );
         assert!(
+            fs::try_exists(workspace.join(".threadbridge/shell/codex-sync.bash"))
+                .await
+                .unwrap()
+        );
+        assert!(
             fs::try_exists(workspace.join(".threadbridge/tool_requests"))
                 .await
                 .unwrap()
@@ -487,6 +520,10 @@ mod tests {
             fs::read_to_string(workspace.join(".threadbridge/bin/hcodex"))
                 .await
                 .unwrap();
+        let compat_shell =
+            fs::read_to_string(workspace.join(".threadbridge/shell/codex-sync.bash"))
+                .await
+                .unwrap();
         assert!(hcodex_launcher.contains("THREADBRIDGE_HCODEX_RESOLVER"));
         assert!(hcodex_launcher.contains("THREADBRIDGE_HCODEX_WS_BRIDGE"));
         assert!(hcodex_launcher.contains("THREADBRIDGE_CODEX_SOURCE='brew'"));
@@ -496,6 +533,8 @@ mod tests {
         assert!(hcodex_launcher.contains("python3 \"$THREADBRIDGE_HCODEX_WS_BRIDGE\""));
         assert!(hcodex_launcher.contains("--remote \"$remote_ws_url\""));
         assert!(hcodex_launcher.contains("codex_bin=\"$(command -v codex 2>/dev/null || true)\""));
+        assert!(compat_shell.contains("hcodex() {"));
+        assert!(compat_shell.contains(".threadbridge/bin/hcodex"));
     }
 
     #[tokio::test]
