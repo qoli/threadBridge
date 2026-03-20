@@ -10,4 +10,5 @@ target
 logs/
 tools/__pycache__/**
 .threadbridge/
+.codex/
 tmp/

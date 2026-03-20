@@ -33,6 +33,8 @@
 - CLI 正在進行中的 turn/item/delta 事件完整鏡像到 Telegram
 - Telegram 發出的 turn 在本地 CLI 開著的情況下，被 CLI 以 live attach UI 方式即時看見
 - 真正的 shared live TUI continuity
+- bot-owned selected-session busy gate 的 crash-safe recovery
+  - 目前如果 threadBridge 在 Telegram turn 進行中意外終止，workspace 內留下的 `turn_running` snapshot 可能繼續阻止 `/new`、`/reconnect_codex`、`/attach_cli_session` 等 session state 變更
 
 ## 名詞固定
 
@@ -56,6 +58,10 @@
 - threadBridge 不接受從 `turn_completed.input-messages`、rollout、history 對 user prompt 做 fallback
 - 如果本地 `codex` build 沒有真正把 `UserPromptSubmit` 寫進 workspace 事件流，owner thread 只會看到 `Codex:` final，而不會事後補 `CLI:` user 行
 - 這種缺口只應記錄 debug / warn，不應升級成 `.cli!`，也不應在 Telegram thread 發系統提示
+- selected-session turn busy gate 目前是以 workspace session snapshot 為主要判斷來源
+- 對 `owner = bot` 的 running snapshot，現在沒有明確的 lease / heartbeat / startup reconciliation 規格
+- 因此一旦 bot 在 `bot_turn_started` 之後、`bot_turn_completed` 之前崩潰，selected session 可能留下 stale busy 狀態
+- 這個問題應由 [codex-busy-input-gate.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md) 承接 recovery 規格，而不是在 session-level sync 文檔內另外定義第二套 gate 語義
 
 ## 願景
 
@@ -235,6 +241,7 @@ threadBridge 這邊則需要：
 - 若 CLI 離線但 session runtime 仍由 threadBridge 持有，CLI 重新 attach 的 UX 如何設計
 - 若 remote app-server 只支持 websocket，threadBridge 的部署與安全邊界要重新定義
 - 是否需要把「同一個 workspace 多個 session」與「同一個 session 多個 frontend」分成兩個不同模型
+- bot crash 後遺留的 selected-session busy snapshot，應該在 bot 啟動時清理，還是讓 gate 讀取時按 lease timeout 自動失效
 
 ## 完成條件
 

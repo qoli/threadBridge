@@ -25,7 +25,7 @@
 - [codex-busy-input-gate.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md)
   - v1 忙碌閘控已落地
   - Telegram 文字 turn / 圖片分析已改成 background 執行，後續輸入現在會命中 reject
-  - 但 queue 模型、更完整的狀態語義、`STOP` / 提示類互動控制面，以及更乾淨的 ingress / dispatcher 邊界仍未收斂
+  - 但 queue 模型、更完整的狀態語義、`STOP` / 提示類互動控制面、更乾淨的 ingress / dispatcher 邊界，以及 bot crash 後 stale busy gate recovery 仍未收斂
 - [topic-title-status.md](/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md)
   - 已落地 `workspace/title + cli/cli!/attach/broken suffix`
   - 已落地新產生的 topic rename service message best-effort cleanup
@@ -36,6 +36,7 @@
 - [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md)
   - threadBridge 側的 session registry、`.cli/.attach` title、selected-session gate、排他式 `/attach_cli_session` handoff 已落地
   - 但完整 live turn/item/delta 鏡像仍需要 upstream `codex` 暴露更完整的 remote attach / shared runtime 能力
+  - bot-owned selected-session busy snapshot 的 crash-safe recovery 也還沒定義完成
 
 ## 純草稿
 
