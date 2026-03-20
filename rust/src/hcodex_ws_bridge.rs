@@ -5,6 +5,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::json;
 use tokio::fs;
 use tokio::net::TcpListener;
+use tokio::time::{Duration, timeout};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Error as WsError;
@@ -81,88 +82,98 @@ pub async fn run_bridge(upstream_url: &str, ready_file: &Path) -> Result<()> {
     .await
     .with_context(|| format!("failed to write bridge ready file {}", ready_file.display()))?;
 
-    let (stream, _) = listener
-        .accept()
-        .await
-        .context("failed to accept local hcodex websocket client")?;
-    let mut client_ws = accept_async(stream)
-        .await
-        .context("failed to accept local hcodex websocket handshake")?;
-    let (mut upstream_ws, _) = connect_async(upstream_url)
-        .await
-        .with_context(|| format!("failed to connect bridge to upstream websocket {upstream_url}"))?;
-
+    let mut accepted_any_client = false;
     loop {
-        tokio::select! {
-            client_message = futures_util::StreamExt::next(&mut client_ws) => {
-                let Some(client_message) = client_message else {
-                    break;
-                };
-                let client_message = match client_message {
-                    Ok(client_message) => client_message,
-                    Err(error) if is_graceful_disconnect(&error) => break,
-                    Err(error) => return Err(error).context("failed to read local hcodex websocket message"),
-                };
-                let is_close = matches!(client_message, WsMessage::Close(_));
-                forward_message(
-                    &mut upstream_ws,
-                    client_message,
-                    is_close,
-                    "failed to forward local hcodex websocket message upstream",
-                )
-                .await?;
-                if is_close {
-                    break;
-                }
+        let accept_result = if accepted_any_client {
+            match timeout(Duration::from_secs(2), listener.accept()).await {
+                Ok(result) => result.context("failed to accept local hcodex websocket client")?,
+                Err(_) => break,
             }
-            upstream_message = futures_util::StreamExt::next(&mut upstream_ws) => {
-                let Some(upstream_message) = upstream_message else {
-                    break;
-                };
-                let upstream_message = match upstream_message {
-                    Ok(upstream_message) => upstream_message,
-                    Err(error) if is_graceful_disconnect(&error) => break,
-                    Err(error) => return Err(error).context("failed to read upstream websocket message"),
-                };
-                let is_close = matches!(upstream_message, WsMessage::Close(_));
-                forward_message(
-                    &mut client_ws,
-                    upstream_message,
-                    is_close,
-                    "failed to forward upstream websocket message to local hcodex client",
-                )
-                .await?;
-                if is_close {
-                    break;
-                }
-            }
-        }
+        } else {
+            listener
+                .accept()
+                .await
+                .context("failed to accept local hcodex websocket client")?
+        };
+        accepted_any_client = true;
+        bridge_single_client(accept_result.0, upstream_url).await?;
     }
 
     Ok(())
 }
 
-async fn forward_message<S>(
-    target: &mut tokio_tungstenite::WebSocketStream<S>,
-    message: WsMessage,
-    is_close: bool,
-    context_message: &str,
-) -> Result<()>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
-    match futures_util::SinkExt::send(target, message).await {
-        Ok(()) => Ok(()),
-        Err(WsError::ConnectionClosed) if is_close => Ok(()),
-        Err(WsError::Protocol(ProtocolError::SendAfterClosing)) if is_close => Ok(()),
-        Err(error) => Err(error).context(context_message.to_owned()),
-    }
+async fn bridge_single_client(
+    stream: tokio::net::TcpStream,
+    upstream_url: &str,
+) -> Result<()> {
+    let client_ws = accept_async(stream)
+        .await
+        .context("failed to accept local hcodex websocket handshake")?;
+    let (upstream_ws, _) = connect_async(upstream_url)
+        .await
+        .with_context(|| format!("failed to connect bridge to upstream websocket {upstream_url}"))?;
+    let (mut client_write, mut client_read) = futures_util::StreamExt::split(client_ws);
+    let (mut upstream_write, mut upstream_read) = futures_util::StreamExt::split(upstream_ws);
+
+    let client_to_upstream = async {
+        while let Some(client_message) = futures_util::StreamExt::next(&mut client_read).await {
+            let client_message = match client_message {
+                Ok(client_message) => client_message,
+                Err(error) if is_graceful_disconnect(&error) => break,
+                Err(error) => return Err(error).context("failed to read local hcodex websocket message"),
+            };
+            let is_close = matches!(client_message, WsMessage::Close(_));
+            match futures_util::SinkExt::send(&mut upstream_write, client_message).await {
+                Ok(()) => {}
+                Err(error) if is_close && is_graceful_disconnect(&error) => break,
+                Err(error) => {
+                    return Err(error)
+                        .context("failed to forward local hcodex websocket message upstream");
+                }
+            }
+            if is_close {
+                break;
+            }
+        }
+        let _ = futures_util::SinkExt::close(&mut upstream_write).await;
+        Result::<()>::Ok(())
+    };
+
+    let upstream_to_client = async {
+        while let Some(upstream_message) = futures_util::StreamExt::next(&mut upstream_read).await {
+            let upstream_message = match upstream_message {
+                Ok(upstream_message) => upstream_message,
+                Err(error) if is_graceful_disconnect(&error) => break,
+                Err(error) => return Err(error).context("failed to read upstream websocket message"),
+            };
+            let is_close = matches!(upstream_message, WsMessage::Close(_));
+            match futures_util::SinkExt::send(&mut client_write, upstream_message).await {
+                Ok(()) => {}
+                Err(error) if is_close && is_graceful_disconnect(&error) => break,
+                Err(error) => {
+                    return Err(error)
+                        .context("failed to forward upstream websocket message to local hcodex client");
+                }
+            }
+            if is_close {
+                break;
+            }
+        }
+        let _ = futures_util::SinkExt::close(&mut client_write).await;
+        Result::<()>::Ok(())
+    };
+
+    tokio::try_join!(client_to_upstream, upstream_to_client)?;
+
+    Ok(())
 }
 
 fn is_graceful_disconnect(error: &WsError) -> bool {
     matches!(
         error,
-        WsError::ConnectionClosed | WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake)
+        WsError::ConnectionClosed
+            | WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake)
+            | WsError::Protocol(ProtocolError::SendAfterClosing)
     )
 }
 
@@ -249,9 +260,8 @@ mod tests {
         .context("missing echoed websocket message")??;
         assert_eq!(echoed.into_text()?, "ping");
         drop(client_ws);
-
-        bridge_task.await??;
-        upstream_task.await??;
+        bridge_task.abort();
+        upstream_task.abort();
         let _ = fs::remove_file(&ready_file).await;
         Ok(())
     }
