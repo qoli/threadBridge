@@ -40,6 +40,14 @@
   - 目前新增確認的缺口是 desktop runtime owner 尚未完全收斂；`hcodex` self-heal 目前仍只是 fallback，bot 重寫出的 ws state 也仍可能 stale
   - local management API 與無 Telegram 憑據先啟動的 groundwork 已開始落地
   - 剩餘工作主要是 runtime ownership 與本地管理面收尾
+- [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
+  - 本地 management API 已開始承接它的 view / action 命名
+  - local HTTP + SSE 已從草稿變成實際 transport
+  - 但 protocol 仍未收斂成正式 transport-neutral 契約
+- [macos-menubar-thread-manager.md](/Volumes/Data/Github/threadBridge/docs/plan/macos-menubar-thread-manager.md)
+  - `threadbridge_desktop`、macOS-first tray menu、webview settings shell 已開始落地
+  - local create / bind / reconnect / archive / restore control 已進入 management API
+  - 仍缺 desktop runtime owner 收尾與 managed Codex update flow
 
 ## 純草稿
 
@@ -55,14 +63,8 @@
   - appendix 注入可選化草稿
 - [runtime-transport-abstraction.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-transport-abstraction.md)
   - core runtime / adapter 抽象化草稿
-- [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
-  - runtime 協議草稿
-  - 現在也承接本地 management API 的 view / action 命名與 local HTTP + SSE 載體
 - [telegram-adapter-migration.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-adapter-migration.md)
   - Telegram adapter 遷移草稿
-- [macos-menubar-thread-manager.md](/Volumes/Data/Github/threadBridge/docs/plan/macos-menubar-thread-manager.md)
-  - macOS 托盤 thread 管理面草稿
-  - 現在也承接 workspace `ws` runtime owner、managed Codex binary、workspace `hcodex` 快捷啟動入口，以及 tray + web 管理面的方向收斂
 
 ## 主規格
 

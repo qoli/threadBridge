@@ -314,12 +314,10 @@ async fn should_skip_duplicate_turn_completed_event(
     if previous.event != "turn_completed" || previous.source != SessionStatusOwner::Cli {
         return Ok(false);
     }
-    Ok(previous
-        .payload
-        .get("thread-id")
-        .and_then(Value::as_str)
-        == Some(session_id)
-        && previous.payload.get("turn-id").and_then(Value::as_str) == Some(turn_id))
+    Ok(
+        previous.payload.get("thread-id").and_then(Value::as_str) == Some(session_id)
+            && previous.payload.get("turn-id").and_then(Value::as_str) == Some(turn_id),
+    )
 }
 
 pub async fn ensure_workspace_status_surface(workspace_path: &Path) -> Result<()> {
@@ -774,10 +772,11 @@ pub async fn busy_selected_session_status(
 mod tests {
     use super::{
         SessionCurrentStatus, SessionStatusOwner, WorkspaceStatusCache, WorkspaceStatusPhase,
-        busy_selected_session_status, current_status_path, ensure_workspace_status_surface, events_path,
-        list_live_cli_sessions, read_cli_owner_claim, read_session_status, record_tui_proxy_completed,
+        busy_selected_session_status, current_status_path, ensure_workspace_status_surface,
+        events_path, list_live_cli_sessions, read_cli_owner_claim, read_session_status,
         read_workspace_aggregate_status, record_bot_status_event, record_hcodex_launcher_ended,
-        record_hcodex_launcher_started, record_tui_proxy_connected, session_status_path,
+        record_hcodex_launcher_started, record_tui_proxy_completed, record_tui_proxy_connected,
+        session_status_path,
     };
     use std::path::PathBuf;
     use tokio::fs;

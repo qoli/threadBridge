@@ -264,6 +264,20 @@ impl ThreadRepository {
         .await
     }
 
+    pub async fn find_main_thread(&self) -> Result<Option<ThreadRecord>> {
+        let folder_name = folder_name_for(&ThreadScope::Main, MAIN_THREAD_KEY);
+        let metadata_path = self.data_root_path.join(&folder_name).join("metadata.json");
+        if !fs::try_exists(&metadata_path).await? {
+            return Ok(None);
+        }
+        let metadata: ThreadMetadata =
+            serde_json::from_str(&fs::read_to_string(&metadata_path).await?)?;
+        if !matches!(metadata.scope, ThreadScope::Main) {
+            return Ok(None);
+        }
+        Ok(Some(self.build_record(folder_name, metadata)))
+    }
+
     pub async fn get_thread(&self, chat_id: i64, message_thread_id: i32) -> Result<ThreadRecord> {
         if let Some(record) = self
             .find_thread_by_message_thread_id(chat_id, message_thread_id)
@@ -1038,7 +1052,8 @@ impl ThreadRepository {
     }
 
     fn workspace_session_history_path(&self) -> PathBuf {
-        self.data_root_path.join(WORKSPACE_SESSION_HISTORY_FILE_NAME)
+        self.data_root_path
+            .join(WORKSPACE_SESSION_HISTORY_FILE_NAME)
     }
 
     async fn load_record(&self, folder_name: String) -> Result<ThreadRecord> {
@@ -1116,11 +1131,16 @@ impl ThreadRepository {
                     updated_at: now.clone(),
                     sessions: Vec::new(),
                 });
-                store.workspaces.last_mut().expect("workspace entry inserted")
+                store
+                    .workspaces
+                    .last_mut()
+                    .expect("workspace entry inserted")
             }
         };
         entry.updated_at = now.clone();
-        entry.sessions.retain(|entry| entry.session_id != session_id);
+        entry
+            .sessions
+            .retain(|entry| entry.session_id != session_id);
         entry.sessions.insert(
             0,
             RecentCodexSessionEntry {
@@ -1298,7 +1318,11 @@ mod tests {
             .await
             .unwrap();
         let _ = repo
-            .bind_workspace(second, workspace.display().to_string(), "thr_two".to_owned())
+            .bind_workspace(
+                second,
+                workspace.display().to_string(),
+                "thr_two".to_owned(),
+            )
             .await
             .unwrap();
 

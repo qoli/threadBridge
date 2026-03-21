@@ -11,6 +11,7 @@ Telegram bot that maps Telegram threads to Codex app-server threads bound to rea
 - Installs a managed runtime appendix and `.threadbridge/` wrapper surface into the bound workspace.
 - Exposes a managed `hcodex` launcher for the bound workspace through `codex --remote <ws-url>`.
 - Starts a local management API for setup, runtime health, and workspace views on loopback HTTP.
+- On macOS, also has a desktop runtime entrypoint with a tray menu and embedded settings webview.
 
 ## Requirements
 
@@ -31,6 +32,13 @@ export CARGO_HOME="$PWD/.cargo" CARGO_TARGET_DIR="$PWD/target"
 cargo run --bin threadbridge
 ```
 
+Or start the macOS desktop runtime:
+
+```bash
+export CARGO_HOME="$PWD/.cargo" CARGO_TARGET_DIR="$PWD/target"
+cargo run --bin threadbridge_desktop
+```
+
 Or use the local helper script:
 
 ```bash
@@ -48,6 +56,7 @@ scripts/local_threadbridge.sh restart --codex-source source
 
 - Main private chat acts as the control console.
 - If Telegram credentials are missing, threadBridge still starts the local management API but does not start Telegram polling.
+- `threadbridge_desktop` also starts without Telegram credentials; it keeps the tray and local settings UI available for onboarding.
 - Only Telegram user IDs listed in `AUTHORIZED_TELEGRAM_USER_IDS` can trigger the bot.
 - `/new_thread` creates a Telegram topic and bot-local metadata only.
 - `/bind_workspace <absolute-path>` installs the runtime appendix into the target workspace and starts a fresh Codex thread for it.
@@ -57,6 +66,7 @@ scripts/local_threadbridge.sh restart --codex-source source
 - Topic titles currently reflect `busy` and `broken` state.
 - `hcodex` is the managed local TUI path. It resolves the workspace daemon from `.threadbridge/state/app-server/current.json` and launches `codex --remote ...`.
 - The local management API defaults to `http://127.0.0.1:38420` and can be changed with `THREADBRIDGE_MANAGEMENT_BIND_ADDR`.
+- On macOS, the tray menu lists one submenu per managed workspace, `Start New hcodex Session`, and the recent 5 session IDs for resume.
 
 ## Runtime Layout
 

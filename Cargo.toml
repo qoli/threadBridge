@@ -11,6 +11,10 @@ name = "threadbridge"
 path = "rust/src/bin/threadbridge.rs"
 
 [[bin]]
+name = "threadbridge_desktop"
+path = "rust/src/bin/threadbridge_desktop.rs"
+
+[[bin]]
 name = "min_chat_probe"
 path = "rust/src/bin/min_chat_probe.rs"
 
@@ -46,3 +50,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 unicode-width = "0.2"
 uuid = { version = "1.16", features = ["serde", "v4"] }
 walkdir = "2.5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tao = "0.30"
+tray-icon = "0.21"
+wry = "0.53"

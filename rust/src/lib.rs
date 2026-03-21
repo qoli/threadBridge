@@ -1,9 +1,11 @@
 pub mod app_server_runtime;
+pub mod bot_runner;
 pub mod codex;
 pub mod config;
 pub mod hcodex_runtime;
 pub mod hcodex_ws_bridge;
 pub mod image_artifacts;
+pub mod local_control;
 pub mod logging;
 pub mod management_api;
 pub mod repository;

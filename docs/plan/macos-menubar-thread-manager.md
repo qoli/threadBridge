@@ -2,30 +2,43 @@
 
 ## 目前進度
 
-這份文檔目前仍是純草稿，尚未開始實作 tray UI 或 webview UI。
+這份文檔不再是「完全未實作」的純構想，v1 的 desktop runtime 骨架已經開始落地，但仍未完整收尾。
 
 目前代碼裡已經有的前置能力：
 
 - Telegram thread / workspace binding / Codex thread lifecycle 已存在
 - shared websocket app-server、受管 `hcodex`、TUI proxy、adoption 已部分落地
 - `threadBridge` 現在可在缺少 Telegram 憑據時先啟動本地 management API，不再只能以 Telegram bot 形態啟動
-- 已有最小 local management API 骨架：
+- 已有本地 management API：
   - `GET /api/setup`
   - `PUT /api/setup/telegram`
   - `GET /api/runtime-health`
   - `GET /api/workspaces`
+  - `GET /api/archived-threads`
+  - `POST /api/threads`
+  - `POST /api/threads/create-and-bind`
+  - `POST /api/threads/:thread_key/bind-workspace`
+  - `POST /api/workspaces/:thread_key/reconnect`
+  - `POST /api/workspaces/:thread_key/launch-new`
+  - `POST /api/workspaces/:thread_key/launch-resume`
+  - `POST /api/threads/:thread_key/archive`
+  - `POST /api/threads/:thread_key/restore`
   - `GET /api/events`
 - runtime 已開始維護 workspace 維度的 recent Codex session history
 - `/bind_workspace` 已開始拒絕同一 workspace 的第二個 active binding
+- 已新增 `threadbridge_desktop`：
+  - macOS-first `tray-icon` 常駐入口
+  - top-level tray menu 會列出 managed workspace submenu
+  - 每個 workspace submenu 會列出 `Start New hcodex Session` 與最近 5 個 session id
+  - `Settings` 會打開內嵌 webview 並載入本地 management UI
+- Telegram bot 啟動已抽成可複用 runner，headless `threadbridge` 與 desktop runtime 共用同一套 bot/runtime 啟動邏輯
 
 目前仍缺：
 
-- 真正的 tray-icon 常駐 UI
-- 真正的 webview 管理面
-- 完整的 local query / control API
-- archived thread 的本地管理操作
+- desktop runtime owner 的 healthcheck / restart / self-heal 收斂
 - managed Codex binary 的更新流程
-- desktop runtime 作為完整 workspace `ws` runtime owner 的 healthcheck / restart / self-heal 收斂
+- setup 儲存後自動啟動 Telegram polling；目前仍需要重啟 runtime
+- web 管理面的 UI 還是內嵌 HTML，尚未拆成更正式的前端結構
 
 ## 問題
 

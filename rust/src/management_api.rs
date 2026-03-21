@@ -19,6 +19,7 @@ use tracing::{info, warn};
 
 use crate::app_server_runtime::WorkspaceRuntimeState;
 use crate::config::{RuntimeConfig, load_optional_telegram_config};
+use crate::local_control::LocalControlHandle;
 use crate::repository::{RecentCodexSessionEntry, ThreadRepository};
 use crate::workspace_status::{read_cli_owner_claim, read_workspace_aggregate_status};
 
@@ -40,6 +41,41 @@ impl ManagementApiHandle {
         let mut current = self.state.telegram_polling_state.write().await;
         *current = state;
     }
+
+    pub async fn set_local_control(&self, control: Option<LocalControlHandle>) {
+        let mut current = self.state.local_control.write().await;
+        *current = control;
+    }
+
+    pub async fn setup_state(&self) -> Result<SetupStateView> {
+        self.state.setup_state().await
+    }
+
+    pub async fn runtime_health(&self) -> Result<RuntimeHealthView> {
+        self.state.runtime_health().await
+    }
+
+    pub async fn workspace_views(&self) -> Result<Vec<ManagedWorkspaceView>> {
+        self.state.workspace_views().await
+    }
+
+    pub async fn archived_thread_views(&self) -> Result<Vec<ArchivedThreadView>> {
+        self.state.archived_thread_views().await
+    }
+
+    pub async fn launch_workspace_new(&self, thread_key: &str) -> Result<LaunchWorkspaceResponse> {
+        self.state.launch_workspace_new(thread_key).await
+    }
+
+    pub async fn launch_workspace_resume(
+        &self,
+        thread_key: &str,
+        session_id: &str,
+    ) -> Result<LaunchWorkspaceResponse> {
+        self.state
+            .launch_workspace_resume(thread_key, session_id)
+            .await
+    }
 }
 
 #[derive(Clone)]
@@ -47,77 +83,80 @@ struct ManagementApiState {
     runtime: RuntimeConfig,
     repository: ThreadRepository,
     telegram_polling_state: Arc<RwLock<TelegramPollingState>>,
+    local_control: Arc<RwLock<Option<LocalControlHandle>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct SetupStateView {
-    telegram_token_configured: bool,
-    authorized_user_ids: Vec<i64>,
-    authorized_user_count: usize,
-    telegram_polling_state: TelegramPollingState,
-    management_base_url: String,
-    restart_required_after_setup_save: bool,
+pub struct SetupStateView {
+    pub telegram_token_configured: bool,
+    pub authorized_user_ids: Vec<i64>,
+    pub authorized_user_count: usize,
+    pub telegram_polling_state: TelegramPollingState,
+    pub management_base_url: String,
+    pub restart_required_after_setup_save: bool,
+    pub control_chat_ready: bool,
+    pub control_chat_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct RuntimeHealthView {
-    management_bind_addr: String,
-    broken_threads: usize,
-    running_workspaces: usize,
-    conflicted_workspaces: usize,
-    app_server_status: &'static str,
-    tui_proxy_status: &'static str,
-    handoff_readiness: &'static str,
-    managed_codex: ManagedCodexView,
+pub struct RuntimeHealthView {
+    pub management_bind_addr: String,
+    pub broken_threads: usize,
+    pub running_workspaces: usize,
+    pub conflicted_workspaces: usize,
+    pub app_server_status: &'static str,
+    pub tui_proxy_status: &'static str,
+    pub handoff_readiness: &'static str,
+    pub managed_codex: ManagedCodexView,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ManagedCodexView {
-    source: &'static str,
-    binary_path: String,
-    binary_ready: bool,
-    version: Option<String>,
+pub struct ManagedCodexView {
+    pub source: &'static str,
+    pub binary_path: String,
+    pub binary_ready: bool,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ManagedWorkspaceView {
-    workspace_cwd: String,
-    title: Option<String>,
-    thread_key: Option<String>,
-    binding_status: &'static str,
-    run_status: &'static str,
-    current_codex_thread_id: Option<String>,
-    tui_active_codex_thread_id: Option<String>,
-    session_broken: bool,
-    last_used_at: Option<String>,
-    conflict: bool,
-    app_server_status: &'static str,
-    tui_proxy_status: &'static str,
-    handoff_readiness: &'static str,
-    hcodex_path: String,
-    hcodex_available: bool,
-    recent_codex_sessions: Vec<RecentCodexSessionEntry>,
+pub struct ManagedWorkspaceView {
+    pub workspace_cwd: String,
+    pub title: Option<String>,
+    pub thread_key: Option<String>,
+    pub binding_status: &'static str,
+    pub run_status: &'static str,
+    pub current_codex_thread_id: Option<String>,
+    pub tui_active_codex_thread_id: Option<String>,
+    pub session_broken: bool,
+    pub last_used_at: Option<String>,
+    pub conflict: bool,
+    pub app_server_status: &'static str,
+    pub tui_proxy_status: &'static str,
+    pub handoff_readiness: &'static str,
+    pub hcodex_path: String,
+    pub hcodex_available: bool,
+    pub recent_codex_sessions: Vec<RecentCodexSessionEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ArchivedThreadView {
-    thread_key: String,
-    title: Option<String>,
-    workspace_cwd: Option<String>,
-    archived_at: Option<String>,
-    previous_message_thread_ids: Vec<i32>,
+pub struct ArchivedThreadView {
+    pub thread_key: String,
+    pub title: Option<String>,
+    pub workspace_cwd: Option<String>,
+    pub archived_at: Option<String>,
+    pub previous_message_thread_ids: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct HcodexLaunchConfigView {
-    workspace_cwd: String,
-    thread_key: String,
-    hcodex_path: String,
-    hcodex_available: bool,
-    current_codex_thread_id: Option<String>,
-    recent_codex_sessions: Vec<RecentCodexSessionEntry>,
-    launch_new_command: String,
-    launch_resume_commands: Vec<String>,
+pub struct HcodexLaunchConfigView {
+    pub workspace_cwd: String,
+    pub thread_key: String,
+    pub hcodex_path: String,
+    pub hcodex_available: bool,
+    pub current_codex_thread_id: Option<String>,
+    pub recent_codex_sessions: Vec<RecentCodexSessionEntry>,
+    pub launch_new_command: String,
+    pub launch_resume_commands: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -126,16 +165,29 @@ struct ArchiveThreadResponse {
     thread_key: String,
 }
 
+#[derive(Debug, Serialize)]
+struct ThreadMutationResponse {
+    ok: bool,
+    thread_key: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreatedThreadResponse {
+    ok: bool,
+    thread_key: String,
+    title: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct LaunchResumeRequest {
     session_id: String,
 }
 
 #[derive(Debug, Serialize)]
-struct LaunchWorkspaceResponse {
-    launched: bool,
-    thread_key: String,
-    command: String,
+pub struct LaunchWorkspaceResponse {
+    pub launched: bool,
+    pub thread_key: String,
+    pub command: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +202,22 @@ struct UpdateTelegramSetupResponse {
     restart_required: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateThreadRequest {
+    title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BindWorkspaceRequest {
+    workspace_cwd: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateAndBindThreadRequest {
+    title: Option<String>,
+    workspace_cwd: String,
+}
+
 #[derive(Debug)]
 struct WorkspaceAggregateView {
     workspace_cwd: String,
@@ -162,6 +230,7 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         runtime: runtime.clone(),
         repository,
         telegram_polling_state: Arc::new(RwLock::new(TelegramPollingState::Disconnected)),
+        local_control: Arc::new(RwLock::new(None)),
     });
     let bind_addr = runtime.management_bind_addr;
     let listener = TcpListener::bind(bind_addr)
@@ -175,9 +244,22 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         .route("/api/runtime-health", get(get_runtime_health))
         .route("/api/workspaces", get(get_workspaces))
         .route("/api/archived-threads", get(get_archived_threads))
+        .route("/api/threads", post(post_create_thread))
+        .route(
+            "/api/threads/create-and-bind",
+            post(post_create_and_bind_thread),
+        )
+        .route(
+            "/api/threads/:thread_key/bind-workspace",
+            post(post_bind_workspace),
+        )
         .route(
             "/api/workspaces/:thread_key/launch-config",
             get(get_workspace_launch_config),
+        )
+        .route(
+            "/api/workspaces/:thread_key/reconnect",
+            post(post_reconnect_codex),
         )
         .route(
             "/api/workspaces/:thread_key/launch-new",
@@ -187,7 +269,14 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
             "/api/workspaces/:thread_key/launch-resume",
             post(post_launch_workspace_resume),
         )
-        .route("/api/threads/:thread_key/archive", post(post_archive_thread))
+        .route(
+            "/api/threads/:thread_key/archive",
+            post(post_archive_thread),
+        )
+        .route(
+            "/api/threads/:thread_key/restore",
+            post(post_restore_thread),
+        )
         .route("/api/events", get(get_events))
         .with_state(state.clone());
     tokio::spawn(async move {
@@ -212,16 +301,30 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
   <meta charset="utf-8" />
   <title>threadBridge Management</title>
   <style>
-    body {{ font-family: ui-sans-serif, sans-serif; margin: 2rem; line-height: 1.4; }}
+    :root {{
+      color-scheme: light;
+      --bg: #f4efe6;
+      --panel: #fffaf2;
+      --text: #1f1a14;
+      --muted: #6b6258;
+      --border: #d8cbb7;
+      --accent: #9b4d22;
+    }}
+    body {{ font-family: "Iowan Old Style", "Palatino Linotype", serif; margin: 2rem; line-height: 1.45; color: var(--text); background: radial-gradient(circle at top right, #fffdf9 0%, var(--bg) 60%); }}
     h1, h2 {{ margin-bottom: 0.4rem; }}
-    pre {{ background: #f5f5f5; padding: 1rem; overflow: auto; border-radius: 8px; }}
+    pre {{ background: #f7f1e8; padding: 1rem; overflow: auto; border-radius: 12px; border: 1px solid var(--border); }}
     .grid {{ display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }}
-    .card {{ border: 1px solid #ddd; border-radius: 8px; padding: 1rem; }}
+    .card {{ border: 1px solid var(--border); border-radius: 16px; padding: 1rem; background: var(--panel); box-shadow: 0 18px 40px rgba(82, 58, 34, 0.06); }}
+    .toolbar {{ display:flex; gap:0.75rem; align-items:center; flex-wrap:wrap; }}
+    .muted {{ color: var(--muted); }}
+    button {{ background: var(--accent); color: white; border: 0; border-radius: 999px; padding: 0.55rem 0.9rem; cursor: pointer; }}
+    button.secondary {{ background: transparent; color: var(--accent); border: 1px solid var(--border); }}
+    input {{ border: 1px solid var(--border); border-radius: 10px; padding: 0.55rem 0.7rem; background: white; }}
   </style>
 </head>
 <body>
   <h1>threadBridge Management</h1>
-  <p>Local management API is running at <code>{}</code>.</p>
+  <p class="muted">Local management API is running at <code>{}</code>.</p>
   <div class="grid">
     <div class="card">
       <h2>Setup</h2>
@@ -232,11 +335,31 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
       </form>
       <pre id="setup">loading...</pre>
     </div>
-    <div class="card"><h2>Runtime Health</h2><pre id="health">loading...</pre></div>
+    <div class="card">
+      <h2>Runtime Health</h2>
+      <pre id="health">loading...</pre>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Onboarding</h2>
+    <div class="toolbar">
+      <input id="new-thread-title" type="text" placeholder="Optional new thread title" style="min-width:20rem;flex:1" />
+      <button onclick="createThread()">Create Thread</button>
+    </div>
+    <div class="toolbar" style="margin-top:0.75rem;">
+      <input id="create-bind-title" type="text" placeholder="Optional thread title" style="min-width:18rem;flex:1" />
+      <input id="create-bind-workspace" type="text" placeholder="/absolute/workspace/path" style="min-width:24rem;flex:2" />
+      <button onclick="createAndBindThread()">Create And Bind</button>
+    </div>
+    <p class="muted">First use requires a Telegram control chat. Send <code>/start</code> to the bot from the target chat first, then create or restore a thread here.</p>
+    <pre id="onboarding-status">waiting...</pre>
   </div>
   <div class="card"><h2>Managed Workspaces</h2><div id="workspaces">loading...</div></div>
   <div class="card"><h2>Archived Threads</h2><div id="archived">loading...</div></div>
   <script>
+    function escapeHtml(value) {{
+      return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    }}
     async function renderJson(id, path) {{
       const response = await fetch(path);
       const data = await response.json();
@@ -250,7 +373,7 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
         return;
       }}
       root.innerHTML = items.map(item => `
-        <div style="border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem;">
+        <div style="border:1px solid var(--border);border-radius:12px;padding:1rem;margin-bottom:1rem;background:white;">
           <strong>${{item.title || item.workspace_cwd}}</strong><br />
           <code>${{item.workspace_cwd}}</code><br />
           thread_key: <code>${{item.thread_key || ''}}</code><br />
@@ -261,10 +384,19 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
           tui: <code>${{item.tui_active_codex_thread_id || 'none'}}</code><br />
           hcodex: <code>${{item.hcodex_path}}</code><br />
           recent: ${{item.recent_codex_sessions.map(x => `<code>${{x.session_id}}</code>`).join(', ') || 'none'}}
+          <div style="margin-top:0.75rem;" class="toolbar">
+            <input id="bind-${{item.thread_key}}" type="text" value="${{escapeHtml(item.workspace_cwd)}}" style="min-width:18rem;flex:1" />
+            <button class="secondary" onclick="bindWorkspace('${{item.thread_key}}')">Bind Workspace</button>
+          </div>
           <div style="margin-top:0.75rem;">
             <button onclick="launchNew('${{item.thread_key}}')">Launch New</button>
+            <button class="secondary" onclick="reconnectCodex('${{item.thread_key}}')">Reconnect Codex</button>
             <button onclick="showLaunchConfig('${{item.thread_key}}')">Show Launch Commands</button>
             <button onclick="archiveThread('${{item.thread_key}}')">Archive</button>
+          </div>
+          <div style="margin-top:0.75rem;">
+            <input id="resume-${{item.thread_key}}" type="text" placeholder="session id to resume" style="min-width:18rem;flex:1" />
+            <button class="secondary" onclick="launchResume('${{item.thread_key}}')">Launch Resume</button>
           </div>
           <pre id="launch-${{item.thread_key}}" style="display:none;margin-top:0.75rem;"></pre>
         </div>
@@ -277,11 +409,14 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
         return;
       }}
       root.innerHTML = items.map(item => `
-        <div style="border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem;">
+        <div style="border:1px solid var(--border);border-radius:12px;padding:1rem;margin-bottom:1rem;background:white;">
           <strong>${{item.title || item.thread_key}}</strong><br />
           thread_key: <code>${{item.thread_key}}</code><br />
           workspace: <code>${{item.workspace_cwd || 'unbound'}}</code><br />
           archived_at: <code>${{item.archived_at || 'unknown'}}</code>
+          <div style="margin-top:0.75rem;">
+            <button onclick="restoreThread('${{item.thread_key}}')">Restore</button>
+          </div>
         </div>
       `).join('');
     }}
@@ -293,6 +428,9 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
         fetch('/api/archived-threads').then(r => r.json()),
       ]);
       document.getElementById('authorized-user-ids').value = (setup.authorized_user_ids || []).join(',');
+      document.getElementById('onboarding-status').textContent = setup.control_chat_ready
+        ? `Control chat is ready: ${{setup.control_chat_id}}`
+        : 'Control chat is not ready. Send /start to the bot from the target Telegram chat first.';
       renderWorkspaceCards(workspaces);
       renderArchivedThreads(archived);
     }}
@@ -315,6 +453,50 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
       target.textContent = JSON.stringify(data, null, 2);
       await refresh();
     }}
+    async function launchResume(threadKey) {{
+      const sessionId = document.getElementById(`resume-${{threadKey}}`).value.trim();
+      if (!sessionId) {{
+        alert('Enter a session id first');
+        return;
+      }}
+      const response = await fetch(`/api/workspaces/${{threadKey}}/launch-resume`, {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ session_id: sessionId }}),
+      }});
+      const data = await response.json();
+      if (!response.ok) {{
+        alert(data.error || 'Launch failed');
+        return;
+      }}
+      const target = document.getElementById(`launch-${{threadKey}}`);
+      target.style.display = 'block';
+      target.textContent = JSON.stringify(data, null, 2);
+      await refresh();
+    }}
+    async function reconnectCodex(threadKey) {{
+      const response = await fetch(`/api/workspaces/${{threadKey}}/reconnect`, {{ method: 'POST' }});
+      const data = await response.json();
+      if (!response.ok) {{
+        alert(data.error || 'Reconnect failed');
+        return;
+      }}
+      await refresh();
+    }}
+    async function bindWorkspace(threadKey) {{
+      const workspace = document.getElementById(`bind-${{threadKey}}`).value.trim();
+      const response = await fetch(`/api/threads/${{threadKey}}/bind-workspace`, {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ workspace_cwd: workspace }}),
+      }});
+      const data = await response.json();
+      if (!response.ok) {{
+        alert(data.error || 'Bind failed');
+        return;
+      }}
+      await refresh();
+    }}
     async function archiveThread(threadKey) {{
       const response = await fetch(`/api/threads/${{threadKey}}/archive`, {{ method: 'POST' }});
       const data = await response.json();
@@ -322,6 +504,47 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
         alert(data.error || 'Archive failed');
         return;
       }}
+      await refresh();
+    }}
+    async function restoreThread(threadKey) {{
+      const response = await fetch(`/api/threads/${{threadKey}}/restore`, {{ method: 'POST' }});
+      const data = await response.json();
+      if (!response.ok) {{
+        alert(data.error || 'Restore failed');
+        return;
+      }}
+      await refresh();
+    }}
+    async function createThread() {{
+      const response = await fetch('/api/threads', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ title: document.getElementById('new-thread-title').value || null }}),
+      }});
+      const data = await response.json();
+      if (!response.ok) {{
+        alert(data.error || 'Create thread failed');
+        return;
+      }}
+      document.getElementById('new-thread-title').value = '';
+      await refresh();
+    }}
+    async function createAndBindThread() {{
+      const response = await fetch('/api/threads/create-and-bind', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{
+          title: document.getElementById('create-bind-title').value || null,
+          workspace_cwd: document.getElementById('create-bind-workspace').value.trim(),
+        }}),
+      }});
+      const data = await response.json();
+      if (!response.ok) {{
+        alert(data.error || 'Create and bind failed');
+        return;
+      }}
+      document.getElementById('create-bind-title').value = '';
+      document.getElementById('create-bind-workspace').value = '';
       await refresh();
     }}
     document.getElementById('setup-form').addEventListener('submit', async event => {{
@@ -396,11 +619,48 @@ async fn get_archived_threads(
     Ok(Json(state.archived_thread_views().await?))
 }
 
+async fn post_create_thread(
+    State(state): State<Arc<ManagementApiState>>,
+    Json(payload): Json<CreateThreadRequest>,
+) -> Result<Json<CreatedThreadResponse>, ManagementApiError> {
+    Ok(Json(state.create_thread(payload.title).await?))
+}
+
+async fn post_create_and_bind_thread(
+    State(state): State<Arc<ManagementApiState>>,
+    Json(payload): Json<CreateAndBindThreadRequest>,
+) -> Result<Json<ThreadMutationResponse>, ManagementApiError> {
+    Ok(Json(
+        state
+            .create_thread_and_bind(payload.title, &payload.workspace_cwd)
+            .await?,
+    ))
+}
+
+async fn post_bind_workspace(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+    Json(payload): Json<BindWorkspaceRequest>,
+) -> Result<Json<ThreadMutationResponse>, ManagementApiError> {
+    Ok(Json(
+        state
+            .bind_workspace(&thread_key, &payload.workspace_cwd)
+            .await?,
+    ))
+}
+
 async fn get_workspace_launch_config(
     State(state): State<Arc<ManagementApiState>>,
     AxumPath(thread_key): AxumPath<String>,
 ) -> Result<Json<HcodexLaunchConfigView>, ManagementApiError> {
     Ok(Json(state.workspace_launch_config(&thread_key).await?))
+}
+
+async fn post_reconnect_codex(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+) -> Result<Json<ThreadMutationResponse>, ManagementApiError> {
+    Ok(Json(state.reconnect_codex(&thread_key).await?))
 }
 
 async fn post_launch_workspace_new(
@@ -429,6 +689,13 @@ async fn post_archive_thread(
     Ok(Json(state.archive_thread(&thread_key).await?))
 }
 
+async fn post_restore_thread(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+) -> Result<Json<ThreadMutationResponse>, ManagementApiError> {
+    Ok(Json(state.restore_thread(&thread_key).await?))
+}
+
 async fn get_events(
     State(state): State<Arc<ManagementApiState>>,
 ) -> Sse<impl futures_util::stream::Stream<Item = Result<Event, Infallible>>> {
@@ -452,14 +719,27 @@ async fn get_events(
 }
 
 impl ManagementApiState {
+    async fn local_control(&self) -> Result<LocalControlHandle> {
+        self.local_control
+            .read()
+            .await
+            .clone()
+            .context("Telegram bot runtime is not active. Configure credentials and start the desktop runtime first.")
+    }
+
     async fn setup_state(&self) -> Result<SetupStateView> {
         let telegram = load_optional_telegram_config()?;
+        let main_thread = self.repository.find_main_thread().await?;
         Ok(SetupStateView {
             telegram_token_configured: telegram.is_some(),
             authorized_user_ids: telegram
                 .as_ref()
                 .map(|config| {
-                    let mut ids = config.authorized_user_ids.iter().copied().collect::<Vec<_>>();
+                    let mut ids = config
+                        .authorized_user_ids
+                        .iter()
+                        .copied()
+                        .collect::<Vec<_>>();
                     ids.sort_unstable();
                     ids
                 })
@@ -471,17 +751,27 @@ impl ManagementApiState {
             telegram_polling_state: *self.telegram_polling_state.read().await,
             management_base_url: format!("http://{}", self.runtime.management_bind_addr),
             restart_required_after_setup_save: true,
+            control_chat_ready: main_thread.is_some(),
+            control_chat_id: main_thread.map(|record| record.metadata.chat_id),
         })
     }
 
     async fn runtime_health(&self) -> Result<RuntimeHealthView> {
         let workspaces = self.workspace_views().await?;
-        let app_server_status =
-            aggregate_running_status(workspaces.iter().map(|workspace| workspace.app_server_status));
-        let tui_proxy_status =
-            aggregate_running_status(workspaces.iter().map(|workspace| workspace.tui_proxy_status));
+        let app_server_status = aggregate_running_status(
+            workspaces
+                .iter()
+                .map(|workspace| workspace.app_server_status),
+        );
+        let tui_proxy_status = aggregate_running_status(
+            workspaces
+                .iter()
+                .map(|workspace| workspace.tui_proxy_status),
+        );
         let handoff_readiness = aggregate_handoff_status(
-            workspaces.iter().map(|workspace| workspace.handoff_readiness),
+            workspaces
+                .iter()
+                .map(|workspace| workspace.handoff_readiness),
         );
         Ok(RuntimeHealthView {
             management_bind_addr: self.runtime.management_bind_addr.to_string(),
@@ -493,7 +783,10 @@ impl ManagementApiState {
                 .iter()
                 .filter(|workspace| workspace.run_status == "running")
                 .count(),
-            conflicted_workspaces: workspaces.iter().filter(|workspace| workspace.conflict).count(),
+            conflicted_workspaces: workspaces
+                .iter()
+                .filter(|workspace| workspace.conflict)
+                .count(),
             app_server_status,
             tui_proxy_status,
             handoff_readiness,
@@ -526,12 +819,13 @@ impl ManagementApiState {
             let Some(workspace_cwd) = binding.workspace_cwd.clone() else {
                 continue;
             };
-            let aggregate = grouped
-                .entry(workspace_cwd.clone())
-                .or_insert_with(|| WorkspaceAggregateView {
-                    workspace_cwd: workspace_cwd.clone(),
-                    items: Vec::new(),
-                });
+            let aggregate =
+                grouped
+                    .entry(workspace_cwd.clone())
+                    .or_insert_with(|| WorkspaceAggregateView {
+                        workspace_cwd: workspace_cwd.clone(),
+                        items: Vec::new(),
+                    });
             let workspace_path = Path::new(&workspace_cwd);
             let hcodex_path = workspace_path
                 .join(".threadbridge")
@@ -539,7 +833,9 @@ impl ManagementApiState {
                 .join("hcodex");
             let workspace_status = read_workspace_aggregate_status(workspace_path)
                 .await
-                .unwrap_or_else(|_| crate::workspace_status::default_workspace_status(workspace_path));
+                .unwrap_or_else(|_| {
+                    crate::workspace_status::default_workspace_status(workspace_path)
+                });
             let has_live_cli = !workspace_status.live_cli_session_ids.is_empty();
             let runtime_status = read_workspace_runtime_health(workspace_path).await;
             let recent_sessions = self
@@ -585,7 +881,11 @@ impl ManagementApiState {
                 .next()
                 .expect("workspace group is non-empty");
             let workspace_path = Path::new(&aggregate.workspace_cwd);
-            if read_cli_owner_claim(workspace_path).await.ok().flatten().is_some()
+            if read_cli_owner_claim(workspace_path)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
                 && item.run_status != "running"
             {
                 item.run_status = "running";
@@ -610,6 +910,42 @@ impl ManagementApiState {
             });
         }
         Ok(views)
+    }
+
+    async fn create_thread(&self, title: Option<String>) -> Result<CreatedThreadResponse> {
+        let control = self.local_control().await?;
+        let created = control.create_thread(title).await?;
+        Ok(CreatedThreadResponse {
+            ok: true,
+            thread_key: created.record.metadata.thread_key,
+            title: Some(created.title),
+        })
+    }
+
+    async fn create_thread_and_bind(
+        &self,
+        title: Option<String>,
+        workspace_cwd: &str,
+    ) -> Result<ThreadMutationResponse> {
+        let control = self.local_control().await?;
+        let record = control.create_thread_and_bind(title, workspace_cwd).await?;
+        Ok(ThreadMutationResponse {
+            ok: true,
+            thread_key: record.metadata.thread_key,
+        })
+    }
+
+    async fn bind_workspace(
+        &self,
+        thread_key: &str,
+        workspace_cwd: &str,
+    ) -> Result<ThreadMutationResponse> {
+        let control = self.local_control().await?;
+        let record = control.bind_workspace(thread_key, workspace_cwd).await?;
+        Ok(ThreadMutationResponse {
+            ok: true,
+            thread_key: record.metadata.thread_key,
+        })
     }
 
     async fn workspace_launch_config(&self, thread_key: &str) -> Result<HcodexLaunchConfigView> {
@@ -663,15 +999,38 @@ impl ManagementApiState {
     }
 
     async fn archive_thread(&self, thread_key: &str) -> Result<ArchiveThreadResponse> {
-        let record = self
-            .repository
-            .find_active_thread_by_key(thread_key)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("thread_key is not an active thread"))?;
-        let archived = self.repository.archive_thread(record).await?;
+        let archived = match self.local_control.read().await.clone() {
+            Some(control) => control.archive_thread(thread_key).await?,
+            None => {
+                let record = self
+                    .repository
+                    .find_active_thread_by_key(thread_key)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("thread_key is not an active thread"))?;
+                self.repository.archive_thread(record).await?
+            }
+        };
         Ok(ArchiveThreadResponse {
             archived: true,
             thread_key: archived.metadata.thread_key,
+        })
+    }
+
+    async fn restore_thread(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
+        let control = self.local_control().await?;
+        let restored = control.restore_thread(thread_key).await?;
+        Ok(ThreadMutationResponse {
+            ok: true,
+            thread_key: restored.metadata.thread_key,
+        })
+    }
+
+    async fn reconnect_codex(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
+        let control = self.local_control().await?;
+        let record = control.reconnect_codex(thread_key).await?;
+        Ok(ThreadMutationResponse {
+            ok: true,
+            thread_key: record.metadata.thread_key,
         })
     }
 
@@ -727,7 +1086,9 @@ async fn write_env_file(path: &Path, updates: &BTreeMap<String, String>) -> Resu
     let existing = match tokio::fs::read_to_string(path).await {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error).with_context(|| format!("failed to read {}", path.display())),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
     };
     let mut lines = Vec::new();
     let mut seen = BTreeMap::new();
@@ -737,7 +1098,10 @@ async fn write_env_file(path: &Path, updates: &BTreeMap<String, String>) -> Resu
             lines.push(line.to_owned());
             continue;
         }
-        let key = trimmed.split_once('=').map(|(key, _)| key.trim()).unwrap_or_default();
+        let key = trimmed
+            .split_once('=')
+            .map(|(key, _)| key.trim())
+            .unwrap_or_default();
         if let Some(value) = updates.get(key) {
             lines.push(format!("{key}={value}"));
             seen.insert(key.to_owned(), true);
@@ -833,7 +1197,11 @@ async fn read_workspace_runtime_health(workspace_path: &Path) -> WorkspaceRuntim
         Some(url) => tcp_endpoint_is_live(url).await,
         None => false,
     };
-    let app_server_status = if app_server_running { "running" } else { "stale" };
+    let app_server_status = if app_server_running {
+        "running"
+    } else {
+        "stale"
+    };
     let tui_proxy_status = match state.tui_proxy_base_ws_url.as_deref() {
         Some(_) if proxy_running => "running",
         Some(_) => "stale",

@@ -2,12 +2,19 @@
 
 ## 目前進度
 
-這份文檔目前仍是純草稿，尚未成為代碼中的完整正式協議層。
+這份文檔目前仍是草稿，但已不只是命名建議；其中一部分 view / action 已經掛進本地 management API 和 desktop runtime。
 
 目前代碼狀態：
 
 - Telegram bot 仍是主要聊天入口
-- 已開始有本地 management API 骨架
+- 本地 management API 已開始提供 query / control / SSE：
+  - setup
+  - runtime health
+  - managed workspace list
+  - archived thread list
+  - create / bind / reconnect / archive / restore
+  - `launch_hcodex_new` / `launch_hcodex_resume`
+- `threadbridge_desktop` 已開始直接依賴這些本地 view / action
 - transport-neutral 的正式 view / action 命名仍未完全收斂
 - local HTTP + SSE 已成為目前最務實的實驗載體
 
@@ -153,6 +160,18 @@ v1 至少定義：
 - `update_managed_codex`
 - `save_telegram_setup`
 
+目前已部分對應到代碼中的 local HTTP endpoint：
+
+- `POST /api/threads`
+- `POST /api/threads/create-and-bind`
+- `POST /api/threads/:thread_key/bind-workspace`
+- `POST /api/workspaces/:thread_key/reconnect`
+- `POST /api/workspaces/:thread_key/launch-new`
+- `POST /api/workspaces/:thread_key/launch-resume`
+- `POST /api/threads/:thread_key/archive`
+- `POST /api/threads/:thread_key/restore`
+- `PUT /api/setup/telegram`
+
 ## 建議的 event model
 
 event 仍以 runtime 事件優先，而不是同步 RPC 優先。
@@ -185,6 +204,8 @@ v1 至少保留：
 
 - local HTTP 提供 query / control
 - SSE 提供 event stream
+
+這一層現在已經是實際代碼路徑，不再只是預期方向。
 
 後續若需要：
 
