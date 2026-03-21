@@ -126,6 +126,19 @@
 - `heartbeat_last_error`
 - `session_broken_reason`
 
+這裡目前要明確承認一件事：
+
+- `owner_heartbeat` 與 `workspace_state` 不是同一層訊號
+
+比較合理的語義應是：
+
+- `owner_heartbeat`
+  - machine / owner 對 workspace runtime health 的正式判斷
+- `workspace_state`
+  - workspace 內現有 artifact / endpoint state 的觀測結果
+
+目前代碼裡兩者仍會在沒有 owner heartbeat 時互相補位，這是過渡期做法，不應被當成最終 protocol 語義。
+
 ### 4. `RecentCodexSessionView`
 
 至少包含：
@@ -171,6 +184,11 @@
 - `ready_workspaces`
 - `degraded_workspaces`
 - `unavailable_workspaces`
+
+這個 view 之後還需要更明確回答：
+
+- runtime health 的 canonical authority 是否已收斂到 owner
+- 若沒有 owner heartbeat，目前看到的是正式 health，還是 fallback observation
 
 ### 7. `SetupStateView`
 

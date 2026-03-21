@@ -19,6 +19,7 @@
 - desktop runtime 對 handoff continuity / adoption 的 owner 職責仍是部分實作
 - `hcodex` self-heal 仍未收斂成純 fallback
 - Codex mirror 目前仍未完整承接 Plan / Tool 過程中的文本
+- workspace heartbeat / runtime health 目前仍是過渡性多來源模型
 
 目前新增確認的優先級判斷是：
 
@@ -30,6 +31,12 @@
 - 也會直接影響 reconnect、self-heal、handoff continuity、runtime health 與 mirror 這些能力的語義是否可信
 - 若 owner 邊界不先收斂，其他上層功能很容易繼續建立在過渡性行為上
 - 它同時也是把 Telegram 從 runtime core 收斂成通用 adapter 的前置條件
+
+目前新增確認的一個具體症狀是：
+
+- workspace heartbeat 還沒有單一 canonical authority
+- `owner_heartbeat` 與 workspace shared status / runtime state 目前同時存在
+- 這不是單純 view model 問題，而是 owner 收斂尚未完成的直接表現
 
 ## 現況定位
 
@@ -70,8 +77,27 @@
 - Telegram turn 在 bot 成功 `ensure` 當下可走 shared websocket daemon
 - 本地 `hcodex` 仍依賴 self-heal 作為 fallback
 - workspace `ws` runtime 的正式 owner 還需要進一步收斂到 desktop runtime
+- runtime health 目前仍會在 `owner_heartbeat` 與 `workspace_state` 之間切換來源
+
+更具體地說，目前系統其實在同時保存兩類不同訊號：
+
+- owner heartbeat
+  - 回答 app-server / TUI proxy / handoff readiness 是否健康
+- workspace shared status
+  - 回答 live CLI / shell / session activity 是否存在
+
+這兩類訊號本來就不完全是同一件事，但現在還沒有唯一 owner 來定義哪個才是 canonical runtime health authority。
 
 這件事不只是架構清理，而是目前整條 shared runtime 路線的高優先級收斂項。
+
+比較合理的收斂方向應是：
+
+- desktop owner heartbeat
+  - 成為 canonical runtime health source
+- workspace shared status
+  - 只表達 CLI / turn / shell activity
+- bot / `hcodex` / management UI
+  - 只讀 owner view，或要求 owner repair，而不是各自再補 runtime health 判斷
 
 ## 與本地管理面的關係
 
