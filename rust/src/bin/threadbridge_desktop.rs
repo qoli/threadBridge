@@ -46,6 +46,20 @@ mod macos_app {
         workspaces: Vec<ManagedWorkspaceView>,
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct TraySnapshotSignature {
+        tooltip: String,
+        workspaces: Vec<TrayWorkspaceSignature>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct TrayWorkspaceSignature {
+        thread_key: String,
+        label: String,
+        launch_ready: bool,
+        recent_session_ids: Vec<String>,
+    }
+
     #[derive(Debug, Clone)]
     enum TrayAction {
         OpenSettings,
@@ -77,6 +91,7 @@ mod macos_app {
         tray_actions: HashMap<MenuId, TrayAction>,
         settings_window: Option<SettingsWindow>,
         latest_snapshot: Option<DesktopSnapshot>,
+        latest_tray_signature: Option<TraySnapshotSignature>,
     }
 
     pub fn run() -> Result<()> {
@@ -147,6 +162,7 @@ mod macos_app {
             tray_actions: HashMap::new(),
             settings_window: None,
             latest_snapshot: None,
+            latest_tray_signature: None,
         };
 
         event_loop.run(move |event, event_loop_window_target, control_flow| {
@@ -330,18 +346,17 @@ mod macos_app {
     }
 
     fn update_tray_snapshot(app: &mut DesktopApp, snapshot: &DesktopSnapshot) -> Result<()> {
+        let signature = build_tray_snapshot_signature(snapshot);
+        if app.tray_icon.is_some() && app.latest_tray_signature.as_ref() == Some(&signature) {
+            return Ok(());
+        }
         let model = build_menu_model(snapshot)?;
         if let Some(tray_icon) = app.tray_icon.as_ref() {
             tray_icon.set_menu(Some(Box::new(model.menu)));
-            tray_icon.set_tooltip(Some(&format!(
-                "threadBridge | polling {:?} | running {} | broken {} | conflicted {}",
-                snapshot.setup.telegram_polling_state,
-                snapshot.health.running_workspaces,
-                snapshot.health.broken_threads,
-                snapshot.health.conflicted_workspaces
-            )))?;
+            tray_icon.set_tooltip(Some(&signature.tooltip))?;
         }
         app.tray_actions = model.actions;
+        app.latest_tray_signature = Some(signature);
         Ok(())
     }
 
@@ -356,14 +371,9 @@ mod macos_app {
             let Some(thread_key) = workspace.thread_key.clone() else {
                 continue;
             };
-            let submenu = Submenu::new(
-                workspace
-                    .title
-                    .clone()
-                    .unwrap_or_else(|| workspace.workspace_cwd.clone()),
-                true,
-            );
-            let start_item = MenuItem::new("Start New hcodex Session", true, None);
+            let submenu = Submenu::new(workspace_tray_label(workspace), true);
+            let launch_ready = workspace_launch_ready(workspace);
+            let start_item = MenuItem::new("Start New hcodex Session", launch_ready, None);
             actions.insert(
                 start_item.id().clone(),
                 TrayAction::LaunchNew {
@@ -376,7 +386,7 @@ mod macos_app {
                 submenu.append(&empty_item)?;
             } else {
                 for session in workspace.recent_codex_sessions.iter().take(5) {
-                    let item = MenuItem::new(session.session_id.clone(), true, None);
+                    let item = MenuItem::new(session.session_id.clone(), launch_ready, None);
                     actions.insert(
                         item.id().clone(),
                         TrayAction::Resume {
@@ -398,6 +408,55 @@ mod macos_app {
         actions.insert(quit.id().clone(), TrayAction::Quit);
         menu.append_items(&[&settings, &quit])?;
         Ok(MenuModel { menu, actions })
+    }
+
+    fn build_tray_snapshot_signature(snapshot: &DesktopSnapshot) -> TraySnapshotSignature {
+        TraySnapshotSignature {
+            tooltip: format!(
+                "threadBridge | polling {:?} | running {} | broken {} | conflicted {}",
+                snapshot.setup.telegram_polling_state,
+                snapshot.health.running_workspaces,
+                snapshot.health.broken_threads,
+                snapshot.health.conflicted_workspaces
+            ),
+            workspaces: snapshot
+                .workspaces
+                .iter()
+                .filter_map(|workspace| {
+                    Some(TrayWorkspaceSignature {
+                        thread_key: workspace.thread_key.clone()?,
+                        label: workspace_tray_label(workspace),
+                        launch_ready: workspace_launch_ready(workspace),
+                        recent_session_ids: workspace
+                            .recent_codex_sessions
+                            .iter()
+                            .take(5)
+                            .map(|session| session.session_id.clone())
+                            .collect(),
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    fn workspace_tray_label(workspace: &ManagedWorkspaceView) -> String {
+        let title = workspace
+            .title
+            .clone()
+            .unwrap_or_else(|| workspace.workspace_cwd.clone());
+        let heartbeat = match (workspace.app_server_status, workspace.handoff_readiness) {
+            ("running", "ready") => "ready",
+            ("running", "degraded") | ("running", "pending_adoption") => "degraded",
+            ("running", other) => other,
+            (app, _) => app,
+        };
+        format!("{title} · {heartbeat}")
+    }
+
+    fn workspace_launch_ready(workspace: &ManagedWorkspaceView) -> bool {
+        workspace.hcodex_available
+            && workspace.app_server_status == "running"
+            && !matches!(workspace.handoff_readiness, "unavailable")
     }
 
     fn handle_menu_event(
