@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -20,6 +20,13 @@ use crate::workspace_status::{
     record_tui_proxy_completed, record_tui_proxy_connected, record_tui_proxy_disconnected,
     record_tui_proxy_prompt,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrackedRequestMethod {
+    ThreadResume,
+    ThreadStart,
+    TurnStart,
+}
 
 #[derive(Debug, Clone)]
 pub struct TuiProxyManager {
@@ -157,8 +164,9 @@ async fn handle_proxy_connection(
         .await
         .with_context(|| format!("failed to connect TUI proxy to daemon at {daemon_ws_url}"))?;
     let mut client_ws = client_ws;
-    let mut tracked_request_method_by_id: HashMap<i64, &'static str> = HashMap::new();
+    let mut tracked_request_method_by_id: HashMap<i64, TrackedRequestMethod> = HashMap::new();
     let mut current_session_id: Option<String> = None;
+    let mut local_turn_ids: HashSet<String> = HashSet::new();
     let mut latest_assistant_message = String::new();
 
     info!(
@@ -201,6 +209,7 @@ async fn handle_proxy_connection(
                     &daemon_message,
                     &mut tracked_request_method_by_id,
                     &mut current_session_id,
+                    &mut local_turn_ids,
                     &mut latest_assistant_message,
                 ).await?;
                 if matches!(daemon_message, WsMessage::Close(_)) {
@@ -236,7 +245,7 @@ fn thread_key_from_path(path: &str) -> Result<String> {
     Ok(remainder.trim().to_owned())
 }
 
-fn track_client_request(message: &WsMessage) -> Result<Option<(i64, &'static str)>> {
+fn track_client_request(message: &WsMessage) -> Result<Option<(i64, TrackedRequestMethod)>> {
     let text = match message {
         WsMessage::Text(text) => text.as_str(),
         WsMessage::Binary(bytes) => {
@@ -248,15 +257,16 @@ fn track_client_request(message: &WsMessage) -> Result<Option<(i64, &'static str
     let Some(method) = payload.get("method").and_then(Value::as_str) else {
         return Ok(None);
     };
-    if !matches!(method, "thread/resume" | "thread/start") {
+    if !matches!(method, "thread/resume" | "thread/start" | "turn/start") {
         return Ok(None);
     }
     let Some(request_id) = payload.get("id").and_then(Value::as_i64) else {
         return Ok(None);
     };
     let method = match method {
-        "thread/resume" => "thread/resume",
-        "thread/start" => "thread/start",
+        "thread/resume" => TrackedRequestMethod::ThreadResume,
+        "thread/start" => TrackedRequestMethod::ThreadStart,
+        "turn/start" => TrackedRequestMethod::TurnStart,
         _ => return Ok(None),
     };
     Ok(Some((request_id, method)))
@@ -266,7 +276,8 @@ async fn maybe_track_server_response(
     repository: &ThreadRepository,
     thread_key: &str,
     message: &WsMessage,
-    tracked_request_method_by_id: &mut HashMap<i64, &'static str>,
+    tracked_request_method_by_id: &mut HashMap<i64, TrackedRequestMethod>,
+    local_turn_ids: &mut HashSet<String>,
 ) -> Result<Option<String>> {
     let text = match message {
         WsMessage::Text(text) => text.as_str(),
@@ -286,12 +297,22 @@ async fn maybe_track_server_response(
         return Ok(None);
     };
     if payload.get("error").is_some() {
-        debug!(event = "tui_proxy.request.failed", thread_key = %thread_key, method);
+        debug!(event = "tui_proxy.request.failed", thread_key = %thread_key, method = ?method);
         return Ok(None);
     }
     let Some(result) = payload.get("result") else {
         return Ok(None);
     };
+    if method == TrackedRequestMethod::TurnStart {
+        if let Some(turn_id) = result
+            .get("turn")
+            .and_then(|turn| turn.get("id"))
+            .and_then(Value::as_str)
+        {
+            local_turn_ids.insert(turn_id.to_owned());
+        }
+        return Ok(None);
+    }
     let Some(thread_id) = result
         .get("thread")
         .and_then(|thread| thread.get("id"))
@@ -305,7 +326,7 @@ async fn maybe_track_server_response(
     info!(
         event = "tui_proxy.session_tracked",
         thread_key = %thread_key,
-        method,
+        method = ?method,
         tui_active_codex_thread_id = %thread_id,
     );
     Ok(Some(thread_id.to_owned()))
@@ -369,8 +390,9 @@ async fn maybe_track_server_message(
     thread_key: &str,
     workspace_path: &Path,
     message: &WsMessage,
-    tracked_request_method_by_id: &mut HashMap<i64, &'static str>,
+    tracked_request_method_by_id: &mut HashMap<i64, TrackedRequestMethod>,
     current_session_id: &mut Option<String>,
+    local_turn_ids: &mut HashSet<String>,
     latest_assistant_message: &mut String,
 ) -> Result<()> {
     if let Some(session_id) = maybe_track_server_response(
@@ -378,6 +400,7 @@ async fn maybe_track_server_message(
         thread_key,
         message,
         tracked_request_method_by_id,
+        local_turn_ids,
     )
     .await?
     {
@@ -395,26 +418,22 @@ async fn maybe_track_server_message(
 
     if let Some(session_id) = current_session_id.as_deref() {
         if let Some(completed_turn_id) = extract_completed_turn_id(message)? {
-            let final_text = if latest_assistant_message.trim().is_empty() {
-                None
-            } else {
-                Some(latest_assistant_message.as_str())
-            };
-            record_tui_proxy_completed(
-                workspace_path,
-                session_id,
-                Some(&completed_turn_id),
-                final_text,
-            )
-            .await?;
+            if local_turn_ids.remove(&completed_turn_id) {
+                let final_text = if latest_assistant_message.trim().is_empty() {
+                    None
+                } else {
+                    Some(latest_assistant_message.as_str())
+                };
+                record_tui_proxy_completed(
+                    workspace_path,
+                    session_id,
+                    Some(&completed_turn_id),
+                    final_text,
+                )
+                .await?;
+            }
             latest_assistant_message.clear();
         } else if is_turn_completed(message)? {
-            let final_text = if latest_assistant_message.trim().is_empty() {
-                None
-            } else {
-                Some(latest_assistant_message.as_str())
-            };
-            record_tui_proxy_completed(workspace_path, session_id, None, final_text).await?;
             latest_assistant_message.clear();
         }
     }
@@ -516,4 +535,20 @@ fn canonical_workspace_key(workspace_path: &Path) -> Result<String> {
         .unwrap_or_else(|_| workspace_path.to_path_buf())
         .display()
         .to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TrackedRequestMethod, track_client_request};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    #[test]
+    fn track_client_request_marks_turn_start_requests() {
+        let message = WsMessage::Text(
+            r#"{"jsonrpc":"2.0","id":42,"method":"turn/start","params":{"threadId":"thr_1","input":[]}}"#
+                .into(),
+        );
+        let tracked = track_client_request(&message).expect("parse ok");
+        assert_eq!(tracked, Some((42, TrackedRequestMethod::TurnStart)));
+    }
 }
