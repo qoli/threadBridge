@@ -10,6 +10,7 @@ Telegram bot that maps Telegram threads to Codex app-server threads bound to rea
 - Starts workspace-scoped shared Codex app-server daemons on loopback websocket and connects the bot over JSON-RPC.
 - Installs a managed runtime appendix and `.threadbridge/` wrapper surface into the bound workspace.
 - Exposes a managed `hcodex` launcher for the bound workspace through `codex --remote <ws-url>`.
+- Starts a local management API for setup, runtime health, and workspace views on loopback HTTP.
 
 ## Requirements
 
@@ -46,6 +47,7 @@ scripts/local_threadbridge.sh restart --codex-source source
 ## Behavior
 
 - Main private chat acts as the control console.
+- If Telegram credentials are missing, threadBridge still starts the local management API but does not start Telegram polling.
 - Only Telegram user IDs listed in `AUTHORIZED_TELEGRAM_USER_IDS` can trigger the bot.
 - `/new_thread` creates a Telegram topic and bot-local metadata only.
 - `/bind_workspace <absolute-path>` installs the runtime appendix into the target workspace and starts a fresh Codex thread for it.
@@ -54,6 +56,7 @@ scripts/local_threadbridge.sh restart --codex-source source
 - `/reconnect_codex` verifies that the saved Codex thread still matches the stored workspace path.
 - Topic titles currently reflect `busy` and `broken` state.
 - `hcodex` is the managed local TUI path. It resolves the workspace daemon from `.threadbridge/state/app-server/current.json` and launches `codex --remote ...`.
+- The local management API defaults to `http://127.0.0.1:38420` and can be changed with `THREADBRIDGE_MANAGEMENT_BIND_ADDR`.
 
 ## Runtime Layout
 

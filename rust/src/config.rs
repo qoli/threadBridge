@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::env;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -10,13 +11,19 @@ pub struct RuntimeConfig {
     pub debug_log_path: PathBuf,
     pub codex_working_directory: PathBuf,
     pub codex_model: Option<String>,
+    pub management_bind_addr: SocketAddr,
+}
+
+#[derive(Debug, Clone)]
+pub struct TelegramConfig {
+    pub telegram_token: String,
+    pub authorized_user_ids: HashSet<i64>,
 }
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub runtime: RuntimeConfig,
-    pub telegram_token: String,
-    pub authorized_user_ids: HashSet<i64>,
+    pub telegram: TelegramConfig,
     pub stream_edit_interval_ms: u64,
     pub stream_message_max_chars: usize,
     pub command_output_tail_chars: usize,
@@ -45,6 +52,12 @@ fn parse_positive_usize(name: &str, fallback: usize) -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(fallback)
+}
+
+fn parse_socket_addr(name: &str, fallback: &str) -> Result<SocketAddr> {
+    let raw = env::var(name).unwrap_or_else(|_| fallback.to_owned());
+    raw.parse::<SocketAddr>()
+        .with_context(|| format!("Invalid {name}: {raw}"))
 }
 
 fn parse_authorized_users(raw: &str) -> Result<HashSet<i64>> {
@@ -102,11 +115,15 @@ pub fn load_runtime_config() -> Result<RuntimeConfig> {
             .ok()
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty()),
+        management_bind_addr: parse_socket_addr(
+            "THREADBRIDGE_MANAGEMENT_BIND_ADDR",
+            "127.0.0.1:38420",
+        )?,
     })
 }
 
-pub fn load_app_config() -> Result<AppConfig> {
-    let runtime = load_runtime_config()?;
+pub fn load_telegram_config() -> Result<TelegramConfig> {
+    load_dotenv();
 
     let telegram_token = env::var("TELEGRAM_BOT_TOKEN")
         .context("Missing TELEGRAM_BOT_TOKEN.")?
@@ -121,10 +138,34 @@ pub fn load_app_config() -> Result<AppConfig> {
             .context("Missing AUTHORIZED_TELEGRAM_USER_IDS.")?,
     )?;
 
-    Ok(AppConfig {
-        runtime,
+    Ok(TelegramConfig {
         telegram_token,
         authorized_user_ids,
+    })
+}
+
+pub fn load_optional_telegram_config() -> Result<Option<TelegramConfig>> {
+    match load_telegram_config() {
+        Ok(config) => Ok(Some(config)),
+        Err(error) => {
+            let message = error.to_string();
+            if message.contains("Missing TELEGRAM_BOT_TOKEN")
+                || message.contains("Missing AUTHORIZED_TELEGRAM_USER_IDS")
+            {
+                return Ok(None);
+            }
+            Err(error)
+        }
+    }
+}
+
+pub fn load_app_config() -> Result<AppConfig> {
+    let runtime = load_runtime_config()?;
+    let telegram = load_telegram_config()?;
+
+    Ok(AppConfig {
+        runtime,
+        telegram,
         stream_edit_interval_ms: parse_positive_u64("STREAM_EDIT_INTERVAL_MS", 750),
         stream_message_max_chars: parse_positive_usize("STREAM_MESSAGE_MAX_CHARS", 3500),
         command_output_tail_chars: parse_positive_usize("COMMAND_OUTPUT_TAIL_CHARS", 800),

@@ -213,6 +213,7 @@ pub async fn handle_callback_query(
 ) -> ResponseResult<()> {
     if !state
         .config
+        .telegram
         .authorized_user_ids
         .contains(&(query.from.id.0 as i64))
     {
@@ -345,6 +346,7 @@ pub(crate) fn is_authorized(state: &AppState, msg: &Message) -> bool {
         .map(|user| {
             state
                 .config
+                .telegram
                 .authorized_user_ids
                 .contains(&(user.id.0 as i64))
         })
@@ -531,7 +533,7 @@ mod tests {
     };
     use crate::app_server_runtime::WorkspaceRuntimeManager;
     use crate::codex::CodexRunner;
-    use crate::config::{AppConfig, RuntimeConfig};
+    use crate::config::{AppConfig, RuntimeConfig, TelegramConfig};
     use crate::repository::{SessionBinding, ThreadRepository};
     use crate::tui_proxy::TuiProxyManager;
     use crate::workspace_status::{
@@ -645,8 +647,10 @@ mod tests {
 
         let state = AppState {
             config: AppConfig {
-                telegram_token: "test".to_owned(),
-                authorized_user_ids: HashSet::from([7_i64]),
+                telegram: TelegramConfig {
+                    telegram_token: "test".to_owned(),
+                    authorized_user_ids: HashSet::from([7_i64]),
+                },
                 stream_edit_interval_ms: 10,
                 stream_message_max_chars: 1000,
                 command_output_tail_chars: 1000,
@@ -656,6 +660,7 @@ mod tests {
                     codex_working_directory: root.clone(),
                     codex_model: None,
                     debug_log_path: root.join("debug.jsonl"),
+                    management_bind_addr: "127.0.0.1:38420".parse().unwrap(),
                 },
             },
             repository: repository.clone(),

@@ -5,6 +5,7 @@ pub mod hcodex_runtime;
 pub mod hcodex_ws_bridge;
 pub mod image_artifacts;
 pub mod logging;
+pub mod management_api;
 pub mod repository;
 pub mod telegram_probe;
 pub mod telegram_runtime;

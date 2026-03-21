@@ -2,238 +2,225 @@
 
 ## 目前進度
 
-這份文檔目前仍是純草稿，尚未成為代碼中的正式協議層。
+這份文檔目前仍是純草稿，尚未成為代碼中的完整正式協議層。
 
 目前代碼狀態：
 
-- 仍以 Telegram bot 為主要入口
-- 仍沒有 transport-neutral 的正式 runtime protocol
-- 只有部分 runtime 語義已經隱含在現有 Rust 模組內
+- Telegram bot 仍是主要聊天入口
+- 已開始有本地 management API 骨架
+- transport-neutral 的正式 view / action 命名仍未完全收斂
+- local HTTP + SSE 已成為目前最務實的實驗載體
 
 ## 問題
 
-如果 `threadBridge` 要從「Telegram bot」轉成「透明協議層 + 多前端 adapter」，只說抽象分層還不夠。
+如果 `threadBridge` 要同時支撐：
 
-還需要一份清楚的協議定義，回答下面幾件事：
+- Telegram adapter
+- 本地 tray / web 管理面
+- 未來的 observability 面
 
-- 外部客戶端如何把輸入送進 runtime
+那就不能再只靠內部 callback 與隱性資料模型耦合。
+
+還需要一份清楚的協議定義，回答：
+
+- 外部客戶端如何查詢 thread / workspace / runtime 狀態
 - runtime 如何回報執行中的事件
-- thread 狀態如何被查詢
-- 工具執行、錯誤與 preview 如何被標準化表示
-
-如果沒有這層協議，未來很容易發生：
-
-- Telegram adapter 直接綁死一套內部 callback
-- custom app 只能複製 Telegram 的流程
-- core 與 adapter 之間仍然透過隱性假設耦合
+- control action 如何以平台無關的語義表示
+- machine-level runtime 與 managed Codex 狀態如何正式對外暴露
 
 ## 方向
 
-先定義一套 `threadBridge runtime protocol`。
+先定一套 `threadBridge runtime protocol`。
 
-這個 protocol 先不用急著定成公開網路標準，也不用急著承諾 gRPC、HTTP、WebSocket、stdio 哪一種傳輸。
+這份 protocol 的第一步不是定傳輸細節，而是先固定：
 
-第一步應該先固定：
+- view model
+- event type
+- control action
+- 資料來源與 source of truth
 
-- 語意模型
-- 事件型別
-- request / response shape
-- thread state view
+傳輸層在 v1 先用：
 
-也就是：
-
-- 先定「說什麼」
-- 再定「怎麼傳」
+- local HTTP
+- SSE
 
 ## 協議目標
 
 ### 主要目標
 
-- 讓 Telegram 與 custom app 共用同一套 runtime 語意
-- 讓 preview、tool 執行、error、busy 狀態有一致事件模型
-- 讓 observability 與 control surface 可以使用同一份核心資料
+- 讓 Telegram、tray/web 管理面、未來 observability 共用同一套 runtime 語意
+- 讓 thread / workspace / runtime owner / managed Codex 有一致的 view model
+- 讓 query、control、event stream 三條線清楚分離
 
 ### 次要目標
 
-- 讓 transport 實作更換時，不需要重寫核心流程
-- 為之後的本地 HTTP API 或 WebSocket stream 留出穩定基礎
+- 讓 transport 替換時不需要重寫核心流程
+- 讓 UI 不需要直接讀 `data/*.json`
 
-## 建議的協議物件
+## 建議的 view model
 
-### 1. Thread Handle
+### 1. `ThreadStateView`
 
-代表外部客戶端眼中的 conversation 容器。
-
-至少需要：
+至少包含：
 
 - `thread_key`
-- `client_kind`
-- `client_thread_ref`
-
-其中：
-
-- `thread_key`
-  - bot-local / runtime-local 的穩定主鍵
-- `client_kind`
-  - `telegram`、`custom_app`、`cli`
-- `client_thread_ref`
-  - 該客戶端自己的 thread / conversation identifier
-
-### 2. Input Event
-
-代表外部送入 runtime 的使用者輸入。
-
-建議型別：
-
-- `text`
-- `image`
-- `command`
-- `control_action`
-
-建議共同欄位：
-
-- `thread_key`
-- `event_id`
-- `timestamp`
-- `sender`
-- `kind`
-
-文字事件額外欄位：
-
-- `text`
-
-圖片事件額外欄位：
-
-- `image_paths`
-- `caption`
-
-命令事件額外欄位：
-
-- `command_name`
-- `args`
-
-控制事件額外欄位：
-
-- `action`
-  - 例如 `new`、`reconnect_codex`
-
-### 3. Runtime Event
-
-代表 runtime 主動發出的執行事件。
-
-建議型別：
-
-- `thread_busy`
-- `turn_started`
-- `preview_delta`
-- `preview_replaced`
-- `tool_started`
-- `tool_completed`
-- `assistant_message`
-- `assistant_final`
-- `thread_state_changed`
-- `error`
-
-這一層應該避免平台詞彙，例如：
-
-- 不要直接叫 `telegram_message_edited`
-- 不要直接叫 `topic_title_updated`
-
-因為那是 adapter 的呈現細節。
-
-### 4. Thread State View
-
-代表 thread 目前狀態的快照。
-
-至少應包含：
-
-- `thread_key`
+- `title`
 - `workspace_cwd`
-- `codex_thread_id`
 - `binding_status`
-  - `unbound` / `healthy` / `broken`
 - `run_status`
-  - `idle` / `running`
+- `current_codex_thread_id`
+- `tui_active_codex_thread_id`
+- `archived_at`
+- `last_used_at`
 - `last_error`
+
+### 2. `ArchivedThreadView`
+
+至少包含：
+
+- `thread_key`
+- `title`
+- `workspace_cwd`
+- `archived_at`
+- `previous_message_thread_ids`
+
+### 3. `ManagedWorkspaceView`
+
+至少包含：
+
+- `workspace_cwd`
+- `title`
+- `thread_key`
+- `binding_status`
+- `run_status`
+- `current_codex_thread_id`
+- `tui_active_codex_thread_id`
+- `recent_codex_sessions`
+- `conflict`
 - `last_used_at`
 
-這個 view 未來可以同時供：
+### 4. `RecentCodexSessionView`
 
-- Telegram `/status`
-- custom app 狀態頁
-- Web App observability
+至少包含：
 
-## 協議風格建議
+- `session_id`
+- `updated_at`
 
-### 事件優先，而不是同步 RPC 優先
+### 5. `ManagedCodexView`
 
-`threadBridge` 的核心工作本來就偏事件流：
+至少包含：
 
-- preview 是流式的
-- tool 執行是階段性的
-- final response 是收尾事件
+- `binary_path`
+- `binary_ready`
+- `source`
+- `version` 或 `revision`
+- `handoff_supported`
 
-所以比較自然的模型是：
+### 6. `RuntimeHealthView`
 
-- `submit input`
-- `subscribe runtime events`
-- `query thread state`
+至少包含：
 
-而不是全部塞進單次同步 response。
+- `managed_codex`
+- `app_server_status`
+- `tui_proxy_status`
+- `handoff_readiness`
+- `broken_threads`
+- `running_workspaces`
+- `conflicted_workspaces`
 
-### Query 與 Control 分離
+### 7. `SetupStateView`
 
-建議明確區分：
+至少包含：
+
+- `telegram_configured`
+- `authorized_user_count`
+- `telegram_polling_state`
+- `restart_required_after_setup_save`
+
+## 建議的 control action
+
+這一層應避免 Telegram 或 UI 專屬命名。
+
+v1 至少定義：
+
+- `create_thread`
+- `bind_workspace`
+- `reconnect_codex`
+- `launch_hcodex_new`
+- `launch_hcodex_resume`
+- `archive_thread`
+- `restore_thread`
+- `update_managed_codex`
+- `save_telegram_setup`
+
+## 建議的 event model
+
+event 仍以 runtime 事件優先，而不是同步 RPC 優先。
+
+v1 至少保留：
+
+- `thread_state_changed`
+- `workspace_state_changed`
+- `runtime_health_changed`
+- `managed_codex_changed`
+- `assistant_final`
+- `error`
+
+## Query / Control / Stream 分離
+
+建議明確切開：
 
 - `query`
-  - 讀取 thread / turn / artifact 狀態
+  - 讀取 thread / workspace / runtime / managed Codex 狀態
 - `control`
-  - reset / reconnect / bind workspace
+  - bind / reconnect / archive / restore / launch / setup / update
+- `event stream`
+  - UI 與 adapter 追蹤即時狀態變更
 
-這樣 custom app 與 observability UI 都會比較清楚。
+這樣 custom app、tray/web 管理面、observability UI 都比較清楚。
 
 ## 傳輸層選項
 
-這篇先不定案，但可以先記錄適合的載體：
+這篇先收斂 v1 實驗載體：
 
-- process-local Rust API
-- local HTTP + SSE
-- local HTTP + WebSocket
-- stdio JSON stream
+- local HTTP 提供 query / control
+- SSE 提供 event stream
 
-短期最務實的路線可能是：
+後續若需要：
 
-- 先有 process-local core API
-- 再包一層 local HTTP / WebSocket adapter
+- 可再補 WebSocket
+- 但不應推翻這份語意層
 
 ## 與現有資料模型的關係
 
-現有資料不必推翻，但要明確重新掛接到 protocol：
+現有資料不必推翻，但要重新掛接到 protocol：
 
 - `session-binding.json`
   - 主要餵給 `ThreadStateView`
 - `conversations.jsonl`
-  - 可重放為 turn / message 歷史
-- `events.jsonl`
-  - 可重建部分 `RuntimeEvent`
-- `.threadbridge/tool_results/*`
-  - 可補充 `tool_completed` 與 artifact 摘要
+  - 可補充 thread / session 歷史
+- `.threadbridge/state/shared-runtime/*`
+  - 餵給 `run_status`、owner / runtime health
+- workspace recent session history
+  - 餵給 `RecentCodexSessionView`
 
-## 風險
+## 與其他計劃的關係
 
-- 若一開始把協議做太細，會造成實作成本過高
-- 若協議只是照抄 Telegram 事件名稱，抽象將沒有價值
-- 若 query / control / event stream 沒有切開，custom app 很快會變難做
+- [macos-menubar-thread-manager.md](/Volumes/Data/Github/threadBridge/docs/plan/macos-menubar-thread-manager.md)
+  - 使用這份協議作為本地管理面的正式 view / action 命名來源
+- [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md)
+  - 提供 shared runtime、`hcodex`、TUI proxy、adoption 的現實模型
+- [telegram-webapp-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md)
+  - 可共用部分 event 與 view，但不是這份 protocol 的唯一需求方
 
 ## 開放問題
 
-- busy gate 被拒絕的輸入，是否也應作為明確事件寫入協議？
-- 圖片上傳後但延後分析的狀態，應該是 `accepted_pending` 還是另一種 artifact event？
-- preview delta 是否要保留平台無關的 markdown / rich text 中間表示？
-- tool output 是否需要標準欄位，還是只保留 generic payload？
+- `Open in Telegram` 這類 UI 快捷操作，應放在 control action，還是由 adapter 自己實作？
+- `managed_codex.version` 與 `revision` 要不要同時作為正式欄位？
+- event stream 是否要保留更細的 preview / tool 流式事件，還是先只發聚合狀態變更？
 
 ## 建議的下一步
 
-1. 先定義最小 `InputEvent`、`RuntimeEvent`、`ThreadStateView`。
-2. 讓 Telegram adapter 先改用這套語意，而不是直接碰 runtime 細節。
-3. 再選一個最小 transport 載體做實驗，例如 local HTTP + SSE。
+1. 先把上面的 view / action 名稱同步到本地 management API。
+2. 讓 tray/web 管理面先只依賴這份 protocol，不直接讀 repository 檔案。
+3. 之後再決定是否需要第二種 transport，例如 WebSocket。

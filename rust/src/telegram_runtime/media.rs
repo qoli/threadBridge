@@ -107,7 +107,7 @@ async fn download_telegram_file(state: &AppState, bot: &Bot, file_id: FileId) ->
     let file = bot.get_file(file_id).await?;
     let url = format!(
         "https://api.telegram.org/file/bot{}/{}",
-        state.config.telegram_token, file.path
+        state.config.telegram.telegram_token, file.path
     );
     let response = reqwest::get(url).await?;
     let status = response.status();

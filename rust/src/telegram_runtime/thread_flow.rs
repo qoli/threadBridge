@@ -239,6 +239,26 @@ pub(crate) async fn run_command(
                 return Ok(());
             }
             let workspace_path = resolve_workspace_argument(argument).await?;
+            let conflicting_threads = state
+                .repository
+                .find_active_threads_by_workspace(&workspace_path.display().to_string())
+                .await?;
+            let has_conflict = conflicting_threads
+                .iter()
+                .any(|candidate| candidate.metadata.thread_key != record.metadata.thread_key);
+            if has_conflict {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    format!(
+                        "Workspace bind failed: another active thread is already bound to `{}`.",
+                        workspace_path.display()
+                    ),
+                )
+                .await?;
+                return Ok(());
+            }
             let typing = TypingHeartbeat::start(bot.clone(), msg.chat.id, Some(thread_id));
             let result = start_fresh_binding(state, record.clone(), workspace_path.clone()).await;
             typing.stop().await;

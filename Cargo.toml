@@ -24,6 +24,8 @@ path = "rust/src/bin/telegram_html_probe.rs"
 
 [dependencies]
 anyhow = "1.0"
+async-stream = "0.3"
+axum = { version = "0.7", features = ["json"] }
 chrono = { version = "0.4", features = ["serde"] }
 crossterm = "0.28"
 dotenvy = "0.15"
@@ -36,6 +38,7 @@ serde_json = "1.0"
 teloxide = { version = "0.17", default-features = false, features = ["ctrlc_handler", "macros", "rustls"] }
 thiserror = "2.0"
 tokio = { version = "1.44", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 tracing = "0.1"
 tracing-appender = "0.2"

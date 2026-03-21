@@ -11,6 +11,8 @@ use crate::image_artifacts::{ImageAnalysisArtifact, PendingImageBatch, PendingIm
 const MAIN_THREAD_KEY: &str = "main-thread";
 const SESSION_BINDING_FILE_NAME: &str = "session-binding.json";
 const TRANSCRIPT_MIRROR_FILE_NAME: &str = "transcript-mirror.jsonl";
+const WORKSPACE_SESSION_HISTORY_FILE_NAME: &str = "workspace-session-history.json";
+const WORKSPACE_SESSION_HISTORY_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -130,6 +132,28 @@ pub struct TranscriptMirrorEntry {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentCodexSessionEntry {
+    pub session_id: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct WorkspaceSessionHistoryStore {
+    #[serde(default = "workspace_session_history_schema_version")]
+    schema_version: u32,
+    #[serde(default)]
+    workspaces: Vec<WorkspaceSessionHistoryEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct WorkspaceSessionHistoryEntry {
+    workspace_cwd: String,
+    updated_at: String,
+    #[serde(default)]
+    sessions: Vec<RecentCodexSessionEntry>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ThreadRecord {
     pub conversation_key: String,
@@ -157,6 +181,18 @@ pub struct ThreadRepository {
 
 fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn workspace_session_history_schema_version() -> u32 {
+    WORKSPACE_SESSION_HISTORY_SCHEMA_VERSION
+}
+
+fn canonical_workspace_string(workspace_path: &str) -> String {
+    Path::new(workspace_path)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(workspace_path))
+        .display()
+        .to_string()
 }
 
 fn folder_name_for(scope: &ThreadScope, thread_key: &str) -> String {
@@ -512,6 +548,13 @@ impl ThreadRepository {
         let now = now_iso();
         let mut binding = SessionBinding::fresh(Some(workspace_cwd), Some(codex_thread_id));
         binding.updated_at = now.clone();
+        if let (Some(workspace_cwd), Some(session_id)) = (
+            binding.workspace_cwd.as_deref(),
+            binding.current_codex_thread_id.as_deref(),
+        ) {
+            self.record_recent_workspace_session(workspace_cwd, session_id)
+                .await?;
+        }
         self.write_session_binding(&record, &binding).await?;
         self.update_metadata(ThreadRecord {
             metadata: ThreadMetadata {
@@ -574,6 +617,13 @@ impl ThreadRepository {
         binding.tui_session_adoption_pending = false;
         binding.tui_session_adoption_prompt_message_id = None;
         binding.updated_at = now.clone();
+        if let (Some(workspace_cwd), Some(session_id)) = (
+            binding.workspace_cwd.as_deref(),
+            binding.current_codex_thread_id.as_deref(),
+        ) {
+            self.record_recent_workspace_session(workspace_cwd, session_id)
+                .await?;
+        }
         self.write_session_binding(&record, &binding).await?;
         self.update_metadata(ThreadRecord {
             metadata: ThreadMetadata {
@@ -681,6 +731,32 @@ impl ThreadRepository {
         Ok(records)
     }
 
+    pub async fn list_all_archived_threads(&self) -> Result<Vec<ThreadRecord>> {
+        let mut dir = fs::read_dir(&self.data_root_path).await?;
+        let mut records = Vec::new();
+        while let Some(entry) = dir.next_entry().await? {
+            let path = entry.path();
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let metadata_path = path.join("metadata.json");
+            if !fs::try_exists(&metadata_path).await? {
+                continue;
+            }
+            let metadata: ThreadMetadata =
+                serde_json::from_str(&fs::read_to_string(&metadata_path).await?)?;
+            if matches!(metadata.scope, ThreadScope::Thread)
+                && matches!(metadata.status, ThreadStatus::Archived)
+            {
+                records.push(
+                    self.build_record(entry.file_name().to_string_lossy().to_string(), metadata),
+                );
+            }
+        }
+        records.sort_by(|a, b| b.metadata.archived_at.cmp(&a.metadata.archived_at));
+        Ok(records)
+    }
+
     pub async fn list_active_threads(&self) -> Result<Vec<ThreadRecord>> {
         let mut dir = fs::read_dir(&self.data_root_path).await?;
         let mut records = Vec::new();
@@ -744,6 +820,26 @@ impl ThreadRepository {
         Ok(Some(self.build_record(folder_name, metadata)))
     }
 
+    pub async fn find_active_threads_by_workspace(
+        &self,
+        workspace_cwd: &str,
+    ) -> Result<Vec<ThreadRecord>> {
+        let target = canonical_workspace_string(workspace_cwd);
+        let mut records = Vec::new();
+        for record in self.list_active_threads().await? {
+            let Some(binding) = self.read_session_binding(&record).await? else {
+                continue;
+            };
+            let Some(bound_workspace) = binding.workspace_cwd.as_deref() else {
+                continue;
+            };
+            if canonical_workspace_string(bound_workspace) == target {
+                records.push(record);
+            }
+        }
+        Ok(records)
+    }
+
     pub fn data_root_path(&self) -> &Path {
         &self.data_root_path
     }
@@ -765,8 +861,29 @@ impl ThreadRepository {
         binding.tui_session_adoption_pending = false;
         binding.tui_session_adoption_prompt_message_id = None;
         binding.updated_at = now;
+        if let (Some(workspace_cwd), Some(session_id)) = (
+            binding.workspace_cwd.as_deref(),
+            binding.tui_active_codex_thread_id.as_deref(),
+        ) {
+            self.record_recent_workspace_session(workspace_cwd, session_id)
+                .await?;
+        }
         self.write_session_binding(&record, &binding).await?;
         Ok(Some(record))
+    }
+
+    pub async fn read_recent_workspace_sessions(
+        &self,
+        workspace_cwd: &str,
+    ) -> Result<Vec<RecentCodexSessionEntry>> {
+        let store = self.read_workspace_session_history_store().await?;
+        let target = canonical_workspace_string(workspace_cwd);
+        Ok(store
+            .workspaces
+            .into_iter()
+            .find(|entry| canonical_workspace_string(&entry.workspace_cwd) == target)
+            .map(|entry| entry.sessions)
+            .unwrap_or_default())
     }
 
     pub async fn mark_tui_adoption_pending_for_thread_key(
@@ -920,6 +1037,10 @@ impl ThreadRepository {
         record.folder_path.join(SESSION_BINDING_FILE_NAME)
     }
 
+    fn workspace_session_history_path(&self) -> PathBuf {
+        self.data_root_path.join(WORKSPACE_SESSION_HISTORY_FILE_NAME)
+    }
+
     async fn load_record(&self, folder_name: String) -> Result<ThreadRecord> {
         let metadata_path = self.data_root_path.join(&folder_name).join("metadata.json");
         let metadata: ThreadMetadata = serde_json::from_str(
@@ -973,6 +1094,68 @@ impl ThreadRepository {
             }
         }
         Ok(None)
+    }
+
+    async fn record_recent_workspace_session(
+        &self,
+        workspace_cwd: &str,
+        session_id: &str,
+    ) -> Result<()> {
+        let mut store = self.read_workspace_session_history_store().await?;
+        let workspace_cwd = canonical_workspace_string(workspace_cwd);
+        let now = now_iso();
+        let entry = store
+            .workspaces
+            .iter_mut()
+            .find(|entry| canonical_workspace_string(&entry.workspace_cwd) == workspace_cwd);
+        let entry = match entry {
+            Some(entry) => entry,
+            None => {
+                store.workspaces.push(WorkspaceSessionHistoryEntry {
+                    workspace_cwd: workspace_cwd.clone(),
+                    updated_at: now.clone(),
+                    sessions: Vec::new(),
+                });
+                store.workspaces.last_mut().expect("workspace entry inserted")
+            }
+        };
+        entry.updated_at = now.clone();
+        entry.sessions.retain(|entry| entry.session_id != session_id);
+        entry.sessions.insert(
+            0,
+            RecentCodexSessionEntry {
+                session_id: session_id.to_owned(),
+                updated_at: now,
+            },
+        );
+        if entry.sessions.len() > 5 {
+            entry.sessions.truncate(5);
+        }
+        self.write_workspace_session_history_store(&store).await
+    }
+
+    async fn read_workspace_session_history_store(&self) -> Result<WorkspaceSessionHistoryStore> {
+        let path = self.workspace_session_history_path();
+        match fs::read_to_string(&path).await {
+            Ok(content) => Ok(serde_json::from_str(&content)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(WorkspaceSessionHistoryStore {
+                    schema_version: WORKSPACE_SESSION_HISTORY_SCHEMA_VERSION,
+                    workspaces: Vec::new(),
+                })
+            }
+            Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+        }
+    }
+
+    async fn write_workspace_session_history_store(
+        &self,
+        store: &WorkspaceSessionHistoryStore,
+    ) -> Result<()> {
+        let path = self.workspace_session_history_path();
+        fs::write(&path, format!("{}\n", serde_json::to_string_pretty(store)?))
+            .await
+            .with_context(|| format!("failed to write {}", path.display()))
     }
 }
 
@@ -1062,6 +1245,68 @@ mod tests {
         assert_eq!(binding.current_codex_thread_id.as_deref(), Some("thr_cli"));
         assert_eq!(binding.tui_active_codex_thread_id, None);
         assert!(!binding.tui_session_adoption_pending);
+    }
+
+    #[tokio::test]
+    async fn recent_workspace_sessions_track_current_and_tui_activity() {
+        let root = temp_path();
+        let workspace = temp_path();
+        fs::create_dir_all(&workspace).await.unwrap();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+        let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
+        let record = repo
+            .bind_workspace(
+                record,
+                workspace.display().to_string(),
+                "thr_initial".to_owned(),
+            )
+            .await
+            .unwrap();
+        let record = repo
+            .select_session_binding_session(record, "thr_second".to_owned())
+            .await
+            .unwrap();
+        let _ = repo
+            .set_tui_active_session_for_thread_key(&record.metadata.thread_key, "thr_tui")
+            .await
+            .unwrap();
+
+        let sessions = repo
+            .read_recent_workspace_sessions(&workspace.display().to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|entry| entry.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["thr_tui", "thr_second", "thr_initial"]
+        );
+    }
+
+    #[tokio::test]
+    async fn find_active_threads_by_workspace_groups_conflicts() {
+        let root = temp_path();
+        let workspace = temp_path();
+        fs::create_dir_all(&workspace).await.unwrap();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+
+        let first = repo.create_thread(1, 7, "One".to_owned()).await.unwrap();
+        let second = repo.create_thread(1, 8, "Two".to_owned()).await.unwrap();
+        let _ = repo
+            .bind_workspace(first, workspace.display().to_string(), "thr_one".to_owned())
+            .await
+            .unwrap();
+        let _ = repo
+            .bind_workspace(second, workspace.display().to_string(), "thr_two".to_owned())
+            .await
+            .unwrap();
+
+        let records = repo
+            .find_active_threads_by_workspace(&workspace.display().to_string())
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 2);
     }
 
     #[tokio::test]

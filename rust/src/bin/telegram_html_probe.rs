@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    let bot = teloxide::Bot::new(config.telegram_token);
+    let bot = teloxide::Bot::new(config.telegram.telegram_token);
     let chat_id = ChatId(args.chat_id.unwrap_or(selected.chat_id));
     let request = bot
         .send_message(chat_id, selected.html.clone())
