@@ -68,6 +68,13 @@ pre {
   color: var(--muted);
 }
 
+.hint {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.8rem 0.9rem;
+  background: rgba(155, 77, 34, 0.08);
+}
+
 .metric {
   border: 1px solid var(--border);
   border-radius: 12px;

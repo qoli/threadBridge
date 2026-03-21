@@ -133,6 +133,7 @@ pub struct RuntimeHealthView {
     pub app_server_status: &'static str,
     pub tui_proxy_status: &'static str,
     pub handoff_readiness: &'static str,
+    pub recovery_hint: Option<String>,
     pub runtime_owner: RuntimeOwnerStatus,
     pub managed_codex: ManagedCodexView,
 }
@@ -185,6 +186,7 @@ pub struct ManagedWorkspaceView {
     pub runtime_health_source: &'static str,
     pub heartbeat_last_checked_at: Option<String>,
     pub heartbeat_last_error: Option<String>,
+    pub recovery_hint: Option<String>,
     pub hcodex_path: String,
     pub hcodex_available: bool,
     pub recent_codex_sessions: Vec<RecentCodexSessionEntry>,
@@ -769,6 +771,13 @@ impl ManagementApiState {
             Some(owner) => owner.status().await,
             None => RuntimeOwnerStatus::inactive(),
         };
+        let recovery_hint = runtime_recovery_hint(
+            &runtime_owner,
+            workspaces
+                .iter()
+                .map(|workspace| workspace.recovery_hint.as_deref()),
+            workspaces.iter().any(|workspace| workspace.conflict),
+        );
         Ok(RuntimeHealthView {
             management_bind_addr: self.runtime.management_bind_addr.to_string(),
             broken_threads: workspaces
@@ -805,6 +814,7 @@ impl ManagementApiState {
             app_server_status,
             tui_proxy_status,
             handoff_readiness,
+            recovery_hint,
             runtime_owner,
             managed_codex: self.managed_codex_view().await?,
         })
@@ -1117,6 +1127,12 @@ impl ManagementApiState {
                 .await
                 .unwrap_or_default();
             let session_broken = binding.session_broken || record.metadata.session_broken;
+            let recovery_hint = workspace_recovery_hint(
+                false,
+                session_broken,
+                &runtime_status,
+                binding.tui_session_adoption_pending,
+            );
             aggregate.items.push(ManagedWorkspaceView {
                 workspace_cwd: workspace_cwd.clone(),
                 title: record.metadata.title.clone(),
@@ -1135,6 +1151,7 @@ impl ManagementApiState {
                 runtime_health_source: runtime_status.source,
                 heartbeat_last_checked_at: runtime_status.last_checked_at,
                 heartbeat_last_error: runtime_status.last_error,
+                recovery_hint,
                 hcodex_path: hcodex_path.display().to_string(),
                 hcodex_available: hcodex_path.exists(),
                 recent_codex_sessions: recent_sessions,
@@ -1148,6 +1165,19 @@ impl ManagementApiState {
                 for mut item in aggregate.items {
                     item.binding_status = "conflict";
                     item.conflict = true;
+                    item.recovery_hint = workspace_recovery_hint(
+                        true,
+                        item.session_broken,
+                        &WorkspaceRuntimeHealth {
+                            app_server_status: item.app_server_status,
+                            tui_proxy_status: item.tui_proxy_status,
+                            handoff_readiness: item.handoff_readiness,
+                            source: item.runtime_health_source,
+                            last_checked_at: item.heartbeat_last_checked_at.clone(),
+                            last_error: item.heartbeat_last_error.clone(),
+                        },
+                        item.tui_session_adoption_pending,
+                    );
                     views.push(item);
                 }
                 continue;
@@ -1734,6 +1764,78 @@ impl WorkspaceRuntimeHealth {
             last_error: heartbeat.last_error,
         }
     }
+}
+
+fn workspace_recovery_hint(
+    conflict: bool,
+    session_broken: bool,
+    runtime_status: &WorkspaceRuntimeHealth,
+    adoption_pending: bool,
+) -> Option<String> {
+    if conflict {
+        return Some(
+            "Resolve the active workspace binding conflict first. Tray launch stays disabled until only one active binding remains."
+                .to_owned(),
+        );
+    }
+    if runtime_status.app_server_status != "running" {
+        return Some(
+            "App-server is not ready. Run Repair Runtime for this workspace, or Reconcile Runtime Owner for all managed workspaces."
+                .to_owned(),
+        );
+    }
+    if runtime_status.tui_proxy_status != "running" {
+        return Some(
+            "TUI proxy is not ready. Run Repair Runtime for this workspace, or Reconcile Runtime Owner to rebuild proxy state."
+                .to_owned(),
+        );
+    }
+    if adoption_pending || runtime_status.handoff_readiness == "pending_adoption" {
+        return Some(
+            "A live TUI session is waiting for adoption. Adopt TUI from Active Threads, or reject it to keep the original binding."
+                .to_owned(),
+        );
+    }
+    if session_broken {
+        return Some(
+            "Codex continuity is marked broken. Use Reconnect Codex after the runtime surface is healthy."
+                .to_owned(),
+        );
+    }
+    if runtime_status.handoff_readiness == "degraded" {
+        return Some(
+            "Handoff is degraded. Reconcile Runtime Owner or Repair Runtime to restore app-server and proxy continuity."
+                .to_owned(),
+        );
+    }
+    runtime_status
+        .last_error
+        .as_ref()
+        .map(|error| format!("Inspect the latest runtime error before retrying: {error}"))
+}
+
+fn runtime_recovery_hint<'a>(
+    runtime_owner: &RuntimeOwnerStatus,
+    workspace_hints: impl Iterator<Item = Option<&'a str>>,
+    has_conflicts: bool,
+) -> Option<String> {
+    if has_conflicts {
+        return Some(
+            "At least one workspace has multiple active bindings. Resolve conflicts in Managed Workspaces before trusting tray launch actions."
+                .to_owned(),
+        );
+    }
+    if runtime_owner.state == "error" {
+        let suffix = runtime_owner
+            .last_error
+            .as_deref()
+            .map(|error| format!(" Last owner error: {error}"))
+            .unwrap_or_default();
+        return Some(format!(
+            "Desktop runtime owner is unhealthy. Run Reconcile Runtime Owner from this page.{suffix}"
+        ));
+    }
+    workspace_hints.flatten().next().map(|hint| hint.to_owned())
 }
 
 fn aggregate_running_status<'a>(statuses: impl Iterator<Item = &'a str>) -> &'static str {

@@ -31,6 +31,7 @@ function renderWorkspaceCards(items) {
       handoff: <code>${item.handoff_readiness}</code><br />
       owner_checked_at: <code>${item.heartbeat_last_checked_at || 'n/a'}</code><br />
       owner_last_error: <code>${item.heartbeat_last_error || 'none'}</code><br />
+      ${item.recovery_hint ? `<div class="hint" style="margin-top:0.75rem;">${escapeHtml(item.recovery_hint)}</div>` : ''}
       ${item.conflict ? '<strong style="color:var(--accent)">Workspace binding conflict detected. Tray launch is disabled until only one active binding remains.</strong><br />' : ''}
       current: <code>${item.current_codex_thread_id || 'none'}</code><br />
       tui: <code>${item.tui_active_codex_thread_id || 'none'}</code><br />
@@ -95,6 +96,14 @@ function renderHealthSummary(health) {
       <span class="metric-value"><code>${escapeHtml(value)}</code></span>
     </div>
   `).join('');
+  const hint = document.getElementById('runtime-recovery-hint');
+  if (health.recovery_hint) {
+    hint.style.display = 'block';
+    hint.textContent = health.recovery_hint;
+  } else {
+    hint.style.display = 'none';
+    hint.textContent = '';
+  }
 }
 
 function renderThreads(items) {
