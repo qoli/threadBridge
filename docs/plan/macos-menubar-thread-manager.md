@@ -32,6 +32,8 @@
   - 每個 workspace submenu 會列出 `Start New hcodex Session` 與最近 5 個 session id
   - `Settings` 會打開內嵌 webview 並載入本地 management UI
 - managed Codex health 已開始暴露真實 source / binary path / version，且本地管理面可切換 Codex source preference 並同步已綁定 workspace 的 launcher
+- desktop runtime owner 已開始在背景定期 reconcile 已管理 workspace，並提供單 workspace 的 `repair runtime` control action
+- 本地管理面已開始提供 managed Codex cache refresh，能把目前 `PATH` 上的 `codex` 複製進 repo 管理快取
 - Telegram bot 啟動已抽成可複用 runner，headless `threadbridge` 與 desktop runtime 共用同一套 bot/runtime 啟動邏輯
 
 目前仍缺：

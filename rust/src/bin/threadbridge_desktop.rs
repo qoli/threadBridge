@@ -28,6 +28,7 @@ mod macos_app {
         ManagedWorkspaceView, ManagementApiHandle, RuntimeHealthView, SetupStateView,
         spawn_management_api,
     };
+    use threadbridge_rust::runtime_owner::DesktopRuntimeOwner;
 
     #[derive(Debug, Clone)]
     enum UserEvent {
@@ -71,6 +72,7 @@ mod macos_app {
     struct DesktopApp {
         runtime: Arc<Runtime>,
         management_api: ManagementApiHandle,
+        owner: Arc<DesktopRuntimeOwner>,
         tray_icon: Option<TrayIcon>,
         tray_actions: HashMap<MenuId, TrayAction>,
         settings_window: Option<SettingsWindow>,
@@ -95,6 +97,8 @@ mod macos_app {
         let runtime_config = load_runtime_config()?;
         let _guard = init_json_logs(&runtime_config.debug_log_path)?;
         let management_api = runtime.block_on(spawn_management_api(runtime_config.clone()))?;
+        let owner = Arc::new(DesktopRuntimeOwner::new(runtime_config.clone())?);
+        runtime.block_on(management_api.set_runtime_owner(Some((*owner).clone())));
 
         if runtime
             .block_on(spawn_bot_runtime_from_env(management_api.clone()))?
@@ -122,12 +126,18 @@ mod macos_app {
             }
         }));
 
-        spawn_snapshot_poller(runtime.clone(), management_api.clone(), proxy.clone());
+        spawn_snapshot_poller(
+            runtime.clone(),
+            management_api.clone(),
+            owner.clone(),
+            proxy.clone(),
+        );
         let _ = proxy.send_event(UserEvent::Refresh);
 
         let mut app = DesktopApp {
             runtime,
             management_api,
+            owner,
             tray_icon: None,
             tray_actions: HashMap::new(),
             settings_window: None,
@@ -160,6 +170,7 @@ mod macos_app {
                     spawn_refresh_cycle(
                         app.runtime.clone(),
                         app.management_api.clone(),
+                        app.owner.clone(),
                         proxy.clone(),
                     );
                 }
@@ -217,10 +228,12 @@ mod macos_app {
     fn spawn_snapshot_poller(
         runtime: Arc<Runtime>,
         management_api: ManagementApiHandle,
+        owner: Arc<DesktopRuntimeOwner>,
         proxy: EventLoopProxy<UserEvent>,
     ) {
         runtime.spawn(async move {
             loop {
+                reconcile_runtime_owner(&management_api, &owner).await;
                 send_snapshot(&management_api, &proxy).await;
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
@@ -230,10 +243,12 @@ mod macos_app {
     fn spawn_refresh_cycle(
         runtime: Arc<Runtime>,
         management_api: ManagementApiHandle,
+        owner: Arc<DesktopRuntimeOwner>,
         proxy: EventLoopProxy<UserEvent>,
     ) {
         runtime.spawn(async move {
             maybe_start_bot_runtime(&management_api).await;
+            reconcile_runtime_owner(&management_api, &owner).await;
             send_snapshot(&management_api, &proxy).await;
         });
     }
@@ -272,6 +287,30 @@ mod macos_app {
         }
         if let Err(error) = spawn_bot_runtime_from_env(management_api.clone()).await {
             warn!(event = "desktop_runtime.bot.auto_start_failed", error = %error);
+        }
+    }
+
+    async fn reconcile_runtime_owner(
+        management_api: &ManagementApiHandle,
+        owner: &DesktopRuntimeOwner,
+    ) {
+        let Ok(workspaces) = management_api.workspace_views().await else {
+            return;
+        };
+        let targets = workspaces
+            .into_iter()
+            .filter(|workspace| !workspace.conflict)
+            .map(|workspace| workspace.workspace_cwd)
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            return;
+        }
+        if let Err(error) = owner.reconcile_managed_workspaces(targets).await {
+            warn!(
+                event = "desktop_runtime.owner.reconcile.failed",
+                error = %error,
+                "desktop runtime owner reconciliation failed"
+            );
         }
     }
 

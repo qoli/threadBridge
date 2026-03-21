@@ -168,10 +168,12 @@ v1 至少定義：
 - `POST /api/workspaces/:thread_key/reconnect`
 - `POST /api/workspaces/:thread_key/launch-new`
 - `POST /api/workspaces/:thread_key/launch-resume`
+- `POST /api/workspaces/:thread_key/repair-runtime`
 - `POST /api/threads/:thread_key/archive`
 - `POST /api/threads/:thread_key/restore`
 - `PUT /api/setup/telegram`
 - `POST /api/managed-codex/preference`
+- `POST /api/managed-codex/refresh-cache`
 
 ## 建議的 event model
 

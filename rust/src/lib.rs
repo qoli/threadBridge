@@ -9,6 +9,7 @@ pub mod local_control;
 pub mod logging;
 pub mod management_api;
 pub mod repository;
+pub mod runtime_owner;
 pub mod telegram_probe;
 pub mod telegram_runtime;
 pub mod tool_results;

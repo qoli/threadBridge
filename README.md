@@ -67,6 +67,7 @@ scripts/local_threadbridge.sh restart --codex-source source
 - `hcodex` is the managed local TUI path. It resolves the workspace daemon from `.threadbridge/state/app-server/current.json` and launches `codex --remote ...`.
 - The local management API defaults to `http://127.0.0.1:38420` and can be changed with `THREADBRIDGE_MANAGEMENT_BIND_ADDR`.
 - On macOS, the tray menu lists one submenu per managed workspace, `Start New hcodex Session`, and the recent 5 session IDs for resume.
+- The local management UI can repair a workspace runtime and refresh the managed Codex cache from the current `codex` on `PATH`.
 
 ## Runtime Layout
 

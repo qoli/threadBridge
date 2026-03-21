@@ -21,6 +21,7 @@ use crate::app_server_runtime::WorkspaceRuntimeState;
 use crate::config::{RuntimeConfig, load_optional_telegram_config};
 use crate::local_control::LocalControlHandle;
 use crate::repository::{RecentCodexSessionEntry, ThreadRepository};
+use crate::runtime_owner::DesktopRuntimeOwner;
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 use crate::workspace_status::{read_cli_owner_claim, read_workspace_aggregate_status};
 
@@ -49,6 +50,11 @@ impl ManagementApiHandle {
     pub async fn set_local_control(&self, control: Option<LocalControlHandle>) {
         let mut current = self.state.local_control.write().await;
         *current = control;
+    }
+
+    pub async fn set_runtime_owner(&self, owner: Option<DesktopRuntimeOwner>) {
+        let mut current = self.state.runtime_owner.write().await;
+        *current = owner;
     }
 
     pub async fn setup_state(&self) -> Result<SetupStateView> {
@@ -88,6 +94,7 @@ struct ManagementApiState {
     repository: ThreadRepository,
     telegram_polling_state: Arc<RwLock<TelegramPollingState>>,
     local_control: Arc<RwLock<Option<LocalControlHandle>>>,
+    runtime_owner: Arc<RwLock<Option<DesktopRuntimeOwner>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -219,6 +226,13 @@ struct UpdateManagedCodexPreferenceResponse {
     synced_workspaces: usize,
 }
 
+#[derive(Debug, Serialize)]
+struct RefreshManagedCodexCacheResponse {
+    updated: bool,
+    binary_path: String,
+    version: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct CreateThreadRequest {
     title: Option<String>,
@@ -248,6 +262,7 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         repository,
         telegram_polling_state: Arc::new(RwLock::new(TelegramPollingState::Disconnected)),
         local_control: Arc::new(RwLock::new(None)),
+        runtime_owner: Arc::new(RwLock::new(None)),
     });
     let bind_addr = runtime.management_bind_addr;
     let listener = TcpListener::bind(bind_addr)
@@ -261,6 +276,10 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         .route(
             "/api/managed-codex/preference",
             post(post_update_managed_codex_preference),
+        )
+        .route(
+            "/api/managed-codex/refresh-cache",
+            post(post_refresh_managed_codex_cache),
         )
         .route("/api/runtime-health", get(get_runtime_health))
         .route("/api/workspaces", get(get_workspaces))
@@ -281,6 +300,10 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         .route(
             "/api/workspaces/:thread_key/reconnect",
             post(post_reconnect_codex),
+        )
+        .route(
+            "/api/workspaces/:thread_key/repair-runtime",
+            post(post_repair_workspace_runtime),
         )
         .route(
             "/api/workspaces/:thread_key/launch-new",
@@ -364,6 +387,7 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
           <option value="source">source</option>
         </select>
         <button class="secondary" onclick="updateManagedCodexPreference()">Apply Codex Source</button>
+        <button class="secondary" onclick="refreshManagedCodexCache()">Refresh Managed Cache</button>
         <span id="managed-codex-status" class="muted"></span>
       </div>
       <pre id="health">loading...</pre>
@@ -420,6 +444,7 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
           <div style="margin-top:0.75rem;">
             <button onclick="launchNew('${{item.thread_key}}')">Launch New</button>
             <button class="secondary" onclick="reconnectCodex('${{item.thread_key}}')">Reconnect Codex</button>
+            <button class="secondary" onclick="repairRuntime('${{item.thread_key}}')">Repair Runtime</button>
             <button onclick="showLaunchConfig('${{item.thread_key}}')">Show Launch Commands</button>
             <button onclick="archiveThread('${{item.thread_key}}')">Archive</button>
           </div>
@@ -513,6 +538,15 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
       }}
       await refresh();
     }}
+    async function repairRuntime(threadKey) {{
+      const response = await fetch(`/api/workspaces/${{threadKey}}/repair-runtime`, {{ method: 'POST' }});
+      const data = await response.json();
+      if (!response.ok) {{
+        alert(data.error || 'Runtime repair failed');
+        return;
+      }}
+      await refresh();
+    }}
     async function bindWorkspace(threadKey) {{
       const workspace = document.getElementById(`bind-${{threadKey}}`).value.trim();
       const response = await fetch(`/api/threads/${{threadKey}}/bind-workspace`, {{
@@ -593,6 +627,20 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
       status.textContent = `Applied. Synced ${{data.synced_workspaces}} workspaces.`;
       await refresh();
     }}
+    async function refreshManagedCodexCache() {{
+      const status = document.getElementById('managed-codex-status');
+      status.textContent = 'Refreshing cache...';
+      const response = await fetch('/api/managed-codex/refresh-cache', {{
+        method: 'POST',
+      }});
+      const data = await response.json();
+      if (!response.ok) {{
+        status.textContent = data.error || 'Refresh failed';
+        return;
+      }}
+      status.textContent = `Cache refreshed: ${{data.version || data.binary_path}}`;
+      await refresh();
+    }}
     document.getElementById('setup-form').addEventListener('submit', async event => {{
       event.preventDefault();
       const status = document.getElementById('setup-status');
@@ -658,6 +706,12 @@ async fn post_update_managed_codex_preference(
     ))
 }
 
+async fn post_refresh_managed_codex_cache(
+    State(state): State<Arc<ManagementApiState>>,
+) -> Result<Json<RefreshManagedCodexCacheResponse>, ManagementApiError> {
+    Ok(Json(state.refresh_managed_codex_cache().await?))
+}
+
 async fn get_runtime_health(
     State(state): State<Arc<ManagementApiState>>,
 ) -> Result<Json<RuntimeHealthView>, ManagementApiError> {
@@ -718,6 +772,13 @@ async fn post_reconnect_codex(
     AxumPath(thread_key): AxumPath<String>,
 ) -> Result<Json<ThreadMutationResponse>, ManagementApiError> {
     Ok(Json(state.reconnect_codex(&thread_key).await?))
+}
+
+async fn post_repair_workspace_runtime(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+) -> Result<Json<ThreadMutationResponse>, ManagementApiError> {
+    Ok(Json(state.repair_workspace_runtime(&thread_key).await?))
 }
 
 async fn post_launch_workspace_new(
@@ -915,6 +976,42 @@ impl ManagementApiState {
             updated: true,
             source: source.as_str().to_owned(),
             synced_workspaces,
+        })
+    }
+
+    async fn refresh_managed_codex_cache(&self) -> Result<RefreshManagedCodexCacheResponse> {
+        let source_binary = resolve_codex_from_path().await?;
+        let dest_path = self
+            .runtime
+            .codex_working_directory
+            .join(MANAGED_CODEX_CACHE_BINARY);
+        if let Some(parent) = dest_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        tokio::fs::copy(&source_binary, &dest_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to copy managed Codex cache from {} to {}",
+                    source_binary.display(),
+                    dest_path.display()
+                )
+            })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = tokio::fs::metadata(&dest_path).await?;
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o755);
+            tokio::fs::set_permissions(&dest_path, permissions).await?;
+        }
+        let version = read_codex_version(&dest_path).await.ok();
+        Ok(RefreshManagedCodexCacheResponse {
+            updated: true,
+            binary_path: dest_path.display().to_string(),
+            version,
         })
     }
 
@@ -1140,6 +1237,23 @@ impl ManagementApiState {
         Ok(ThreadMutationResponse {
             ok: true,
             thread_key: record.metadata.thread_key,
+        })
+    }
+
+    async fn repair_workspace_runtime(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
+        let owner = self
+            .runtime_owner
+            .read()
+            .await
+            .clone()
+            .context("desktop runtime owner is not active")?;
+        let config = self.workspace_launch_config(thread_key).await?;
+        let _ = owner
+            .reconcile_managed_workspaces([config.workspace_cwd.as_str()])
+            .await?;
+        Ok(ThreadMutationResponse {
+            ok: true,
+            thread_key: thread_key.to_owned(),
         })
     }
 
@@ -1441,20 +1555,7 @@ async fn resolve_managed_codex_binary_path(
         ManagedCodexSourcePreference::Source => {
             Ok(Some(repo_root.join(MANAGED_CODEX_CACHE_BINARY)))
         }
-        ManagedCodexSourcePreference::Brew => {
-            let output = Command::new("/bin/sh")
-                .arg("-lc")
-                .arg("command -v codex 2>/dev/null || true")
-                .output()
-                .await
-                .context("failed to resolve codex from PATH")?;
-            let resolved = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            if resolved.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(Path::new(&resolved).to_path_buf()))
-            }
-        }
+        ManagedCodexSourcePreference::Brew => Ok(resolve_codex_from_path().await.ok()),
     }
 }
 
@@ -1474,6 +1575,20 @@ async fn read_codex_version(binary_path: &Path) -> Result<String> {
         ));
     }
     Ok(version)
+}
+
+async fn resolve_codex_from_path() -> Result<std::path::PathBuf> {
+    let output = Command::new("/bin/sh")
+        .arg("-lc")
+        .arg("command -v codex 2>/dev/null || true")
+        .output()
+        .await
+        .context("failed to resolve codex from PATH")?;
+    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if resolved.is_empty() {
+        return Err(anyhow!("could not find `codex` on PATH"));
+    }
+    Ok(Path::new(&resolved).to_path_buf())
 }
 
 #[derive(Debug)]
