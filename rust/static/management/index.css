@@ -1,0 +1,78 @@
+:root {
+  color-scheme: light;
+  --bg: #f4efe6;
+  --panel: #fffaf2;
+  --text: #1f1a14;
+  --muted: #6b6258;
+  --border: #d8cbb7;
+  --accent: #9b4d22;
+}
+
+body {
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+  margin: 2rem;
+  line-height: 1.45;
+  color: var(--text);
+  background: radial-gradient(circle at top right, #fffdf9 0%, var(--bg) 60%);
+}
+
+h1,
+h2 {
+  margin-bottom: 0.4rem;
+}
+
+pre {
+  background: #f7f1e8;
+  padding: 1rem;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 1rem;
+  background: var(--panel);
+  box-shadow: 0 18px 40px rgba(82, 58, 34, 0.06);
+}
+
+.toolbar {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+button {
+  background: var(--accent);
+  color: white;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.55rem 0.9rem;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+}
+
+input,
+select {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  background: white;
+}

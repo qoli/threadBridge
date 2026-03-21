@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use async_stream::stream;
 use axum::extract::{Path as AxumPath, State};
+use axum::http::header;
 use axum::response::sse::{Event, KeepAlive};
 use axum::response::{Html, IntoResponse, Sse};
 use axum::routing::{get, post, put};
@@ -31,6 +32,8 @@ const MANAGED_CODEX_CACHE_BINARY: &str = ".threadbridge/codex/codex";
 const MANAGED_CODEX_BUILD_INFO_FILE: &str = ".threadbridge/codex/build-info.txt";
 const MANAGED_CODEX_BUILD_CONFIG_FILE: &str = ".threadbridge/codex/build-config.json";
 const MANAGEMENT_UI_HTML: &str = include_str!("../static/management/index.html");
+const MANAGEMENT_UI_CSS: &str = include_str!("../static/management/index.css");
+const MANAGEMENT_UI_JS: &str = include_str!("../static/management/index.js");
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -362,6 +365,8 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
     let base_url = format!("http://{}", listener.local_addr()?);
     let router = Router::new()
         .route("/", get(index))
+        .route("/assets/management.css", get(management_css))
+        .route("/assets/management.js", get(management_js))
         .route("/api/setup", get(get_setup))
         .route("/api/setup/telegram", put(put_telegram_setup))
         .route(
@@ -454,6 +459,23 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
         &state.runtime.management_bind_addr.to_string(),
     );
     Html(html)
+}
+
+async fn management_css() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        MANAGEMENT_UI_CSS,
+    )
+}
+
+async fn management_js() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        MANAGEMENT_UI_JS,
+    )
 }
 
 async fn get_setup(
