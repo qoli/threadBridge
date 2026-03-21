@@ -42,6 +42,8 @@ cargo run --bin threadbridge_desktop
 Or use the local helper script:
 
 ```bash
+scripts/local_threadbridge.sh build
+scripts/local_threadbridge.sh build --codex-source source
 scripts/local_threadbridge.sh start
 scripts/local_threadbridge.sh restart --codex-source brew
 scripts/local_threadbridge.sh restart --codex-source source
@@ -51,6 +53,7 @@ scripts/local_threadbridge.sh restart --codex-source source
 
 - `brew`: prefer the system `codex` on `PATH`, with the managed copy as fallback.
 - `source`: build `codex-cli` from the local Codex source tree and cache it under `.threadbridge/codex/codex`, then prefer that managed copy.
+- `scripts/local_threadbridge.sh build` now builds the local runtime binaries ahead of time; on macOS it builds both `threadbridge` and `threadbridge_desktop`.
 
 ## Behavior
 

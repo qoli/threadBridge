@@ -29,6 +29,7 @@ usage() {
 Usage: local_threadbridge.sh <command> [--codex-source brew|source]
 
 Commands:
+  build
   start
   stop
   restart
@@ -171,19 +172,28 @@ require_command() {
   fi
 }
 
-binary_path() {
+profile_output_dir() {
   case "$BUILD_PROFILE" in
     dev)
-      printf '%s\n' "$CARGO_TARGET_DIR_PATH/debug/threadbridge"
+      printf '%s\n' "$CARGO_TARGET_DIR_PATH/debug"
       ;;
     release)
-      printf '%s\n' "$CARGO_TARGET_DIR_PATH/release/threadbridge"
+      printf '%s\n' "$CARGO_TARGET_DIR_PATH/release"
       ;;
     *)
       printf 'Unsupported BUILD_PROFILE: %s\n' "$BUILD_PROFILE" >&2
       exit 1
       ;;
   esac
+}
+
+binary_path() {
+  local bin_name=${1:?missing bin name}
+  printf '%s/%s\n' "$(profile_output_dir)" "$bin_name"
+}
+
+should_build_desktop() {
+  [[ "$(uname -s)" == "Darwin" ]]
 }
 
 tmux_session_name() {
@@ -221,20 +231,47 @@ ensure_env() {
   fi
 }
 
-build_bot() {
-  log "building threadbridge binaries ($BUILD_PROFILE)"
+build_runtime_binaries() {
+  local build_args=(build)
+  if [[ "$BUILD_PROFILE" == "release" ]]; then
+    build_args+=(--release)
+  fi
+  build_args+=(--bin threadbridge)
+  if should_build_desktop; then
+    build_args+=(--bin threadbridge_desktop)
+  fi
+
+  log "building threadbridge runtime binaries ($BUILD_PROFILE)"
   (
     cd "$REPO_ROOT"
     export PATH="$RUNTIME_PATH"
     export CARGO_HOME="$CARGO_HOME_DIR"
     export CARGO_TARGET_DIR="$CARGO_TARGET_DIR_PATH"
     export RUSTUP_HOME="$RUSTUP_HOME_DIR"
-    if [[ "$BUILD_PROFILE" == "release" ]]; then
-      cargo build --release --bin threadbridge
-    else
-      cargo build --bin threadbridge
-    fi
+    cargo "${build_args[@]}"
   )
+
+  log "built binary: $(binary_path threadbridge)"
+  if should_build_desktop; then
+    log "built binary: $(binary_path threadbridge_desktop)"
+  fi
+}
+
+build_local() {
+  local codex_source=${1:-}
+  ensure_layout
+  require_command cargo
+
+  codex_source=$(resolve_codex_source "$codex_source")
+  write_codex_source_preference "$codex_source"
+
+  if [[ "$codex_source" == "source" ]]; then
+    ensure_source_codex_binary
+  else
+    log "using brew/system codex as primary local CLI source"
+  fi
+
+  build_runtime_binaries
 }
 
 start_bot() {
@@ -252,10 +289,10 @@ start_bot() {
   else
     log "using brew/system codex as primary local CLI source"
   fi
-  build_bot
+  build_runtime_binaries
 
   local bot_binary
-  bot_binary=$(binary_path)
+  bot_binary=$(binary_path threadbridge)
   if [[ ! -x "$bot_binary" ]]; then
     printf 'Missing built binary: %s\n' "$bot_binary" >&2
     exit 1
@@ -377,6 +414,9 @@ main() {
     shift
   done
   case "$command" in
+    build)
+      build_local "$codex_source"
+      ;;
     start)
       start_bot "$codex_source"
       ;;
