@@ -39,6 +39,7 @@
   - shared app-server daemon、`./.threadbridge/bin/hcodex`、TUI proxy、mirror、adoption、auto-adopt 已落地
   - `/attach_cli_session`、viewer handoff、attach-intent、hooks-based CLI sync、`.cli/.attach` title 已退場
   - owner 責任收斂目前應視為高優先級工作
+  - 它同時也是 Telegram 退回通用 adapter 模式的前置條件
   - 目前新增確認的缺口是 desktop runtime owner 尚未完全收斂；`hcodex` self-heal 目前仍只是 fallback，bot 重寫出的 ws state 也仍可能 stale
   - local management API 與無 Telegram 憑據先啟動的 groundwork 已開始落地
   - 剩餘工作主要是 runtime ownership 與本地管理面收尾
@@ -70,8 +71,10 @@
   - appendix 注入可選化草稿
 - [runtime-transport-abstraction.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-transport-abstraction.md)
   - core runtime / adapter 抽象化草稿
+  - owner 收斂應視為這條抽象化路線的高優先級前置工作
 - [telegram-adapter-migration.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-adapter-migration.md)
   - Telegram adapter 遷移草稿
+  - owner authority 應先從 Telegram 路徑抽離，再做更完整的 adapter migration
 
 ## 主規格
 

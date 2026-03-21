@@ -31,6 +31,15 @@
 - 再搬責任
 - 最後做第二個 adapter 驗證
 
+目前新增確認的一點是：
+
+- owner 責任收斂應先於更完整的 Telegram adapter 遷移
+
+原因是：
+
+- 只要 Telegram 路徑仍掌握 shared runtime 的 ensure / repair authority，它就還不是純 adapter
+- adapter migration 若早於 owner 收斂，最後只會把 Telegram-specific code 挪位置，而不是改變核心責任分配
+
 不建議一開始就：
 
 - 先做完整 custom app
@@ -66,7 +75,19 @@
 
 這一階段的成果應該是一張責任表，而不是立即重構。
 
-### Phase 2：定義 Telegram Adapter 邊界
+### Phase 2：先收斂 owner authority
+
+在更完整的 adapter migration 之前，先把 shared runtime 的 owner 責任收斂。
+
+至少應先回答：
+
+- 誰能正式 ensure / repair app-server
+- 誰能正式 ensure / rebuild TUI proxy
+- 哪些路徑只能讀 owner state，而不能自行補拉 runtime
+
+這一步的目標不是 UI 遷移，而是把 runtime authority 從 Telegram 路徑抽出去。
+
+### Phase 3：定義 Telegram Adapter 邊界
 
 為 Telegram 明確建立 adapter 語意。
 
@@ -84,7 +105,7 @@ core runtime 應負責：
 - 控制 Codex thread
 - 發出 preview / tool / final / error 事件
 
-### Phase 3：收斂平台專用 renderer
+### Phase 4：收斂平台專用 renderer
 
 把 Telegram-specific 表示層都集中。
 
@@ -97,7 +118,7 @@ core runtime 應負責：
 
 這樣 custom app 未來才不需要重用 Telegram 表示層。
 
-### Phase 4：做第二個最小 adapter
+### Phase 5：做第二個最小 adapter
 
 不需要直接做完整產品級 custom app。
 
@@ -112,7 +133,7 @@ core runtime 應負責：
 - core runtime 是否真的不依賴 Telegram
 - protocol 是否足夠支撐另一個 client
 
-### Phase 5：再決定 custom app 的正式形態
+### Phase 6：再決定 custom app 的正式形態
 
 當第二個 adapter 跑通後，再決定：
 
@@ -127,6 +148,8 @@ core runtime 應負責：
 
 - [session-lifecycle.md](/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md)
   - 決定 core runtime 的 thread / binding 模型
+- [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md)
+  - owner 收斂是把 Telegram 去 owner 化、退回 adapter 的前置條件
 - [codex-busy-input-gate.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md)
   - busy gate 應該是 core 語意，不是 Telegram-only 行為
 - [telegram-markdown-adaptation.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md)
@@ -166,7 +189,8 @@ core runtime 應負責：
 
 ## 建議的下一步
 
-1. 先列一份目前 Telegram-only 行為清單。
-2. 把 command、preview、renderer、title update 分別標記為 adapter 或 core。
-3. 定義最小 protocol 後，讓 Telegram 先改走新邊界。
-4. 做一個最小第二 adapter 驗證整個抽象。
+1. 先把 owner authority 從 Telegram / `hcodex` 路徑中收斂出來。
+2. 再列一份目前 Telegram-only 行為清單。
+3. 把 command、preview、renderer、title update 分別標記為 adapter 或 core。
+4. 定義最小 protocol 後，讓 Telegram 先改走新邊界。
+5. 做一個最小第二 adapter 驗證整個抽象。

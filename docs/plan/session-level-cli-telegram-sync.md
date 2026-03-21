@@ -29,6 +29,7 @@
 - 它會直接影響 shared runtime 是否可靠
 - 也會直接影響 reconnect、self-heal、handoff continuity、runtime health 與 mirror 這些能力的語義是否可信
 - 若 owner 邊界不先收斂，其他上層功能很容易繼續建立在過渡性行為上
+- 它同時也是把 Telegram 從 runtime core 收斂成通用 adapter 的前置條件
 
 ## 現況定位
 
@@ -150,6 +151,10 @@ tray menu 需要每個 workspace 最近 5 個 Codex `thread.id`。
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
   - 定義管理面應使用的 view / action 命名
   - 之後若 mirror 要承接 Plan / Tool 文本，應由 protocol 定義事件粒度，而不是只留在 Telegram mirror helper 內部
+- [runtime-transport-abstraction.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-transport-abstraction.md)
+  - owner 責任若不先收斂，Telegram 很難真正退回成單純 transport adapter
+- [telegram-adapter-migration.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-adapter-migration.md)
+  - owner 收斂應先於更完整的 Telegram adapter 遷移，否則 Telegram 仍會保有 runtime authority
 
 ## 下一步
 
@@ -157,3 +162,4 @@ tray menu 需要每個 workspace 最近 5 個 Codex `thread.id`。
 2. 讓本地 management API 成為正式 query / control surface。
 3. 讓 `hcodex` 的 self-heal 逐步收斂成 fallback。
 4. 明確補上 mirror 對 Plan / Tool 過程文本的事件與顯示語義。
+5. 在 owner 去 Telegram 化之後，再推進更完整的 transport / adapter 抽象。

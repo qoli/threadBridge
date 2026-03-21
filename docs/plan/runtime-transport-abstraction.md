@@ -8,6 +8,7 @@
 
 - workspace status 與 title watcher 已經開始把 Telegram UI 和 runtime 狀態分開
 - final reply renderer 已經有比較清楚的 Telegram 表示層
+- desktop runtime owner / local management API 已開始把 machine-level control 從 Telegram thread 流程抽離
 
 但整體上 `threadBridge` 目前仍然是 Telegram-first 結構。
 
@@ -37,6 +38,16 @@
 ## 方向
 
 把 `threadBridge` 的核心責任收斂成一個和 transport 無關的 runtime。
+
+目前新增確認的一點是：
+
+- owner 責任收斂應視為這條抽象化路線的高優先級前置工作
+
+原因是：
+
+- 只要 Telegram runtime、`hcodex` 或其他 surface 仍能各自補拉 shared runtime，它們就還帶著 runtime authority
+- 在 owner authority 尚未收斂前，Telegram 很難真正退回成單純的 adapter
+- 若先做表面上的 adapter 化，最後很容易只是在 Telegram 型別外再包一層皮
 
 新的產品心智模型應該是：
 
@@ -105,6 +116,7 @@ runtime 對 adapter 應該提供穩定語意，而不是平台特定 callback：
 
 責任：
 
+- runtime ownership
 - thread state machine
 - workspace binding 驗證
 - Codex app-server thread create / resume / reset / reconnect
@@ -157,6 +169,8 @@ runtime 對 adapter 應該提供穩定語意，而不是平台特定 callback：
   - 偏向 adapter，但目前可能仍摻雜一些核心流程假設
 - `rust/src/bin/threadbridge.rs`
   - 目前像是 Telegram app 的 entrypoint，未來應更像 adapter-specific launcher
+- `rust/src/runtime_owner.rs`
+  - 應逐步成為 machine-level runtime authority，而不是只是一個額外的 repair helper
 
 ## 建議的重構語言
 
@@ -194,6 +208,7 @@ runtime 對 adapter 應該提供穩定語意，而不是平台特定 callback：
 - 如果抽象做得太早、太大，可能會把現有 Telegram 流程打散
 - 如果協議語意沒有先固定，adapter 化只會變成把 Telegram 型別包一層皮
 - 如果 core 仍偷偷依賴 Telegram 特性，第二個 adapter 很快就會暴露問題
+- 如果 owner 沒先收斂，所謂的 adapter 化很容易停留在「Telegram UI 被抽出去」，但 runtime authority 仍在 Telegram path 裡
 
 ## 開放問題
 
@@ -204,7 +219,8 @@ runtime 對 adapter 應該提供穩定語意，而不是平台特定 callback：
 
 ## 建議的下一步
 
-1. 先明確列出目前 `telegram_runtime/` 內哪些責任應搬到 core。
-2. 定義一組最小 runtime event 與 input request 型別。
-3. 先把 Telegram renderer / command router 收斂到 adapter 邊界。
-4. 實作第二個最小 adapter 來驗證抽象，而不是只停留在理論上。
+1. 先把 runtime owner authority 從 Telegram / `hcodex` 路徑中收斂出來。
+2. 再明確列出目前 `telegram_runtime/` 內哪些責任應搬到 core。
+3. 定義一組最小 runtime event 與 input request 型別。
+4. 先把 Telegram renderer / command router 收斂到 adapter 邊界。
+5. 實作第二個最小 adapter 來驗證抽象，而不是只停留在理論上。
