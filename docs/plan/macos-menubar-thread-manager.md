@@ -35,6 +35,7 @@
 - `Settings` 會打開內嵌 webview 並載入本地 management UI
 - managed Codex health 已開始暴露真實 source / binary path / version，且本地管理面可切換 Codex source preference 並同步已綁定 workspace 的 launcher
 - desktop runtime owner 已開始在背景定期 reconcile 已管理 workspace，並主動 ensure shared app-server 與 TUI proxy；同時也提供單 workspace 的 `repair runtime` control action
+- 本地管理面已開始提供 machine-level 的 runtime owner reconcile action，可一次對所有非 conflict workspace 做全域 repair / ensure
 - 本地管理面已開始提供 managed Codex cache refresh，能把目前 `PATH` 上的 `codex` 複製進 repo 管理快取
 - 本地管理面已開始提供 managed Codex source build，可直接從本機 Codex Rust workspace 建出受管 binary 並寫入 build info
 - managed Codex source build 已開始把 default source repo / source rs dir / build profile 暴露進 management view，且本地 UI 可在每次 build 時顯式覆蓋
@@ -151,6 +152,7 @@ web 管理面中的 v1 action 以既有 lifecycle/control 語義為主：
 - create thread
 - bind workspace
 - open workspace
+- reconcile runtime owner
 - adopt pending TUI handoff
 - reject pending TUI handoff
 - launch new `hcodex`

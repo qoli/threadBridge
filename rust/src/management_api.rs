@@ -269,6 +269,13 @@ struct UpdateTelegramSetupResponse {
     restart_required: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct ReconcileRuntimeOwnerResponse {
+    ok: bool,
+    report: crate::runtime_owner::RuntimeOwnerReconcileReport,
+    status: RuntimeOwnerStatus,
+}
+
 #[derive(Debug, Deserialize)]
 struct UpdateManagedCodexPreferenceRequest {
     source: String,
@@ -387,6 +394,10 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
             post(post_update_managed_codex_build_defaults),
         )
         .route("/api/runtime-health", get(get_runtime_health))
+        .route(
+            "/api/runtime-owner/reconcile",
+            post(post_reconcile_runtime_owner),
+        )
         .route("/api/threads", get(get_threads).post(post_create_thread))
         .route("/api/workspaces", get(get_workspaces))
         .route("/api/archived-threads", get(get_archived_threads))
@@ -492,8 +503,14 @@ async fn put_telegram_setup(
     state.write_telegram_setup(payload).await?;
     Ok(Json(UpdateTelegramSetupResponse {
         saved: true,
-        restart_required: true,
+        restart_required: state.restart_required_after_setup_save().await,
     }))
+}
+
+async fn post_reconcile_runtime_owner(
+    State(state): State<Arc<ManagementApiState>>,
+) -> Result<Json<ReconcileRuntimeOwnerResponse>, ManagementApiError> {
+    Ok(Json(state.reconcile_runtime_owner().await?))
 }
 
 async fn post_update_managed_codex_preference(
@@ -691,6 +708,10 @@ impl ManagementApiState {
             .context("Telegram bot runtime is not active. Configure credentials and start the desktop runtime first.")
     }
 
+    async fn restart_required_after_setup_save(&self) -> bool {
+        self.runtime_owner.read().await.is_none()
+    }
+
     async fn setup_state(&self) -> Result<SetupStateView> {
         let telegram = load_optional_telegram_config()?;
         let main_thread = self.repository.find_main_thread().await?;
@@ -714,7 +735,7 @@ impl ManagementApiState {
                 .unwrap_or_default(),
             telegram_polling_state: *self.telegram_polling_state.read().await,
             management_base_url: format!("http://{}", self.runtime.management_bind_addr),
-            restart_required_after_setup_save: true,
+            restart_required_after_setup_save: self.restart_required_after_setup_save().await,
             control_chat_ready: main_thread.is_some(),
             control_chat_id: main_thread.map(|record| record.metadata.chat_id),
         })
@@ -1361,6 +1382,29 @@ impl ManagementApiState {
         Ok(ThreadMutationResponse {
             ok: true,
             thread_key: thread_key.to_owned(),
+        })
+    }
+
+    async fn reconcile_runtime_owner(&self) -> Result<ReconcileRuntimeOwnerResponse> {
+        let owner = self
+            .runtime_owner
+            .read()
+            .await
+            .clone()
+            .context("desktop runtime owner is not active")?;
+        let targets = self
+            .workspace_views()
+            .await?
+            .into_iter()
+            .filter(|workspace| !workspace.conflict)
+            .map(|workspace| workspace.workspace_cwd)
+            .collect::<Vec<_>>();
+        let report = owner.reconcile_managed_workspaces(targets).await?;
+        let status = owner.status().await;
+        Ok(ReconcileRuntimeOwnerResponse {
+            ok: true,
+            report,
+            status,
         })
     }
 

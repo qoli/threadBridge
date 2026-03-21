@@ -168,6 +168,7 @@ v1 至少定義：
 - `create_thread`
 - `bind_workspace`
 - `reconnect_codex`
+- `reconcile_runtime_owner`
 - `open_workspace`
 - `adopt_tui_session`
 - `reject_tui_session`

@@ -350,6 +350,23 @@ async function refreshManagedCodexCache() {
   await refresh();
 }
 
+async function reconcileRuntimeOwner() {
+  const status = document.getElementById('managed-codex-status');
+  status.textContent = 'Reconciling runtime owner...';
+  const response = await fetch('/api/runtime-owner/reconcile', {
+    method: 'POST',
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    status.textContent = data.error || 'Runtime owner reconcile failed';
+    return;
+  }
+  status.textContent =
+    `Reconciled ${data.report?.scanned_workspaces ?? 0} workspaces. ` +
+    `Owner state: ${data.status?.state || 'unknown'}.`;
+  await refresh();
+}
+
 async function buildManagedCodexSource() {
   const status = document.getElementById('managed-codex-status');
   status.textContent = 'Building source Codex...';
@@ -415,7 +432,9 @@ document.getElementById('setup-form').addEventListener('submit', async event => 
     return;
   }
   document.getElementById('telegram-token').value = '';
-  status.textContent = data.restart_required ? 'Saved. Restart required.' : 'Saved.';
+  status.textContent = data.restart_required
+    ? 'Saved. Restart required before polling can start.'
+    : 'Saved. Desktop runtime will retry polling automatically.';
   await refresh();
 });
 
