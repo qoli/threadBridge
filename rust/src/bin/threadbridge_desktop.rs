@@ -233,6 +233,7 @@ mod macos_app {
     ) {
         runtime.spawn(async move {
             loop {
+                maybe_start_bot_runtime(&management_api).await;
                 reconcile_runtime_owner(&management_api, &owner).await;
                 send_snapshot(&management_api, &proxy).await;
                 tokio::time::sleep(Duration::from_secs(3)).await;
