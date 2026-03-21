@@ -133,6 +133,7 @@ preview draft surface。
 - `running` 階段的 `ReplyKeyboardMarkup`
 - turn 結束時的 `ReplyKeyboardRemove`
 - `STOP ai 回應` 這類 control action
+- 之後若 secondary LLM guidance 落地，`AI 建議` inline buttons 也可能屬於這一類 surface
 
 ### `edit`
 
@@ -192,6 +193,22 @@ preview draft surface。
 - 「有一批圖片待分析」是狀態提示，不是最終內容
 - 「直接分析 / 取消這批圖片」是使用者可採取的動作
 - 同一則 Telegram 訊息後續從 pending 改成 canceled / analyzed，應被視為 edit lifecycle，而不是新 content
+
+### AI Guidance Inline Buttons
+
+若之後 secondary LLM 要把 `AI 建議` 先以 inline button 形式提供給用戶，這一類 payload 比較接近：
+
+- `control`
+
+而不是單純：
+
+- `content`
+
+原因是：
+
+- 第一段目標是讓使用者挑選、展開或採納建議
+- 不是直接把完整 guidance 文本混進主回覆
+- 它比較像「可採取的 suggestion surface」
 
 ## Ordering 規則
 

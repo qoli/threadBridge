@@ -18,6 +18,11 @@
 - 「AI 建議」如何送回用戶的正式規格
 - 「AI 目標」如何持久化、作用於 thread / workspace、以及如何影響 Codex 互動
 
+目前新增確認的一個收斂方向是：
+
+- `AI 建議` 的 delivery 應拆成分段模式，而不是只在 `manual` 與 `auto_append` 之間二選一
+- 第一段應優先考慮以 Telegram inline button 形式組裝 AI 建議
+
 ## 問題
 
 `threadBridge` 目前的主要對話鏈路是：
@@ -126,6 +131,7 @@ threadBridge 應能保存一組與 Codex 分離的 LLM 設定。
 - `delivery_mode`
   - `disabled`
   - `manual`
+  - `inline_button`
   - `auto_append`
 
 初版建議先做：
@@ -192,10 +198,49 @@ threadBridge 應能保存一組與 Codex 分離的 LLM 設定。
 
 ## 與用戶互動的方式
 
+目前比較合理的方向，是把 guidance delivery 理解成分段模式，而不是一開始就只有「不送」或「直接附加正文」。
+
+### 第一段：`inline_button`
+
+第一段應優先考慮把 `AI 建議` 組裝成 Telegram inline button 或等價的顯式 action surface。
+
+這一段的目標比較像：
+
+- 讓使用者看到「可採取的下一步建議」
+- 由使用者主動點擊、展開或採納
+- 避免 secondary LLM 直接把 thread 內容變得更冗長
+
+比較合理的第一段形態可能是：
+
+- 一則簡短提示訊息
+- 搭配 1 到數個 inline buttons
+- 每個 button 對應一個 guidance suggestion / action candidate
+
+這樣做的好處是：
+
+- 比 `auto_append` 更克制
+- 比純 `manual` 更可見
+- 比直接把建議附在 final reply 後面，更不容易污染主對話內容
+
+這也表示 `AI 建議` 在第一段不只是純文字 artifact，而可能是一種：
+
+- `guidance + control surface`
+
+### 之後的段落
+
+後續若要做第二段，才再決定是否進入：
+
+- 更完整的 auto-append guidance
+- 或其他不只 Telegram 的通用 guidance surface
+
+在第二段正式定義前，先不要把它寫死。
+
 初版可接受的模式：
 
 - `manual`
   - secondary LLM 產物只記錄，不自動發給用戶
+- `inline_button`
+  - secondary LLM 產物以顯式 suggestion buttons 呈現
 - `auto_append`
   - Codex final reply 後，再附一段明確標記的 `AI 建議`
 
@@ -210,7 +255,7 @@ threadBridge 應能保存一組與 Codex 分離的 LLM 設定。
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
   - 之後若這層落地，需要新增 secondary LLM config view、goal view、guidance event 或等價 control action
 - [message-queue-and-status-delivery.md](/Volumes/Data/Github/threadBridge/docs/plan/message-queue-and-status-delivery.md)
-  - 若 `AI 建議` 要送回 Telegram，應由 delivery 規格決定它屬於 `content`、`status`，還是另一種 payload
+  - 若 `AI 建議` 要送回 Telegram，應由 delivery 規格決定它屬於 `content`、`status`、`control`，還是另一種 payload
 - [runtime-transport-abstraction.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-transport-abstraction.md)
   - secondary LLM guidance 比較接近 core/runtime-side augmentation，不應一開始就寫死成 Telegram-only feature
 - [telegram-webapp-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md)
@@ -220,6 +265,7 @@ threadBridge 應能保存一組與 Codex 分離的 LLM 設定。
 
 - 若 secondary LLM 沒有清楚標記，使用者可能誤以為它就是 Codex 原始回答
 - 若 AI 建議自動發送過於頻繁，會讓 thread 噪音上升
+- 若 inline button 承載的建議語義不清，使用者可能誤把 suggestion 當成已執行 action
 - 若 `AI 目標` 與 Codex 當前 task 目標衝突，可能生成低品質或互相矛盾的建議
 - 若把 secrets、provider payload、完整對話上下文處理得太寬，會擴大敏感資訊暴露面
 - 若這層直接長進 Telegram adapter，而不是 runtime / protocol 邊界，之後很難移植到 custom app 或 web 管理面
@@ -227,7 +273,9 @@ threadBridge 應能保存一組與 Codex 分離的 LLM 設定。
 ## 開放問題
 
 - secondary LLM config 應先做 global，還是直接支援 per-workspace？
-- `AI 建議` 預設應該是 `manual` 還是 `auto_append`？
+- `AI 建議` 的第一段預設應該是 `manual` 還是 `inline_button`？
+- inline button 點擊後，應展開建議文字、觸發 action，還是只是把建議插回輸入框？
+- 第二段是否應該是 `auto_append`，還是另一種更通用的 guidance surface？
 - `AI 目標` 應該只是 guidance prompt，還是允許驅動某些 control action？
 - secondary LLM 能讀多少上下文？
   - 只讀 final reply
@@ -242,5 +290,5 @@ threadBridge 應能保存一組與 Codex 分離的 LLM 設定。
 
 1. 先把這層收斂成「Codex final reply 後的可選 guidance layer」，不要一開始就讓 secondary LLM 接管主對話。
 2. 先定義最小 `SecondaryLlmConfig` 與 `AiGoal`。
-3. 先選一個保守 delivery 模式，建議預設 `manual`。
+3. 先把第一段 guidance delivery 寫成 `inline_button` 草稿，明確和 `manual`、`auto_append` 分開。
 4. 再回來補 `runtime-protocol` 與 `message-queue-and-status-delivery` 的對接語義。
