@@ -29,6 +29,7 @@ use crate::workspace_status::{read_cli_owner_claim, read_workspace_aggregate_sta
 const MANAGED_CODEX_SOURCE_FILE: &str = ".threadbridge/codex/source.txt";
 const MANAGED_CODEX_CACHE_BINARY: &str = ".threadbridge/codex/codex";
 const MANAGED_CODEX_BUILD_INFO_FILE: &str = ".threadbridge/codex/build-info.txt";
+const MANAGED_CODEX_BUILD_CONFIG_FILE: &str = ".threadbridge/codex/build-config.json";
 const MANAGEMENT_UI_HTML: &str = include_str!("../static/management/index.html");
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -132,6 +133,7 @@ pub struct RuntimeHealthView {
 pub struct ManagedCodexView {
     pub source: &'static str,
     pub source_file_path: String,
+    pub build_config_file_path: String,
     pub build_info_file_path: String,
     pub binary_path: String,
     pub binary_ready: bool,
@@ -300,6 +302,29 @@ struct BuildManagedCodexSourceRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct UpdateManagedCodexBuildDefaultsRequest {
+    source_repo: String,
+    source_rs_dir: String,
+    build_profile: String,
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateManagedCodexBuildDefaultsResponse {
+    saved: bool,
+    build_defaults: ManagedCodexBuildDefaultsView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ManagedCodexBuildConfigFile {
+    #[serde(default)]
+    source_repo: Option<String>,
+    #[serde(default)]
+    source_rs_dir: Option<String>,
+    #[serde(default)]
+    build_profile: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct CreateThreadRequest {
     title: Option<String>,
 }
@@ -350,6 +375,10 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         .route(
             "/api/managed-codex/build-source",
             post(post_build_managed_codex_source),
+        )
+        .route(
+            "/api/managed-codex/build-defaults",
+            post(post_update_managed_codex_build_defaults),
         )
         .route("/api/runtime-health", get(get_runtime_health))
         .route("/api/threads", get(get_threads).post(post_create_thread))
@@ -466,6 +495,15 @@ async fn post_build_managed_codex_source(
     Json(payload): Json<Option<BuildManagedCodexSourceRequest>>,
 ) -> Result<Json<BuildManagedCodexSourceResponse>, ManagementApiError> {
     Ok(Json(state.build_managed_codex_source(payload).await?))
+}
+
+async fn post_update_managed_codex_build_defaults(
+    State(state): State<Arc<ManagementApiState>>,
+    Json(payload): Json<UpdateManagedCodexBuildDefaultsRequest>,
+) -> Result<Json<UpdateManagedCodexBuildDefaultsResponse>, ManagementApiError> {
+    Ok(Json(
+        state.update_managed_codex_build_defaults(payload).await?,
+    ))
 }
 
 async fn get_runtime_health(
@@ -702,8 +740,9 @@ impl ManagementApiState {
         let source = read_managed_codex_source_preference(repo_root).await?;
         let binary_path = resolve_managed_codex_binary_path(repo_root, source).await?;
         let binary_ready = binary_path.as_ref().is_some_and(|path| path.exists());
+        let build_config_path = repo_root.join(MANAGED_CODEX_BUILD_CONFIG_FILE);
         let build_info_path = repo_root.join(MANAGED_CODEX_BUILD_INFO_FILE);
-        let build_defaults = ManagedCodexSourceBuild::from_env_with_overrides(None, None, None)?;
+        let build_defaults = resolve_managed_codex_build_defaults(repo_root).await?;
         let version = match binary_path.as_deref() {
             Some(path) if path.exists() => read_codex_version(path).await.ok(),
             _ => None,
@@ -714,6 +753,7 @@ impl ManagementApiState {
                 .join(MANAGED_CODEX_SOURCE_FILE)
                 .display()
                 .to_string(),
+            build_config_file_path: build_config_path.display().to_string(),
             build_info_file_path: build_info_path.display().to_string(),
             binary_path: binary_path
                 .unwrap_or_else(|| repo_root.join(MANAGED_CODEX_CACHE_BINARY))
@@ -813,16 +853,21 @@ impl ManagementApiState {
         &self,
         payload: Option<BuildManagedCodexSourceRequest>,
     ) -> Result<BuildManagedCodexSourceResponse> {
-        let build = ManagedCodexSourceBuild::from_env_with_overrides(
+        let defaults =
+            read_managed_codex_build_config(&self.runtime.codex_working_directory).await?;
+        let build = ManagedCodexSourceBuild::from_sources(
             payload
                 .as_ref()
-                .and_then(|payload| payload.source_repo.as_deref()),
+                .and_then(|payload| payload.source_repo.as_deref())
+                .or(defaults.source_repo.as_deref()),
             payload
                 .as_ref()
-                .and_then(|payload| payload.source_rs_dir.as_deref()),
+                .and_then(|payload| payload.source_rs_dir.as_deref())
+                .or(defaults.source_rs_dir.as_deref()),
             payload
                 .as_ref()
-                .and_then(|payload| payload.build_profile.as_deref()),
+                .and_then(|payload| payload.build_profile.as_deref())
+                .or(defaults.build_profile.as_deref()),
         )?;
         if !build.source_rs_dir.is_dir() {
             return Err(anyhow!(
@@ -926,6 +971,34 @@ impl ManagementApiState {
             build_profile: build.build_profile.as_str().to_owned(),
             source_repo: build.source_repo.display().to_string(),
             source_rs_dir: build.source_rs_dir.display().to_string(),
+        })
+    }
+
+    async fn update_managed_codex_build_defaults(
+        &self,
+        payload: UpdateManagedCodexBuildDefaultsRequest,
+    ) -> Result<UpdateManagedCodexBuildDefaultsResponse> {
+        let build = ManagedCodexSourceBuild::from_sources(
+            Some(payload.source_repo.trim()),
+            Some(payload.source_rs_dir.trim()),
+            Some(payload.build_profile.trim()),
+        )?;
+        write_managed_codex_build_config(
+            &self.runtime.codex_working_directory,
+            &ManagedCodexBuildConfigFile {
+                source_repo: Some(build.source_repo.display().to_string()),
+                source_rs_dir: Some(build.source_rs_dir.display().to_string()),
+                build_profile: Some(build.build_profile.as_str().to_owned()),
+            },
+        )
+        .await?;
+        Ok(UpdateManagedCodexBuildDefaultsResponse {
+            saved: true,
+            build_defaults: ManagedCodexBuildDefaultsView {
+                source_repo: build.source_repo.display().to_string(),
+                source_rs_dir: build.source_rs_dir.display().to_string(),
+                build_profile: build.build_profile.as_str().to_owned(),
+            },
         })
     }
 
@@ -1601,6 +1674,18 @@ struct ManagedCodexSourceBuild {
 }
 
 impl ManagedCodexSourceBuild {
+    fn from_sources(
+        source_repo_override: Option<&str>,
+        source_rs_dir_override: Option<&str>,
+        build_profile_override: Option<&str>,
+    ) -> Result<Self> {
+        Self::from_env_with_overrides(
+            source_repo_override,
+            source_rs_dir_override,
+            build_profile_override,
+        )
+    }
+
     fn from_env_with_overrides(
         source_repo_override: Option<&str>,
         source_rs_dir_override: Option<&str>,
@@ -1650,6 +1735,45 @@ impl ManagedCodexSourceBuild {
             }
         }
     }
+}
+
+async fn read_managed_codex_build_config(repo_root: &Path) -> Result<ManagedCodexBuildConfigFile> {
+    let path = repo_root.join(MANAGED_CODEX_BUILD_CONFIG_FILE);
+    let contents = match tokio::fs::read_to_string(&path).await {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ManagedCodexBuildConfigFile::default());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    serde_json::from_str(&contents).with_context(|| format!("failed to parse {}", path.display()))
+}
+
+async fn write_managed_codex_build_config(
+    repo_root: &Path,
+    config: &ManagedCodexBuildConfigFile,
+) -> Result<()> {
+    let path = repo_root.join(MANAGED_CODEX_BUILD_CONFIG_FILE);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let contents = serde_json::to_string_pretty(config)?;
+    tokio::fs::write(&path, format!("{contents}\n"))
+        .await
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
+async fn resolve_managed_codex_build_defaults(repo_root: &Path) -> Result<ManagedCodexSourceBuild> {
+    let config = read_managed_codex_build_config(repo_root).await?;
+    ManagedCodexSourceBuild::from_sources(
+        config.source_repo.as_deref(),
+        config.source_rs_dir.as_deref(),
+        config.build_profile.as_deref(),
+    )
 }
 
 impl ManagedCodexSourcePreference {

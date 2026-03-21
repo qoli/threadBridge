@@ -57,6 +57,7 @@
           <option value="dev">dev</option>
           <option value="release">release</option>
         </select>
+        <button class="secondary" onclick="saveManagedCodexBuildDefaults()">Save Build Defaults</button>
       </div>
       <pre id="health">loading...</pre>
     </div>
@@ -389,6 +390,26 @@
         return;
       }
       status.textContent = `Source build ready: ${data.version || data.binary_path}`;
+      await refresh();
+    }
+    async function saveManagedCodexBuildDefaults() {
+      const status = document.getElementById('managed-codex-status');
+      status.textContent = 'Saving build defaults...';
+      const response = await fetch('/api/managed-codex/build-defaults', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_repo: document.getElementById('managed-codex-source-repo').value.trim(),
+          source_rs_dir: document.getElementById('managed-codex-source-rs-dir').value.trim(),
+          build_profile: document.getElementById('managed-codex-build-profile').value,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        status.textContent = data.error || 'Save defaults failed';
+        return;
+      }
+      status.textContent = `Build defaults saved: ${data.build_defaults.build_profile}`;
       await refresh();
     }
     document.getElementById('setup-form').addEventListener('submit', async event => {

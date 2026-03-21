@@ -70,6 +70,7 @@ scripts/local_threadbridge.sh restart --codex-source source
 - On macOS, the tray menu lists one submenu per managed workspace, `Start New hcodex Session`, and the recent 5 session IDs for resume.
 - The local management UI can open a managed workspace in Finder, repair a workspace runtime, refresh the managed Codex cache from the current `codex` on `PATH`, and build a managed source Codex binary from the local Codex Rust workspace.
 - The managed Codex source-build flow now exposes default source repo / Rust workspace / build profile values in the management API and lets the local UI override them per build.
+- Those managed Codex build defaults are now persisted under `.threadbridge/codex/build-config.json`, so the desktop runtime keeps using the same local source-build settings across restarts.
 - The desktop runtime owner now proactively ensures both the shared app-server daemon and the workspace TUI proxy for managed workspaces.
 - The management surface now shows TUI adoption-pending state per thread and workspace, so local handoff is visible without reading raw state files.
 - The local management UI can now explicitly adopt or reject a pending TUI session handoff instead of waiting for Telegram callback controls or implicit auto-adopt.
