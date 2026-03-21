@@ -71,6 +71,7 @@ scripts/local_threadbridge.sh restart --codex-source source
 - The local management UI can open a managed workspace in Finder, repair a workspace runtime, refresh the managed Codex cache from the current `codex` on `PATH`, and build a managed source Codex binary from the local Codex Rust workspace.
 - The desktop runtime owner now proactively ensures both the shared app-server daemon and the workspace TUI proxy for managed workspaces.
 - The management surface now shows TUI adoption-pending state per thread and workspace, so local handoff is visible without reading raw state files.
+- The local management UI can now explicitly adopt or reject a pending TUI session handoff instead of waiting for Telegram callback controls or implicit auto-adopt.
 - The local server now serves the management UI from a checked-in static asset instead of embedding the entire page as an inline Rust string.
 
 ## Runtime Layout

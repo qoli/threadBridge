@@ -339,6 +339,14 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
             post(post_bind_workspace),
         )
         .route(
+            "/api/threads/:thread_key/adopt-tui",
+            post(post_adopt_tui_session),
+        )
+        .route(
+            "/api/threads/:thread_key/reject-tui",
+            post(post_reject_tui_session),
+        )
+        .route(
             "/api/workspaces/:thread_key/launch-config",
             get(get_workspace_launch_config),
         )
@@ -486,6 +494,20 @@ async fn post_bind_workspace(
             .bind_workspace(&thread_key, &payload.workspace_cwd)
             .await?,
     ))
+}
+
+async fn post_adopt_tui_session(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+) -> Result<Json<ThreadMutationResponse>, ManagementApiError> {
+    Ok(Json(state.adopt_tui_session(&thread_key).await?))
+}
+
+async fn post_reject_tui_session(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+) -> Result<Json<ThreadMutationResponse>, ManagementApiError> {
+    Ok(Json(state.reject_tui_session(&thread_key).await?))
 }
 
 async fn get_workspace_launch_config(
@@ -1057,6 +1079,24 @@ impl ManagementApiState {
     ) -> Result<ThreadMutationResponse> {
         let control = self.local_control().await?;
         let record = control.bind_workspace(thread_key, workspace_cwd).await?;
+        Ok(ThreadMutationResponse {
+            ok: true,
+            thread_key: record.metadata.thread_key,
+        })
+    }
+
+    async fn adopt_tui_session(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
+        let control = self.local_control().await?;
+        let record = control.adopt_tui_session(thread_key).await?;
+        Ok(ThreadMutationResponse {
+            ok: true,
+            thread_key: record.metadata.thread_key,
+        })
+    }
+
+    async fn reject_tui_session(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
+        let control = self.local_control().await?;
+        let record = control.reject_tui_session(thread_key).await?;
         Ok(ThreadMutationResponse {
             ok: true,
             thread_key: record.metadata.thread_key,

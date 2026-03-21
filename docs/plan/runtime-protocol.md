@@ -157,6 +157,8 @@ v1 至少定義：
 - `bind_workspace`
 - `reconnect_codex`
 - `open_workspace`
+- `adopt_tui_session`
+- `reject_tui_session`
 - `launch_hcodex_new`
 - `launch_hcodex_resume`
 - `archive_thread`
@@ -170,6 +172,8 @@ v1 至少定義：
 - `POST /api/threads`
 - `POST /api/threads/create-and-bind`
 - `POST /api/threads/:thread_key/bind-workspace`
+- `POST /api/threads/:thread_key/adopt-tui`
+- `POST /api/threads/:thread_key/reject-tui`
 - `POST /api/workspaces/:thread_key/reconnect`
 - `POST /api/workspaces/:thread_key/open`
 - `POST /api/workspaces/:thread_key/launch-new`

@@ -32,12 +32,13 @@
   - macOS-first `tray-icon` 常駐入口
   - top-level tray menu 會列出 managed workspace submenu
   - 每個 workspace submenu 會列出 `Start New hcodex Session` 與最近 5 個 session id
-  - `Settings` 會打開內嵌 webview 並載入本地 management UI
+- `Settings` 會打開內嵌 webview 並載入本地 management UI
 - managed Codex health 已開始暴露真實 source / binary path / version，且本地管理面可切換 Codex source preference 並同步已綁定 workspace 的 launcher
 - desktop runtime owner 已開始在背景定期 reconcile 已管理 workspace，並主動 ensure shared app-server 與 TUI proxy；同時也提供單 workspace 的 `repair runtime` control action
 - 本地管理面已開始提供 managed Codex cache refresh，能把目前 `PATH` 上的 `codex` 複製進 repo 管理快取
 - 本地管理面已開始提供 managed Codex source build，可直接從本機 Codex Rust workspace 建出受管 binary 並寫入 build info
 - 本地管理面已開始提供 `open workspace` control action
+- 本地管理面已開始提供 adopt / reject pending TUI handoff control action
 - Telegram bot 啟動已抽成可複用 runner，headless `threadbridge` 與 desktop runtime 共用同一套 bot/runtime 啟動邏輯
 - setup 儲存後，desktop runtime 已會在背景重新嘗試拉起 Telegram polling，不再只剩重啟一條路
 
@@ -140,6 +141,8 @@ web 管理面中的 v1 action 以既有 lifecycle/control 語義為主：
 - create thread
 - bind workspace
 - open workspace
+- adopt pending TUI handoff
+- reject pending TUI handoff
 - launch new `hcodex`
 - reconnect Codex
 - archive thread

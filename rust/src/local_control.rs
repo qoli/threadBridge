@@ -6,7 +6,7 @@ use teloxide::types::{MessageId, ThreadId};
 
 use crate::repository::{LogDirection, ThreadRecord};
 use crate::telegram_runtime::{
-    AppState, ensure_bound_workspace_runtime, shared_codex_workspace, thread_id_to_i32,
+    AppState, ensure_bound_workspace_runtime, shared_codex_workspace, status_sync, thread_id_to_i32,
 };
 use crate::workspace::ensure_workspace_runtime;
 
@@ -226,6 +226,68 @@ impl LocalControlHandle {
             )
             .await?;
         Ok(archived)
+    }
+
+    pub async fn adopt_tui_session(&self, thread_key: &str) -> Result<ThreadRecord> {
+        let record = self
+            .state
+            .repository
+            .find_active_thread_by_key(thread_key)
+            .await?
+            .context("thread_key is not an active thread")?;
+        let updated = self
+            .state
+            .repository
+            .adopt_tui_active_session(record)
+            .await?;
+        self.state
+            .repository
+            .append_log(
+                &updated,
+                LogDirection::System,
+                "Adopted the active TUI session from local management UI.",
+                None,
+            )
+            .await?;
+        let _ = status_sync::refresh_thread_topic_title(
+            &self.bot,
+            &self.state,
+            &updated,
+            "local_tui_adopt_accept",
+        )
+        .await;
+        Ok(updated)
+    }
+
+    pub async fn reject_tui_session(&self, thread_key: &str) -> Result<ThreadRecord> {
+        let record = self
+            .state
+            .repository
+            .find_active_thread_by_key(thread_key)
+            .await?
+            .context("thread_key is not an active thread")?;
+        let updated = self
+            .state
+            .repository
+            .clear_tui_adoption_state(record)
+            .await?;
+        self.state
+            .repository
+            .append_log(
+                &updated,
+                LogDirection::System,
+                "Rejected the active TUI session from local management UI.",
+                None,
+            )
+            .await?;
+        let _ = status_sync::refresh_thread_topic_title(
+            &self.bot,
+            &self.state,
+            &updated,
+            "local_tui_adopt_reject",
+        )
+        .await;
+        Ok(updated)
     }
 
     pub async fn restore_thread(&self, thread_key: &str) -> Result<ThreadRecord> {

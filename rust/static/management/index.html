@@ -137,6 +137,10 @@
           adoption_pending: <code>${item.tui_session_adoption_pending ? 'yes' : 'no'}</code><br />
           last_used_at: <code>${item.last_used_at || 'unknown'}</code><br />
           last_error: <code>${item.last_error || 'none'}</code>
+          <div style="margin-top:0.75rem;">
+            <button class="secondary" onclick="adoptTuiSession('${item.thread_key}')">Adopt TUI</button>
+            <button class="secondary" onclick="rejectTuiSession('${item.thread_key}')">Keep Original</button>
+          </div>
         </div>
       `).join('');
     }
@@ -251,6 +255,24 @@
       const data = await response.json();
       if (!response.ok) {
         alert(data.error || 'Bind failed');
+        return;
+      }
+      await refresh();
+    }
+    async function adoptTuiSession(threadKey) {
+      const response = await fetch(`/api/threads/${threadKey}/adopt-tui`, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || 'Adopt TUI failed');
+        return;
+      }
+      await refresh();
+    }
+    async function rejectTuiSession(threadKey) {
+      const response = await fetch(`/api/threads/${threadKey}/reject-tui`, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || 'Reject TUI failed');
         return;
       }
       await refresh();
