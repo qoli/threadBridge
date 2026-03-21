@@ -4,15 +4,16 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_stream::stream;
 use axum::extract::{Path as AxumPath, State};
 use axum::response::sse::{Event, KeepAlive};
 use axum::response::{Html, IntoResponse, Sse};
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -50,7 +51,8 @@ struct ManagementApiState {
 
 #[derive(Debug, Clone, Serialize)]
 struct SetupStateView {
-    telegram_configured: bool,
+    telegram_token_configured: bool,
+    authorized_user_ids: Vec<i64>,
     authorized_user_count: usize,
     telegram_polling_state: TelegramPollingState,
     management_base_url: String,
@@ -114,6 +116,26 @@ struct HcodexLaunchConfigView {
     hcodex_available: bool,
     current_codex_thread_id: Option<String>,
     recent_codex_sessions: Vec<RecentCodexSessionEntry>,
+    launch_new_command: String,
+    launch_resume_commands: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ArchiveThreadResponse {
+    archived: bool,
+    thread_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LaunchResumeRequest {
+    session_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LaunchWorkspaceResponse {
+    launched: bool,
+    thread_key: String,
+    command: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,6 +179,15 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
             "/api/workspaces/:thread_key/launch-config",
             get(get_workspace_launch_config),
         )
+        .route(
+            "/api/workspaces/:thread_key/launch-new",
+            post(post_launch_workspace_new),
+        )
+        .route(
+            "/api/workspaces/:thread_key/launch-resume",
+            post(post_launch_workspace_resume),
+        )
+        .route("/api/threads/:thread_key/archive", post(post_archive_thread))
         .route("/api/events", get(get_events))
         .with_state(state.clone());
     tokio::spawn(async move {
@@ -192,25 +223,133 @@ async fn index(State(state): State<Arc<ManagementApiState>>) -> impl IntoRespons
   <h1>threadBridge Management</h1>
   <p>Local management API is running at <code>{}</code>.</p>
   <div class="grid">
-    <div class="card"><h2>Setup</h2><pre id="setup">loading...</pre></div>
+    <div class="card">
+      <h2>Setup</h2>
+      <form id="setup-form">
+        <p><label>Telegram Bot Token<br /><input id="telegram-token" type="password" style="width:100%" /></label></p>
+        <p><label>Authorized User IDs (comma separated)<br /><input id="authorized-user-ids" type="text" style="width:100%" /></label></p>
+        <p><button type="submit">Save Setup</button> <span id="setup-status"></span></p>
+      </form>
+      <pre id="setup">loading...</pre>
+    </div>
     <div class="card"><h2>Runtime Health</h2><pre id="health">loading...</pre></div>
   </div>
-  <div class="card"><h2>Managed Workspaces</h2><pre id="workspaces">loading...</pre></div>
-  <div class="card"><h2>Archived Threads</h2><pre id="archived">loading...</pre></div>
+  <div class="card"><h2>Managed Workspaces</h2><div id="workspaces">loading...</div></div>
+  <div class="card"><h2>Archived Threads</h2><div id="archived">loading...</div></div>
   <script>
     async function renderJson(id, path) {{
       const response = await fetch(path);
       const data = await response.json();
       document.getElementById(id).textContent = JSON.stringify(data, null, 2);
+      return data;
+    }}
+    function renderWorkspaceCards(items) {{
+      const root = document.getElementById('workspaces');
+      if (!items.length) {{
+        root.innerHTML = '<p>No managed workspaces.</p>';
+        return;
+      }}
+      root.innerHTML = items.map(item => `
+        <div style="border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem;">
+          <strong>${{item.title || item.workspace_cwd}}</strong><br />
+          <code>${{item.workspace_cwd}}</code><br />
+          thread_key: <code>${{item.thread_key || ''}}</code><br />
+          binding: <code>${{item.binding_status}}</code> |
+          run: <code>${{item.run_status}}</code> |
+          handoff: <code>${{item.handoff_readiness}}</code><br />
+          current: <code>${{item.current_codex_thread_id || 'none'}}</code><br />
+          tui: <code>${{item.tui_active_codex_thread_id || 'none'}}</code><br />
+          hcodex: <code>${{item.hcodex_path}}</code><br />
+          recent: ${{item.recent_codex_sessions.map(x => `<code>${{x.session_id}}</code>`).join(', ') || 'none'}}
+          <div style="margin-top:0.75rem;">
+            <button onclick="launchNew('${{item.thread_key}}')">Launch New</button>
+            <button onclick="showLaunchConfig('${{item.thread_key}}')">Show Launch Commands</button>
+            <button onclick="archiveThread('${{item.thread_key}}')">Archive</button>
+          </div>
+          <pre id="launch-${{item.thread_key}}" style="display:none;margin-top:0.75rem;"></pre>
+        </div>
+      `).join('');
+    }}
+    function renderArchivedThreads(items) {{
+      const root = document.getElementById('archived');
+      if (!items.length) {{
+        root.innerHTML = '<p>No archived threads.</p>';
+        return;
+      }}
+      root.innerHTML = items.map(item => `
+        <div style="border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem;">
+          <strong>${{item.title || item.thread_key}}</strong><br />
+          thread_key: <code>${{item.thread_key}}</code><br />
+          workspace: <code>${{item.workspace_cwd || 'unbound'}}</code><br />
+          archived_at: <code>${{item.archived_at || 'unknown'}}</code>
+        </div>
+      `).join('');
     }}
     async function refresh() {{
-      await Promise.all([
+      const [setup, _, workspaces, archived] = await Promise.all([
         renderJson('setup', '/api/setup'),
         renderJson('health', '/api/runtime-health'),
-        renderJson('workspaces', '/api/workspaces'),
-        renderJson('archived', '/api/archived-threads'),
+        fetch('/api/workspaces').then(r => r.json()),
+        fetch('/api/archived-threads').then(r => r.json()),
       ]);
+      document.getElementById('authorized-user-ids').value = (setup.authorized_user_ids || []).join(',');
+      renderWorkspaceCards(workspaces);
+      renderArchivedThreads(archived);
     }}
+    async function showLaunchConfig(threadKey) {{
+      const response = await fetch(`/api/workspaces/${{threadKey}}/launch-config`);
+      const data = await response.json();
+      const target = document.getElementById(`launch-${{threadKey}}`);
+      target.style.display = 'block';
+      target.textContent = JSON.stringify(data, null, 2);
+    }}
+    async function launchNew(threadKey) {{
+      const response = await fetch(`/api/workspaces/${{threadKey}}/launch-new`, {{ method: 'POST' }});
+      const data = await response.json();
+      if (!response.ok) {{
+        alert(data.error || 'Launch failed');
+        return;
+      }}
+      const target = document.getElementById(`launch-${{threadKey}}`);
+      target.style.display = 'block';
+      target.textContent = JSON.stringify(data, null, 2);
+      await refresh();
+    }}
+    async function archiveThread(threadKey) {{
+      const response = await fetch(`/api/threads/${{threadKey}}/archive`, {{ method: 'POST' }});
+      const data = await response.json();
+      if (!response.ok) {{
+        alert(data.error || 'Archive failed');
+        return;
+      }}
+      await refresh();
+    }}
+    document.getElementById('setup-form').addEventListener('submit', async event => {{
+      event.preventDefault();
+      const status = document.getElementById('setup-status');
+      status.textContent = 'Saving...';
+      const payload = {{
+        telegram_token: document.getElementById('telegram-token').value,
+        authorized_user_ids: document.getElementById('authorized-user-ids').value
+          .split(',')
+          .map(x => x.trim())
+          .filter(Boolean)
+          .map(x => Number(x)),
+      }};
+      const response = await fetch('/api/setup/telegram', {{
+        method: 'PUT',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify(payload),
+      }});
+      const data = await response.json();
+      if (!response.ok) {{
+        status.textContent = data.error || 'Save failed';
+        return;
+      }}
+      document.getElementById('telegram-token').value = '';
+      status.textContent = data.restart_required ? 'Saved. Restart required.' : 'Saved.';
+      await refresh();
+    }});
     refresh();
     const events = new EventSource('/api/events');
     events.onmessage = () => refresh();
@@ -264,6 +403,32 @@ async fn get_workspace_launch_config(
     Ok(Json(state.workspace_launch_config(&thread_key).await?))
 }
 
+async fn post_launch_workspace_new(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+) -> Result<Json<LaunchWorkspaceResponse>, ManagementApiError> {
+    Ok(Json(state.launch_workspace_new(&thread_key).await?))
+}
+
+async fn post_launch_workspace_resume(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+    Json(payload): Json<LaunchResumeRequest>,
+) -> Result<Json<LaunchWorkspaceResponse>, ManagementApiError> {
+    Ok(Json(
+        state
+            .launch_workspace_resume(&thread_key, &payload.session_id)
+            .await?,
+    ))
+}
+
+async fn post_archive_thread(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+) -> Result<Json<ArchiveThreadResponse>, ManagementApiError> {
+    Ok(Json(state.archive_thread(&thread_key).await?))
+}
+
 async fn get_events(
     State(state): State<Arc<ManagementApiState>>,
 ) -> Sse<impl futures_util::stream::Stream<Item = Result<Event, Infallible>>> {
@@ -290,7 +455,15 @@ impl ManagementApiState {
     async fn setup_state(&self) -> Result<SetupStateView> {
         let telegram = load_optional_telegram_config()?;
         Ok(SetupStateView {
-            telegram_configured: telegram.is_some(),
+            telegram_token_configured: telegram.is_some(),
+            authorized_user_ids: telegram
+                .as_ref()
+                .map(|config| {
+                    let mut ids = config.authorized_user_ids.iter().copied().collect::<Vec<_>>();
+                    ids.sort_unstable();
+                    ids
+                })
+                .unwrap_or_default(),
             authorized_user_count: telegram
                 .as_ref()
                 .map(|config| config.authorized_user_ids.len())
@@ -458,17 +631,77 @@ impl ManagementApiState {
             .join(".threadbridge")
             .join("bin")
             .join("hcodex");
+        let recent_codex_sessions = self
+            .repository
+            .read_recent_workspace_sessions(&workspace_cwd)
+            .await
+            .unwrap_or_default();
         Ok(HcodexLaunchConfigView {
             workspace_cwd: workspace_cwd.clone(),
             thread_key: record.metadata.thread_key,
             hcodex_path: hcodex_path.display().to_string(),
             hcodex_available: hcodex_path.exists(),
             current_codex_thread_id: binding.current_codex_thread_id,
-            recent_codex_sessions: self
-                .repository
-                .read_recent_workspace_sessions(&workspace_cwd)
-                .await
-                .unwrap_or_default(),
+            launch_new_command: format!(
+                "{} --thread-key {}",
+                shell_quote_path(&hcodex_path),
+                shell_quote(thread_key)
+            ),
+            launch_resume_commands: recent_codex_sessions
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{} --thread-key {} resume {}",
+                        shell_quote_path(&hcodex_path),
+                        shell_quote(thread_key),
+                        shell_quote(&entry.session_id)
+                    )
+                })
+                .collect(),
+            recent_codex_sessions,
+        })
+    }
+
+    async fn archive_thread(&self, thread_key: &str) -> Result<ArchiveThreadResponse> {
+        let record = self
+            .repository
+            .find_active_thread_by_key(thread_key)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("thread_key is not an active thread"))?;
+        let archived = self.repository.archive_thread(record).await?;
+        Ok(ArchiveThreadResponse {
+            archived: true,
+            thread_key: archived.metadata.thread_key,
+        })
+    }
+
+    async fn launch_workspace_new(&self, thread_key: &str) -> Result<LaunchWorkspaceResponse> {
+        let config = self.workspace_launch_config(thread_key).await?;
+        launch_hcodex_via_terminal(&config.launch_new_command).await?;
+        Ok(LaunchWorkspaceResponse {
+            launched: true,
+            thread_key: thread_key.to_owned(),
+            command: config.launch_new_command,
+        })
+    }
+
+    async fn launch_workspace_resume(
+        &self,
+        thread_key: &str,
+        session_id: &str,
+    ) -> Result<LaunchWorkspaceResponse> {
+        let config = self.workspace_launch_config(thread_key).await?;
+        let command = format!(
+            "{} --thread-key {} resume {}",
+            shell_quote_path(Path::new(&config.hcodex_path)),
+            shell_quote(thread_key),
+            shell_quote(session_id),
+        );
+        launch_hcodex_via_terminal(&command).await?;
+        Ok(LaunchWorkspaceResponse {
+            launched: true,
+            thread_key: thread_key.to_owned(),
+            command,
         })
     }
 
@@ -522,6 +755,44 @@ async fn write_env_file(path: &Path, updates: &BTreeMap<String, String>) -> Resu
     tokio::fs::write(path, output)
         .await
         .with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    shell_quote(&path.display().to_string())
+}
+
+async fn launch_hcodex_via_terminal(command: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
+            apple_script_string(command)
+        );
+        let status = Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .status()
+            .await
+            .context("failed to launch Terminal via osascript")?;
+        if !status.success() {
+            return Err(anyhow!("osascript launch failed with status {status}"));
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = command;
+        Err(anyhow!("workspace launch is only implemented on macOS"))
+    }
+}
+
+fn apple_script_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 #[derive(Debug, Clone, Copy)]
