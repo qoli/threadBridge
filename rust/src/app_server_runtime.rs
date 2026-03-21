@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -7,9 +6,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+use tokio_tungstenite::connect_async;
 use tracing::{debug, info};
 
 #[derive(Debug, Clone)]
@@ -52,11 +52,16 @@ impl WorkspaceRuntimeManager {
         if let Some(existing) = inner.get(&key).cloned()
             && daemon_is_healthy(&existing).await
         {
+            let existing_proxy_url = read_workspace_runtime_state_file(&existing.workspace_path)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|state| state.tui_proxy_base_ws_url);
             let state = WorkspaceRuntimeState {
                 schema_version: 1,
                 workspace_cwd: existing.workspace_path.display().to_string(),
                 daemon_ws_url: existing.daemon_url.clone(),
-                tui_proxy_base_ws_url: None,
+                tui_proxy_base_ws_url: existing_proxy_url,
             };
             info!(
                 event = "app_server_runtime.reuse",
@@ -138,24 +143,16 @@ async fn wait_for_daemon(runtime: &WorkspaceRuntime) -> Result<()> {
 }
 
 async fn daemon_is_healthy(runtime: &WorkspaceRuntime) -> bool {
-    let Ok(addr) = daemon_socket_addr(&runtime.daemon_url) else {
-        return false;
-    };
     if let Ok(mut child) = runtime.child.try_lock()
         && child.try_wait().ok().flatten().is_some()
     {
         return false;
     }
-    TcpStream::connect(addr).await.is_ok()
+    daemon_endpoint_is_live(&runtime.daemon_url).await
 }
 
-fn daemon_socket_addr(url: &str) -> Result<SocketAddr> {
-    let host_port = url
-        .strip_prefix("ws://")
-        .context("daemon url must start with ws://")?;
-    host_port
-        .parse::<SocketAddr>()
-        .with_context(|| format!("invalid daemon socket address: {url}"))
+pub async fn daemon_endpoint_is_live(url: &str) -> bool {
+    connect_async(url).await.is_ok()
 }
 
 async fn find_free_loopback_port() -> Result<u16> {
@@ -190,4 +187,22 @@ pub async fn write_workspace_runtime_state_file(
     tokio::fs::write(path, format!("{}\n", serde_json::to_string_pretty(state)?))
         .await
         .context("failed to write workspace app-server state")
+}
+
+pub async fn read_workspace_runtime_state_file(
+    workspace_path: &Path,
+) -> Result<Option<WorkspaceRuntimeState>> {
+    let path = workspace_path
+        .join(APP_SERVER_STATE_DIR)
+        .join(APP_SERVER_STATE_FILE);
+    let contents = match tokio::fs::read_to_string(&path).await {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    let state = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(Some(state))
 }

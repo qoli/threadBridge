@@ -5,13 +5,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use chrono::Utc;
 use serde::Serialize;
-use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
+use tracing::info;
 
-use crate::app_server_runtime::WorkspaceRuntimeManager;
+use crate::app_server_runtime::{WorkspaceRuntimeManager, daemon_endpoint_is_live};
 use crate::config::RuntimeConfig;
 use crate::repository::ThreadRepository;
-use crate::tui_proxy::TuiProxyManager;
+use crate::tui_proxy::{TuiProxyManager, proxy_endpoint_is_live};
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -139,6 +139,11 @@ impl DesktopRuntimeOwner {
         }
         for workspace in &unique_workspaces {
             let workspace_path = Path::new(workspace);
+            info!(
+                event = "runtime_owner.workspace.reconcile_started",
+                workspace = %workspace_path.display(),
+                "desktop runtime owner started reconciling workspace"
+            );
             let step = async {
                 ensure_workspace_runtime(
                     &self.runtime.codex_working_directory,
@@ -151,10 +156,22 @@ impl DesktopRuntimeOwner {
                     .app_server_runtime
                     .ensure_workspace_daemon(workspace_path)
                     .await?;
+                info!(
+                    event = "runtime_owner.workspace.app_server_ready",
+                    workspace = %workspace_path.display(),
+                    daemon_ws_url = %runtime.daemon_ws_url,
+                    "desktop runtime owner ensured workspace app-server"
+                );
                 let _ = self
                     .tui_proxy_runtime
                     .ensure_workspace_proxy(workspace_path, &runtime.daemon_ws_url)
                     .await?;
+                info!(
+                    event = "runtime_owner.workspace.proxy_ready",
+                    workspace = %workspace_path.display(),
+                    daemon_ws_url = %runtime.daemon_ws_url,
+                    "desktop runtime owner ensured workspace TUI proxy"
+                );
                 Ok::<(), anyhow::Error>(())
             }
             .await;
@@ -266,9 +283,9 @@ async fn heartbeat_for_workspace(workspace_path: &Path) -> WorkspaceRuntimeHeart
             }
         };
 
-    let app_server_running = tcp_endpoint_is_live(&state.daemon_ws_url).await;
+    let app_server_running = daemon_endpoint_is_live(&state.daemon_ws_url).await;
     let proxy_running = match state.tui_proxy_base_ws_url.as_deref() {
-        Some(url) => tcp_endpoint_is_live(url).await,
+        Some(url) => proxy_endpoint_is_live(url).await,
         None => false,
     };
     let app_server_status = if app_server_running {
@@ -297,11 +314,4 @@ async fn heartbeat_for_workspace(workspace_path: &Path) -> WorkspaceRuntimeHeart
         last_checked_at,
         last_error: None,
     }
-}
-
-async fn tcp_endpoint_is_live(url: &str) -> bool {
-    let Some(socket_addr) = url.strip_prefix("ws://") else {
-        return false;
-    };
-    TcpStream::connect(socket_addr).await.is_ok()
 }

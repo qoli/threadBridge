@@ -6,7 +6,7 @@ use teloxide::requests::Requester;
 use teloxide::types::{BotCommand, CallbackQuery, LinkPreviewOptions, ThreadId};
 use teloxide::utils::command::BotCommands;
 use tokio::net::TcpStream;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::app_server_runtime::WorkspaceRuntimeManager;
 pub(crate) use crate::codex::{CodexInputItem, CodexRunner, CodexThreadEvent, CodexWorkspace};
@@ -475,6 +475,12 @@ pub(crate) async fn ensure_bound_workspace_runtime(
         &workspace,
     )
     .await?;
+    info!(
+        event = "telegram_runtime.workspace.ensure_bound_runtime",
+        workspace = %workspace.display(),
+        owner_managed = state.runtime_is_owner_managed(),
+        "telegram runtime ensured bound workspace surface"
+    );
     if state.runtime_is_owner_managed() {
         let _ = read_owner_managed_workspace_runtime(&workspace).await?;
     } else {
@@ -490,6 +496,12 @@ pub(crate) async fn prepare_workspace_runtime_for_control(
     state: &AppState,
     workspace: PathBuf,
 ) -> Result<CodexWorkspace> {
+    info!(
+        event = "telegram_runtime.workspace.prepare_control_runtime",
+        workspace = %workspace.display(),
+        owner_managed = state.runtime_is_owner_managed(),
+        "telegram runtime requested control-path workspace runtime"
+    );
     let runtime = state
         .app_server_runtime
         .ensure_workspace_daemon(&workspace)
@@ -572,6 +584,12 @@ pub(crate) async fn shared_codex_workspace(
     state: &AppState,
     workspace: PathBuf,
 ) -> Result<CodexWorkspace> {
+    info!(
+        event = "telegram_runtime.workspace.shared_runtime",
+        workspace = %workspace.display(),
+        owner_managed = state.runtime_is_owner_managed(),
+        "telegram runtime requested shared workspace runtime"
+    );
     let runtime = if state.runtime_is_owner_managed() {
         read_owner_managed_workspace_runtime(&workspace).await?
     } else {

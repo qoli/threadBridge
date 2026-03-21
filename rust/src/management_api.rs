@@ -14,16 +14,17 @@ use axum::response::{Html, IntoResponse, Sse};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::app_server_runtime::WorkspaceRuntimeState;
+use crate::app_server_runtime::{WorkspaceRuntimeState, daemon_endpoint_is_live};
 use crate::config::{RuntimeConfig, load_optional_telegram_config};
 use crate::local_control::LocalControlHandle;
 use crate::repository::{RecentCodexSessionEntry, ThreadRepository};
 use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus, WorkspaceRuntimeHeartbeat};
+use crate::tui_proxy::proxy_endpoint_is_live;
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 use crate::workspace_status::{read_cli_owner_claim, read_workspace_aggregate_status};
 
@@ -1653,9 +1654,9 @@ async fn read_workspace_runtime_health(
             };
         }
     };
-    let app_server_running = tcp_endpoint_is_live(&state.daemon_ws_url).await;
+    let app_server_running = daemon_endpoint_is_live(&state.daemon_ws_url).await;
     let proxy_running = match state.tui_proxy_base_ws_url.as_deref() {
-        Some(url) => tcp_endpoint_is_live(url).await,
+        Some(url) => proxy_endpoint_is_live(url).await,
         None => false,
     };
     let app_server_status = if app_server_running {
@@ -1690,13 +1691,6 @@ impl WorkspaceRuntimeHealth {
             handoff_readiness: heartbeat.handoff_readiness,
         }
     }
-}
-
-async fn tcp_endpoint_is_live(url: &str) -> bool {
-    let Some(socket_addr) = url.strip_prefix("ws://") else {
-        return false;
-    };
-    TcpStream::connect(socket_addr).await.is_ok()
 }
 
 fn aggregate_running_status<'a>(statuses: impl Iterator<Item = &'a str>) -> &'static str {

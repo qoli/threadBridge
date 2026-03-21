@@ -22,6 +22,8 @@ use crate::workspace_status::{
     record_tui_proxy_prompt,
 };
 
+const PROXY_HEALTH_PATH: &str = "/healthz";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrackedRequestMethod {
     ThreadResume,
@@ -149,11 +151,9 @@ impl TuiProxyManager {
     }
 }
 
-async fn proxy_endpoint_is_live(url: &str) -> bool {
-    let Some(socket_addr) = url.strip_prefix("ws://") else {
-        return false;
-    };
-    TcpStream::connect(socket_addr).await.is_ok()
+pub async fn proxy_endpoint_is_live(url: &str) -> bool {
+    let probe_url = format!("{url}{PROXY_HEALTH_PATH}");
+    connect_async(&probe_url).await.is_ok()
 }
 
 fn should_reuse_existing_proxy(
@@ -212,6 +212,11 @@ async fn handle_proxy_connection(
         .expect("read request path")
         .clone()
         .unwrap_or_default();
+    if path == PROXY_HEALTH_PATH {
+        let mut client_ws = client_ws;
+        let _ = client_ws.close(None).await;
+        return Ok(());
+    }
     let thread_key = thread_key_from_path(&path)?;
     let (mut daemon_ws, _) = connect_async(&daemon_ws_url)
         .await
