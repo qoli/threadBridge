@@ -37,7 +37,7 @@
 - [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md)
   - shared app-server daemon、`./.threadbridge/bin/hcodex`、TUI proxy、mirror、adoption、auto-adopt 已落地
   - `/attach_cli_session`、viewer handoff、attach-intent、hooks-based CLI sync、`.cli/.attach` title 已退場
-  - 目前新增確認的缺口是 shared runtime owner 尚未收斂；`hcodex` self-heal 已落地，但 bot 重寫出的 ws state 仍可能 stale
+  - 目前新增確認的缺口是 handoff 所依賴的 workspace `ws` runtime owner 尚未收斂；`hcodex` self-heal 目前仍只是 fallback，bot 重寫出的 ws state 也仍可能 stale
   - 剩餘工作主要是 runtime ownership 與歷史文檔收尾
 
 ## 純草稿
@@ -60,7 +60,7 @@
   - Telegram adapter 遷移草稿
 - [macos-menubar-thread-manager.md](/Volumes/Data/Github/threadBridge/docs/plan/macos-menubar-thread-manager.md)
   - macOS 托盤 thread 管理面草稿
-  - 現在也承接 shared runtime owner 的方向收斂，不再只是 thread list UI 草稿
+  - 現在也承接 workspace `ws` runtime 正式 owner、當前 `codex` 來源模型管理，以及 workspace `codex` 快捷啟動入口的方向收斂
 
 ## 主規格
 
