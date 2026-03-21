@@ -37,6 +37,7 @@
 - desktop runtime owner 已開始在背景定期 reconcile 已管理 workspace，並主動 ensure shared app-server 與 TUI proxy；同時也提供單 workspace 的 `repair runtime` control action
 - 本地管理面已開始提供 managed Codex cache refresh，能把目前 `PATH` 上的 `codex` 複製進 repo 管理快取
 - 本地管理面已開始提供 managed Codex source build，可直接從本機 Codex Rust workspace 建出受管 binary 並寫入 build info
+- managed Codex source build 已開始把 default source repo / source rs dir / build profile 暴露進 management view，且本地 UI 可在每次 build 時顯式覆蓋
 - 本地管理面已開始提供 `open workspace` control action
 - 本地管理面已開始提供 adopt / reject pending TUI handoff control action
 - Telegram bot 啟動已抽成可複用 runner，headless `threadbridge` 與 desktop runtime 共用同一套 bot/runtime 啟動邏輯

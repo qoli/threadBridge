@@ -136,6 +136,7 @@ pub struct ManagedCodexView {
     pub binary_path: String,
     pub binary_ready: bool,
     pub version: Option<String>,
+    pub build_defaults: ManagedCodexBuildDefaultsView,
     pub build_info: Option<ManagedCodexBuildInfoView>,
 }
 
@@ -146,6 +147,13 @@ pub struct ManagedCodexBuildInfoView {
     pub build_profile: Option<String>,
     pub git_rev: Option<String>,
     pub binary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ManagedCodexBuildDefaultsView {
+    pub source_repo: String,
+    pub source_rs_dir: String,
+    pub build_profile: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -282,6 +290,13 @@ struct BuildManagedCodexSourceResponse {
     build_profile: String,
     source_repo: String,
     source_rs_dir: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuildManagedCodexSourceRequest {
+    source_repo: Option<String>,
+    source_rs_dir: Option<String>,
+    build_profile: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -448,8 +463,9 @@ async fn post_refresh_managed_codex_cache(
 
 async fn post_build_managed_codex_source(
     State(state): State<Arc<ManagementApiState>>,
+    Json(payload): Json<Option<BuildManagedCodexSourceRequest>>,
 ) -> Result<Json<BuildManagedCodexSourceResponse>, ManagementApiError> {
-    Ok(Json(state.build_managed_codex_source().await?))
+    Ok(Json(state.build_managed_codex_source(payload).await?))
 }
 
 async fn get_runtime_health(
@@ -687,6 +703,7 @@ impl ManagementApiState {
         let binary_path = resolve_managed_codex_binary_path(repo_root, source).await?;
         let binary_ready = binary_path.as_ref().is_some_and(|path| path.exists());
         let build_info_path = repo_root.join(MANAGED_CODEX_BUILD_INFO_FILE);
+        let build_defaults = ManagedCodexSourceBuild::from_env_with_overrides(None, None, None)?;
         let version = match binary_path.as_deref() {
             Some(path) if path.exists() => read_codex_version(path).await.ok(),
             _ => None,
@@ -704,6 +721,11 @@ impl ManagementApiState {
                 .to_string(),
             binary_ready,
             version,
+            build_defaults: ManagedCodexBuildDefaultsView {
+                source_repo: build_defaults.source_repo.display().to_string(),
+                source_rs_dir: build_defaults.source_rs_dir.display().to_string(),
+                build_profile: build_defaults.build_profile.as_str().to_owned(),
+            },
             build_info: read_managed_codex_build_info(&build_info_path).await?,
         })
     }
@@ -787,8 +809,21 @@ impl ManagementApiState {
         })
     }
 
-    async fn build_managed_codex_source(&self) -> Result<BuildManagedCodexSourceResponse> {
-        let build = ManagedCodexSourceBuild::from_env()?;
+    async fn build_managed_codex_source(
+        &self,
+        payload: Option<BuildManagedCodexSourceRequest>,
+    ) -> Result<BuildManagedCodexSourceResponse> {
+        let build = ManagedCodexSourceBuild::from_env_with_overrides(
+            payload
+                .as_ref()
+                .and_then(|payload| payload.source_repo.as_deref()),
+            payload
+                .as_ref()
+                .and_then(|payload| payload.source_rs_dir.as_deref()),
+            payload
+                .as_ref()
+                .and_then(|payload| payload.build_profile.as_deref()),
+        )?;
         if !build.source_rs_dir.is_dir() {
             return Err(anyhow!(
                 "missing Codex source workspace: {}",
@@ -1566,19 +1601,26 @@ struct ManagedCodexSourceBuild {
 }
 
 impl ManagedCodexSourceBuild {
-    fn from_env() -> Result<Self> {
+    fn from_env_with_overrides(
+        source_repo_override: Option<&str>,
+        source_rs_dir_override: Option<&str>,
+        build_profile_override: Option<&str>,
+    ) -> Result<Self> {
         let home = env::var_os("HOME")
             .map(PathBuf::from)
             .context("HOME is not set")?;
         let default_build_profile = env::var("BUILD_PROFILE").unwrap_or_else(|_| "dev".to_owned());
-        let build_profile = ManagedCodexBuildProfile::parse(
-            &env::var("CODEX_BUILD_PROFILE").unwrap_or(default_build_profile),
-        )?;
-        let source_repo = env::var_os("CODEX_SOURCE_REPO")
+        let build_profile_value = build_profile_override
+            .map(str::to_owned)
+            .unwrap_or_else(|| env::var("CODEX_BUILD_PROFILE").unwrap_or(default_build_profile));
+        let build_profile = ManagedCodexBuildProfile::parse(&build_profile_value)?;
+        let source_repo = source_repo_override
             .map(PathBuf::from)
+            .or_else(|| env::var_os("CODEX_SOURCE_REPO").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("/Volumes/Data/Github/codex"));
-        let source_rs_dir = env::var_os("CODEX_SOURCE_RS_DIR")
+        let source_rs_dir = source_rs_dir_override
             .map(PathBuf::from)
+            .or_else(|| env::var_os("CODEX_SOURCE_RS_DIR").map(PathBuf::from))
             .unwrap_or_else(|| source_repo.join("codex-rs"));
         let cargo_home = env::var_os("CODEX_CARGO_HOME")
             .map(PathBuf::from)

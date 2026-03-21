@@ -50,6 +50,14 @@
         <button class="secondary" onclick="refreshManagedCodexCache()">Refresh Managed Cache</button>
         <span id="managed-codex-status" class="muted"></span>
       </div>
+      <div class="toolbar" style="margin-top:0.75rem;">
+        <input id="managed-codex-source-repo" type="text" placeholder="/abs/codex/repo" style="min-width:20rem;flex:2" />
+        <input id="managed-codex-source-rs-dir" type="text" placeholder="/abs/codex-rs" style="min-width:20rem;flex:2" />
+        <select id="managed-codex-build-profile">
+          <option value="dev">dev</option>
+          <option value="release">release</option>
+        </select>
+      </div>
       <pre id="health">loading...</pre>
     </div>
   </div>
@@ -172,6 +180,12 @@
       ]);
       document.getElementById('authorized-user-ids').value = (setup.authorized_user_ids || []).join(',');
       document.getElementById('managed-codex-source').value = health.managed_codex?.source || 'brew';
+      document.getElementById('managed-codex-source-repo').value =
+        health.managed_codex?.build_defaults?.source_repo || '';
+      document.getElementById('managed-codex-source-rs-dir').value =
+        health.managed_codex?.build_defaults?.source_rs_dir || '';
+      document.getElementById('managed-codex-build-profile').value =
+        health.managed_codex?.build_defaults?.build_profile || 'dev';
       document.getElementById('onboarding-status').textContent = setup.control_chat_ready
         ? `Control chat is ready: ${setup.control_chat_id}`
         : 'Control chat is not ready. Send /start to the bot from the target Telegram chat first.';
@@ -362,6 +376,12 @@
       status.textContent = 'Building source Codex...';
       const response = await fetch('/api/managed-codex/build-source', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_repo: document.getElementById('managed-codex-source-repo').value.trim() || null,
+          source_rs_dir: document.getElementById('managed-codex-source-rs-dir').value.trim() || null,
+          build_profile: document.getElementById('managed-codex-build-profile').value,
+        }),
       });
       const data = await response.json();
       if (!response.ok) {
