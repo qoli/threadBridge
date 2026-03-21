@@ -136,6 +136,16 @@ pub struct ManagedCodexView {
     pub binary_path: String,
     pub binary_ready: bool,
     pub version: Option<String>,
+    pub build_info: Option<ManagedCodexBuildInfoView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ManagedCodexBuildInfoView {
+    pub source_repo: Option<String>,
+    pub source_rs_dir: Option<String>,
+    pub build_profile: Option<String>,
+    pub git_rev: Option<String>,
+    pub binary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -676,6 +686,7 @@ impl ManagementApiState {
         let source = read_managed_codex_source_preference(repo_root).await?;
         let binary_path = resolve_managed_codex_binary_path(repo_root, source).await?;
         let binary_ready = binary_path.as_ref().is_some_and(|path| path.exists());
+        let build_info_path = repo_root.join(MANAGED_CODEX_BUILD_INFO_FILE);
         let version = match binary_path.as_deref() {
             Some(path) if path.exists() => read_codex_version(path).await.ok(),
             _ => None,
@@ -686,16 +697,14 @@ impl ManagementApiState {
                 .join(MANAGED_CODEX_SOURCE_FILE)
                 .display()
                 .to_string(),
-            build_info_file_path: repo_root
-                .join(MANAGED_CODEX_BUILD_INFO_FILE)
-                .display()
-                .to_string(),
+            build_info_file_path: build_info_path.display().to_string(),
             binary_path: binary_path
                 .unwrap_or_else(|| repo_root.join(MANAGED_CODEX_CACHE_BINARY))
                 .display()
                 .to_string(),
             binary_ready,
             version,
+            build_info: read_managed_codex_build_info(&build_info_path).await?,
         })
     }
 
@@ -1690,6 +1699,30 @@ async fn resolve_codex_from_path() -> Result<std::path::PathBuf> {
         return Err(anyhow!("could not find `codex` on PATH"));
     }
     Ok(Path::new(&resolved).to_path_buf())
+}
+
+async fn read_managed_codex_build_info(path: &Path) -> Result<Option<ManagedCodexBuildInfoView>> {
+    let contents = match tokio::fs::read_to_string(path).await {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    let mut values = BTreeMap::new();
+    for line in contents.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        values.insert(key.trim().to_owned(), value.trim().to_owned());
+    }
+    Ok(Some(ManagedCodexBuildInfoView {
+        source_repo: values.get("source_repo").cloned(),
+        source_rs_dir: values.get("source_rs_dir").cloned(),
+        build_profile: values.get("build_profile").cloned(),
+        git_rev: values.get("git_rev").cloned(),
+        binary: values.get("binary").cloned(),
+    }))
 }
 
 async fn resolve_git_rev(repo_root: &Path) -> Result<String> {

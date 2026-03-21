@@ -124,7 +124,8 @@
 - `binary_ready`
 - `source`
 - `version` 或 `revision`
-- `handoff_supported`
+- `build_info_file_path`
+- `build_info`
 
 ### 6. `RuntimeHealthView`
 

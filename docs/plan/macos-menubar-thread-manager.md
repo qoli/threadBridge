@@ -204,7 +204,8 @@ web 管理面中的 v1 action 以既有 lifecycle/control 語義為主：
 - `binary_ready`
 - `version` 或 `revision`
 - `source`
-- `handoff_supported`
+- `build_info_file_path`
+- `build_info`
 
 這一層應盡量沿用 [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md) 的命名，而不是在 UI 層另造狀態模型。
 
