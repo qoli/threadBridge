@@ -23,7 +23,7 @@ use crate::app_server_runtime::WorkspaceRuntimeState;
 use crate::config::{RuntimeConfig, load_optional_telegram_config};
 use crate::local_control::LocalControlHandle;
 use crate::repository::{RecentCodexSessionEntry, ThreadRepository};
-use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus};
+use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus, WorkspaceRuntimeHeartbeat};
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 use crate::workspace_status::{read_cli_owner_claim, read_workspace_aggregate_status};
 
@@ -1053,6 +1053,7 @@ impl ManagementApiState {
 
     async fn workspace_views(&self) -> Result<Vec<ManagedWorkspaceView>> {
         let active_threads = self.repository.list_active_threads().await?;
+        let runtime_owner = self.runtime_owner.read().await.clone();
         let mut grouped: BTreeMap<String, WorkspaceAggregateView> = BTreeMap::new();
         for record in active_threads {
             let Some(binding) = self.repository.read_session_binding(&record).await? else {
@@ -1079,7 +1080,8 @@ impl ManagementApiState {
                     crate::workspace_status::default_workspace_status(workspace_path)
                 });
             let has_live_cli = !workspace_status.live_cli_session_ids.is_empty();
-            let mut runtime_status = read_workspace_runtime_health(workspace_path).await;
+            let mut runtime_status =
+                read_workspace_runtime_health(workspace_path, runtime_owner.as_ref()).await;
             if binding.tui_session_adoption_pending && runtime_status.handoff_readiness == "ready" {
                 runtime_status.handoff_readiness = "pending_adoption";
             }
@@ -1233,6 +1235,7 @@ impl ManagementApiState {
         title: Option<String>,
         workspace_cwd: &str,
     ) -> Result<ThreadMutationResponse> {
+        self.maybe_reconcile_owner_workspace(workspace_cwd).await?;
         let control = self.local_control().await?;
         let record = control.create_thread_and_bind(title, workspace_cwd).await?;
         Ok(ThreadMutationResponse {
@@ -1246,6 +1249,7 @@ impl ManagementApiState {
         thread_key: &str,
         workspace_cwd: &str,
     ) -> Result<ThreadMutationResponse> {
+        self.maybe_reconcile_owner_workspace(workspace_cwd).await?;
         let control = self.local_control().await?;
         let record = control.bind_workspace(thread_key, workspace_cwd).await?;
         Ok(ThreadMutationResponse {
@@ -1350,6 +1354,9 @@ impl ManagementApiState {
     }
 
     async fn reconnect_codex(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
+        let config = self.workspace_launch_config(thread_key).await?;
+        self.maybe_reconcile_owner_workspace(&config.workspace_cwd)
+            .await?;
         let control = self.local_control().await?;
         let record = control.reconnect_codex(thread_key).await?;
         Ok(ThreadMutationResponse {
@@ -1406,6 +1413,14 @@ impl ManagementApiState {
             report,
             status,
         })
+    }
+
+    async fn maybe_reconcile_owner_workspace(&self, workspace_cwd: &str) -> Result<()> {
+        let Some(owner) = self.runtime_owner.read().await.clone() else {
+            return Ok(());
+        };
+        let _ = owner.reconcile_managed_workspaces([workspace_cwd]).await?;
+        Ok(())
     }
 
     async fn launch_workspace_new(&self, thread_key: &str) -> Result<LaunchWorkspaceResponse> {
@@ -1604,7 +1619,15 @@ struct WorkspaceRuntimeHealth {
     handoff_readiness: &'static str,
 }
 
-async fn read_workspace_runtime_health(workspace_path: &Path) -> WorkspaceRuntimeHealth {
+async fn read_workspace_runtime_health(
+    workspace_path: &Path,
+    runtime_owner: Option<&DesktopRuntimeOwner>,
+) -> WorkspaceRuntimeHealth {
+    if let Some(owner) = runtime_owner
+        && let Some(heartbeat) = owner.workspace_heartbeat(workspace_path).await
+    {
+        return WorkspaceRuntimeHealth::from_heartbeat(heartbeat);
+    }
     let state_path = workspace_path
         .join(".threadbridge")
         .join("state")
@@ -1656,6 +1679,16 @@ async fn read_workspace_runtime_health(workspace_path: &Path) -> WorkspaceRuntim
         app_server_status,
         tui_proxy_status,
         handoff_readiness,
+    }
+}
+
+impl WorkspaceRuntimeHealth {
+    fn from_heartbeat(heartbeat: WorkspaceRuntimeHeartbeat) -> Self {
+        Self {
+            app_server_status: heartbeat.app_server_status,
+            tui_proxy_status: heartbeat.tui_proxy_status,
+            handoff_readiness: heartbeat.handoff_readiness,
+        }
     }
 }
 

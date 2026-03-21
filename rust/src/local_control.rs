@@ -6,7 +6,8 @@ use teloxide::types::{MessageId, ThreadId};
 
 use crate::repository::{LogDirection, ThreadRecord};
 use crate::telegram_runtime::{
-    AppState, ensure_bound_workspace_runtime, shared_codex_workspace, status_sync, thread_id_to_i32,
+    AppState, ensure_bound_workspace_runtime, prepare_workspace_runtime_for_control, status_sync,
+    thread_id_to_i32,
 };
 use crate::workspace::ensure_workspace_runtime;
 
@@ -114,7 +115,8 @@ impl LocalControlHandle {
             &workspace_path,
         )
         .await?;
-        let codex_workspace = shared_codex_workspace(&self.state, workspace_path.clone()).await?;
+        let codex_workspace =
+            prepare_workspace_runtime_for_control(&self.state, workspace_path.clone()).await?;
         let binding = self.state.codex.start_thread(&codex_workspace).await?;
         let updated = self
             .state
@@ -153,7 +155,8 @@ impl LocalControlHandle {
             .filter(|_| !binding.session_broken)
             .context("This thread is missing a usable Codex thread id. Use Launch New first.")?;
         let workspace_path = ensure_bound_workspace_runtime(&self.state, binding).await?;
-        let codex_workspace = shared_codex_workspace(&self.state, workspace_path).await?;
+        let codex_workspace =
+            prepare_workspace_runtime_for_control(&self.state, workspace_path).await?;
         match self
             .state
             .codex

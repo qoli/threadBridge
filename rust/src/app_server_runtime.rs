@@ -10,7 +10,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, info};
 
 #[derive(Debug, Clone)]
 pub struct WorkspaceRuntimeManager {
@@ -48,7 +48,8 @@ impl WorkspaceRuntimeManager {
         workspace_path: &Path,
     ) -> Result<WorkspaceRuntimeState> {
         let key = canonical_workspace_key(workspace_path)?;
-        if let Some(existing) = self.inner.lock().await.get(&key).cloned()
+        let mut inner = self.inner.lock().await;
+        if let Some(existing) = inner.get(&key).cloned()
             && daemon_is_healthy(&existing).await
         {
             let state = WorkspaceRuntimeState {
@@ -57,6 +58,13 @@ impl WorkspaceRuntimeManager {
                 daemon_ws_url: existing.daemon_url.clone(),
                 tui_proxy_base_ws_url: None,
             };
+            info!(
+                event = "app_server_runtime.reuse",
+                workspace = %existing.workspace_path.display(),
+                daemon_ws_url = %existing.daemon_url,
+                "reusing shared codex app-server"
+            );
+            drop(inner);
             write_workspace_runtime_state_file(&existing.workspace_path, &state).await?;
             return Ok(state);
         }
@@ -68,8 +76,15 @@ impl WorkspaceRuntimeManager {
             daemon_ws_url: runtime.daemon_url.clone(),
             tui_proxy_base_ws_url: None,
         };
+        info!(
+            event = "app_server_runtime.spawned",
+            workspace = %runtime.workspace_path.display(),
+            daemon_ws_url = %runtime.daemon_url,
+            "spawned shared codex app-server"
+        );
+        inner.insert(key, runtime.clone());
+        drop(inner);
         write_workspace_runtime_state_file(&runtime.workspace_path, &state).await?;
-        self.inner.lock().await.insert(key, runtime);
         Ok(state)
     }
 }

@@ -1,11 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::Utc;
 use serde::Serialize;
-use tokio::sync::RwLock;
+use tokio::net::TcpStream;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::app_server_runtime::WorkspaceRuntimeManager;
 use crate::config::RuntimeConfig;
@@ -43,6 +44,16 @@ impl RuntimeOwnerStatus {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceRuntimeHeartbeat {
+    pub workspace_cwd: String,
+    pub app_server_status: &'static str,
+    pub tui_proxy_status: &'static str,
+    pub handoff_readiness: &'static str,
+    pub last_checked_at: String,
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct DesktopRuntimeOwner {
     runtime: RuntimeConfig,
@@ -50,6 +61,8 @@ pub struct DesktopRuntimeOwner {
     app_server_runtime: WorkspaceRuntimeManager,
     tui_proxy_runtime: TuiProxyManager,
     status: Arc<RwLock<RuntimeOwnerStatus>>,
+    workspace_heartbeats: Arc<RwLock<BTreeMap<String, WorkspaceRuntimeHeartbeat>>>,
+    reconcile_lock: Arc<Mutex<()>>,
 }
 
 impl DesktopRuntimeOwner {
@@ -74,11 +87,29 @@ impl DesktopRuntimeOwner {
                 last_error: None,
                 last_report: RuntimeOwnerReconcileReport::default(),
             })),
+            workspace_heartbeats: Arc::new(RwLock::new(BTreeMap::new())),
+            reconcile_lock: Arc::new(Mutex::new(())),
         })
     }
 
     pub async fn status(&self) -> RuntimeOwnerStatus {
         self.status.read().await.clone()
+    }
+
+    pub fn app_server_runtime(&self) -> WorkspaceRuntimeManager {
+        self.app_server_runtime.clone()
+    }
+
+    pub fn tui_proxy_runtime(&self) -> TuiProxyManager {
+        self.tui_proxy_runtime.clone()
+    }
+
+    pub async fn workspace_heartbeat(
+        &self,
+        workspace_path: &Path,
+    ) -> Option<WorkspaceRuntimeHeartbeat> {
+        let key = canonical_workspace_string(workspace_path);
+        self.workspace_heartbeats.read().await.get(&key).cloned()
     }
 
     pub async fn reconcile_managed_workspaces<I, S>(
@@ -89,6 +120,7 @@ impl DesktopRuntimeOwner {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        let _reconcile_guard = self.reconcile_lock.lock().await;
         let unique_workspaces = workspaces
             .into_iter()
             .map(|workspace| canonical_workspace_string(Path::new(workspace.as_ref())))
@@ -105,8 +137,8 @@ impl DesktopRuntimeOwner {
             status.last_reconcile_started_at = Some(started_at);
             status.last_error = None;
         }
-        for workspace in unique_workspaces {
-            let workspace_path = Path::new(&workspace);
+        for workspace in &unique_workspaces {
+            let workspace_path = Path::new(workspace);
             let step = async {
                 ensure_workspace_runtime(
                     &self.runtime.codex_working_directory,
@@ -127,6 +159,18 @@ impl DesktopRuntimeOwner {
             }
             .await;
             if let Err(error) = step {
+                self.record_workspace_heartbeat(
+                    workspace_path,
+                    WorkspaceRuntimeHeartbeat {
+                        workspace_cwd: workspace.clone(),
+                        app_server_status: "unavailable",
+                        tui_proxy_status: "unavailable",
+                        handoff_readiness: "unavailable",
+                        last_checked_at: now_iso(),
+                        last_error: Some(error.to_string()),
+                    },
+                )
+                .await;
                 let finished_at = now_iso();
                 let mut status = self.status.write().await;
                 status.state = "error";
@@ -135,9 +179,15 @@ impl DesktopRuntimeOwner {
                 status.last_report = report.clone();
                 return Err(error);
             }
+            self.record_workspace_heartbeat(
+                workspace_path,
+                heartbeat_for_workspace(workspace_path).await,
+            )
+            .await;
             report.ensured_workspaces += 1;
             report.ensured_proxies += 1;
         }
+        self.prune_workspace_heartbeats(&unique_workspaces).await;
         let finished_at = now_iso();
         let mut status = self.status.write().await;
         status.state = "healthy";
@@ -146,6 +196,25 @@ impl DesktopRuntimeOwner {
         status.last_error = None;
         status.last_report = report.clone();
         Ok(report)
+    }
+
+    async fn record_workspace_heartbeat(
+        &self,
+        workspace_path: &Path,
+        heartbeat: WorkspaceRuntimeHeartbeat,
+    ) {
+        let key = canonical_workspace_string(workspace_path);
+        self.workspace_heartbeats
+            .write()
+            .await
+            .insert(key, heartbeat);
+    }
+
+    async fn prune_workspace_heartbeats(&self, workspaces: &BTreeSet<String>) {
+        self.workspace_heartbeats
+            .write()
+            .await
+            .retain(|workspace, _| workspaces.contains(workspace));
     }
 }
 
@@ -159,4 +228,80 @@ fn canonical_workspace_string(workspace_path: &Path) -> String {
 
 fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+async fn heartbeat_for_workspace(workspace_path: &Path) -> WorkspaceRuntimeHeartbeat {
+    let state_path = workspace_path
+        .join(".threadbridge")
+        .join("state")
+        .join("app-server")
+        .join("current.json");
+    let workspace_cwd = canonical_workspace_string(workspace_path);
+    let last_checked_at = now_iso();
+    let contents = match tokio::fs::read_to_string(&state_path).await {
+        Ok(contents) => contents,
+        Err(error) => {
+            return WorkspaceRuntimeHeartbeat {
+                workspace_cwd,
+                app_server_status: "missing",
+                tui_proxy_status: "missing",
+                handoff_readiness: "unavailable",
+                last_checked_at,
+                last_error: Some(format!("failed to read {}: {error}", state_path.display())),
+            };
+        }
+    };
+    let state: crate::app_server_runtime::WorkspaceRuntimeState =
+        match serde_json::from_str(&contents) {
+            Ok(state) => state,
+            Err(error) => {
+                return WorkspaceRuntimeHeartbeat {
+                    workspace_cwd,
+                    app_server_status: "invalid",
+                    tui_proxy_status: "invalid",
+                    handoff_readiness: "unavailable",
+                    last_checked_at,
+                    last_error: Some(format!("invalid {}: {error}", state_path.display())),
+                };
+            }
+        };
+
+    let app_server_running = tcp_endpoint_is_live(&state.daemon_ws_url).await;
+    let proxy_running = match state.tui_proxy_base_ws_url.as_deref() {
+        Some(url) => tcp_endpoint_is_live(url).await,
+        None => false,
+    };
+    let app_server_status = if app_server_running {
+        "running"
+    } else {
+        "stale"
+    };
+    let tui_proxy_status = match state.tui_proxy_base_ws_url.as_deref() {
+        Some(_) if proxy_running => "running",
+        Some(_) => "stale",
+        None => "missing",
+    };
+    let handoff_readiness = if app_server_running && proxy_running {
+        "ready"
+    } else if app_server_running {
+        "degraded"
+    } else {
+        "unavailable"
+    };
+
+    WorkspaceRuntimeHeartbeat {
+        workspace_cwd,
+        app_server_status,
+        tui_proxy_status,
+        handoff_readiness,
+        last_checked_at,
+        last_error: None,
+    }
+}
+
+async fn tcp_endpoint_is_live(url: &str) -> bool {
+    let Some(socket_addr) = url.strip_prefix("ws://") else {
+        return false;
+    };
+    TcpStream::connect(socket_addr).await.is_ok()
 }

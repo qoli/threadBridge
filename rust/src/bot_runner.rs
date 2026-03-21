@@ -4,13 +4,16 @@ use teloxide::dptree;
 use teloxide::prelude::*;
 use tracing::{info, warn};
 
+use crate::app_server_runtime::WorkspaceRuntimeManager;
 use crate::config::{AppConfig, load_app_config, load_optional_telegram_config};
 use crate::local_control::LocalControlHandle;
 use crate::management_api::{ManagementApiHandle, TelegramPollingState};
 use crate::telegram_runtime::{
-    AppState, Command, command_list, handle_callback_query, handle_command, handle_message,
+    AppState, Command, RuntimeOwnershipMode, command_list, handle_callback_query, handle_command,
+    handle_message,
     status_sync::{reconcile_stale_bot_busy_sessions, spawn_workspace_status_watcher},
 };
+use crate::tui_proxy::TuiProxyManager;
 
 #[derive(Clone)]
 pub struct BotRuntimeHandle {
@@ -23,6 +26,30 @@ pub async fn spawn_bot_runtime(
     management_api: ManagementApiHandle,
 ) -> Result<BotRuntimeHandle> {
     let state = AppState::new(config.clone()).await?;
+    spawn_bot_runtime_from_state(config, management_api, state).await
+}
+
+pub async fn spawn_bot_runtime_with_runtimes(
+    config: AppConfig,
+    management_api: ManagementApiHandle,
+    app_server_runtime: WorkspaceRuntimeManager,
+    tui_proxy: TuiProxyManager,
+) -> Result<BotRuntimeHandle> {
+    let state = AppState::new_with_runtimes_and_mode(
+        config.clone(),
+        app_server_runtime,
+        tui_proxy,
+        RuntimeOwnershipMode::DesktopOwner,
+    )
+    .await?;
+    spawn_bot_runtime_from_state(config, management_api, state).await
+}
+
+async fn spawn_bot_runtime_from_state(
+    config: AppConfig,
+    management_api: ManagementApiHandle,
+    state: AppState,
+) -> Result<BotRuntimeHandle> {
     let bot = Bot::new(config.telegram.telegram_token.clone());
     management_api
         .set_telegram_polling_state(TelegramPollingState::Active)
@@ -97,4 +124,21 @@ pub async fn spawn_bot_runtime_from_env(
     }
     let config = load_app_config()?;
     spawn_bot_runtime(config, management_api).await.map(Some)
+}
+
+pub async fn spawn_bot_runtime_from_env_with_runtimes(
+    management_api: ManagementApiHandle,
+    app_server_runtime: WorkspaceRuntimeManager,
+    tui_proxy: TuiProxyManager,
+) -> Result<Option<BotRuntimeHandle>> {
+    if load_optional_telegram_config()?.is_none() {
+        management_api
+            .set_telegram_polling_state(TelegramPollingState::Disconnected)
+            .await;
+        return Ok(None);
+    }
+    let config = load_app_config()?;
+    spawn_bot_runtime_with_runtimes(config, management_api, app_server_runtime, tui_proxy)
+        .await
+        .map(Some)
 }

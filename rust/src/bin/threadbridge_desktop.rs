@@ -19,7 +19,7 @@ mod macos_app {
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
     use wry::{WebView, WebViewBuilder};
 
-    use threadbridge_rust::bot_runner::spawn_bot_runtime_from_env;
+    use threadbridge_rust::bot_runner::spawn_bot_runtime_from_env_with_runtimes;
     use threadbridge_rust::config::load_runtime_config;
     use threadbridge_rust::hcodex_runtime;
     use threadbridge_rust::hcodex_ws_bridge;
@@ -99,9 +99,14 @@ mod macos_app {
         let management_api = runtime.block_on(spawn_management_api(runtime_config.clone()))?;
         let owner = Arc::new(runtime.block_on(DesktopRuntimeOwner::new(runtime_config.clone()))?);
         runtime.block_on(management_api.set_runtime_owner(Some((*owner).clone())));
+        runtime.block_on(reconcile_runtime_owner(&management_api, &owner));
 
         if runtime
-            .block_on(spawn_bot_runtime_from_env(management_api.clone()))?
+            .block_on(spawn_bot_runtime_from_env_with_runtimes(
+                management_api.clone(),
+                owner.app_server_runtime(),
+                owner.tui_proxy_runtime(),
+            ))?
             .is_some()
         {
             info!(
@@ -233,8 +238,8 @@ mod macos_app {
     ) {
         runtime.spawn(async move {
             loop {
-                maybe_start_bot_runtime(&management_api).await;
                 reconcile_runtime_owner(&management_api, &owner).await;
+                maybe_start_bot_runtime(&management_api, &owner).await;
                 send_snapshot(&management_api, &proxy).await;
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
@@ -248,8 +253,8 @@ mod macos_app {
         proxy: EventLoopProxy<UserEvent>,
     ) {
         runtime.spawn(async move {
-            maybe_start_bot_runtime(&management_api).await;
             reconcile_runtime_owner(&management_api, &owner).await;
+            maybe_start_bot_runtime(&management_api, &owner).await;
             send_snapshot(&management_api, &proxy).await;
         });
     }
@@ -276,7 +281,10 @@ mod macos_app {
         }
     }
 
-    async fn maybe_start_bot_runtime(management_api: &ManagementApiHandle) {
+    async fn maybe_start_bot_runtime(
+        management_api: &ManagementApiHandle,
+        owner: &DesktopRuntimeOwner,
+    ) {
         let Ok(setup) = management_api.setup_state().await else {
             return;
         };
@@ -286,7 +294,13 @@ mod macos_app {
         {
             return;
         }
-        if let Err(error) = spawn_bot_runtime_from_env(management_api.clone()).await {
+        if let Err(error) = spawn_bot_runtime_from_env_with_runtimes(
+            management_api.clone(),
+            owner.app_server_runtime(),
+            owner.tui_proxy_runtime(),
+        )
+        .await
+        {
             warn!(event = "desktop_runtime.bot.auto_start_failed", error = %error);
         }
     }

@@ -8,6 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
+use tokio::task::AbortHandle;
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -39,6 +40,7 @@ struct WorkspaceTuiProxy {
     workspace_path: PathBuf,
     daemon_ws_url: String,
     proxy_base_ws_url: String,
+    abort_handle: AbortHandle,
 }
 
 impl TuiProxyManager {
@@ -55,15 +57,41 @@ impl TuiProxyManager {
         daemon_ws_url: &str,
     ) -> Result<WorkspaceRuntimeState> {
         let key = canonical_workspace_key(workspace_path)?;
-        if let Some(existing) = self.inner.lock().await.get(&key).cloned() {
-            let state = WorkspaceRuntimeState {
-                schema_version: 1,
-                workspace_cwd: existing.workspace_path.display().to_string(),
-                daemon_ws_url: existing.daemon_ws_url.clone(),
-                tui_proxy_base_ws_url: Some(existing.proxy_base_ws_url.clone()),
-            };
-            write_workspace_runtime_state_file(&existing.workspace_path, &state).await?;
-            return Ok(state);
+        let mut inner = self.inner.lock().await;
+        if let Some(existing) = inner.get(&key).cloned() {
+            if should_reuse_existing_proxy(
+                &existing.daemon_ws_url,
+                daemon_ws_url,
+                proxy_endpoint_is_live(&existing.proxy_base_ws_url).await,
+            ) {
+                let state = WorkspaceRuntimeState {
+                    schema_version: 1,
+                    workspace_cwd: existing.workspace_path.display().to_string(),
+                    daemon_ws_url: existing.daemon_ws_url.clone(),
+                    tui_proxy_base_ws_url: Some(existing.proxy_base_ws_url.clone()),
+                };
+                info!(
+                    event = "tui_proxy.reuse",
+                    workspace = %existing.workspace_path.display(),
+                    daemon_ws_url = %existing.daemon_ws_url,
+                    proxy_base_ws_url = %existing.proxy_base_ws_url,
+                    "reusing workspace TUI proxy"
+                );
+                drop(inner);
+                write_workspace_runtime_state_file(&existing.workspace_path, &state).await?;
+                return Ok(state);
+            }
+
+            info!(
+                event = "tui_proxy.rebuild",
+                workspace = %existing.workspace_path.display(),
+                previous_daemon_ws_url = %existing.daemon_ws_url,
+                requested_daemon_ws_url = %daemon_ws_url,
+                previous_proxy_base_ws_url = %existing.proxy_base_ws_url,
+                "rebuilding workspace TUI proxy"
+            );
+            existing.abort_handle.abort();
+            inner.remove(&key);
         }
 
         let workspace_path = workspace_path
@@ -81,7 +109,7 @@ impl TuiProxyManager {
         let workspace_for_task = workspace_path.clone();
         let daemon_ws_url_for_task = daemon_ws_url.clone();
 
-        tokio::spawn(async move {
+        let listener_task = tokio::spawn(async move {
             if let Err(error) = run_proxy_listener(
                 listener,
                 repository,
@@ -93,11 +121,13 @@ impl TuiProxyManager {
                 warn!(event = "tui_proxy.listener.failed", error = %error);
             }
         });
+        let abort_handle = listener_task.abort_handle();
 
         let runtime = WorkspaceTuiProxy {
             workspace_path: workspace_path.clone(),
             daemon_ws_url: daemon_ws_url.to_owned(),
             proxy_base_ws_url: proxy_base_ws_url.clone(),
+            abort_handle,
         };
         let state = WorkspaceRuntimeState {
             schema_version: 1,
@@ -105,10 +135,33 @@ impl TuiProxyManager {
             daemon_ws_url: runtime.daemon_ws_url.clone(),
             tui_proxy_base_ws_url: Some(runtime.proxy_base_ws_url.clone()),
         };
+        info!(
+            event = "tui_proxy.spawned",
+            workspace = %workspace_path.display(),
+            daemon_ws_url = %runtime.daemon_ws_url,
+            proxy_base_ws_url = %runtime.proxy_base_ws_url,
+            "spawned workspace TUI proxy"
+        );
+        inner.insert(key, runtime);
+        drop(inner);
         write_workspace_runtime_state_file(&workspace_path, &state).await?;
-        self.inner.lock().await.insert(key, runtime);
         Ok(state)
     }
+}
+
+async fn proxy_endpoint_is_live(url: &str) -> bool {
+    let Some(socket_addr) = url.strip_prefix("ws://") else {
+        return false;
+    };
+    TcpStream::connect(socket_addr).await.is_ok()
+}
+
+fn should_reuse_existing_proxy(
+    existing_daemon_ws_url: &str,
+    requested_daemon_ws_url: &str,
+    proxy_alive: bool,
+) -> bool {
+    existing_daemon_ws_url == requested_daemon_ws_url && proxy_alive
 }
 
 async fn run_proxy_listener(
@@ -539,7 +592,7 @@ fn canonical_workspace_key(workspace_path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TrackedRequestMethod, track_client_request};
+    use super::{TrackedRequestMethod, should_reuse_existing_proxy, track_client_request};
     use tokio_tungstenite::tungstenite::Message as WsMessage;
 
     #[test]
@@ -550,5 +603,24 @@ mod tests {
         );
         let tracked = track_client_request(&message).expect("parse ok");
         assert_eq!(tracked, Some((42, TrackedRequestMethod::TurnStart)));
+    }
+
+    #[test]
+    fn existing_proxy_is_not_reused_when_daemon_url_changes() {
+        assert!(!should_reuse_existing_proxy(
+            "ws://127.0.0.1:40111",
+            "ws://127.0.0.1:40112",
+            true
+        ));
+        assert!(!should_reuse_existing_proxy(
+            "ws://127.0.0.1:40111",
+            "ws://127.0.0.1:40111",
+            false
+        ));
+        assert!(should_reuse_existing_proxy(
+            "ws://127.0.0.1:40111",
+            "ws://127.0.0.1:40111",
+            true
+        ));
     }
 }

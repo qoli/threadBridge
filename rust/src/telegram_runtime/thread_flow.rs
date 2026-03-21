@@ -39,7 +39,7 @@ async fn start_fresh_binding(
         &workspace_path,
     )
     .await?;
-    let codex_workspace = shared_codex_workspace(state, workspace_path).await?;
+    let codex_workspace = prepare_workspace_runtime_for_control(state, workspace_path).await?;
     let binding = state.codex.start_thread(&codex_workspace).await?;
     state
         .repository
@@ -424,7 +424,8 @@ pub(crate) async fn run_command(
             let workspace_path =
                 ensure_bound_workspace_runtime(state, session.as_ref().context("missing binding")?)
                     .await?;
-            let codex_workspace = shared_codex_workspace(state, workspace_path).await?;
+            let codex_workspace =
+                prepare_workspace_runtime_for_control(state, workspace_path).await?;
             let typing = TypingHeartbeat::start(bot.clone(), msg.chat.id, Some(thread_id));
             let reconnect = state
                 .codex

@@ -5,6 +5,7 @@ use teloxide::prelude::*;
 use teloxide::requests::Requester;
 use teloxide::types::{BotCommand, CallbackQuery, LinkPreviewOptions, ThreadId};
 use teloxide::utils::command::BotCommands;
+use tokio::net::TcpStream;
 use tracing::{error, warn};
 
 use crate::app_server_runtime::WorkspaceRuntimeManager;
@@ -66,10 +67,43 @@ pub struct AppState {
     pub(crate) tui_proxy: TuiProxyManager,
     pub(crate) seed_template_path: PathBuf,
     pub(crate) workspace_status_cache: WorkspaceStatusCache,
+    pub(crate) runtime_ownership_mode: RuntimeOwnershipMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RuntimeOwnershipMode {
+    SelfManaged,
+    DesktopOwner,
 }
 
 impl AppState {
     pub async fn new(config: AppConfig) -> Result<Self> {
+        let repository = ThreadRepository::open(&config.runtime.data_root_path).await?;
+        let app_server_runtime = WorkspaceRuntimeManager::new();
+        let tui_proxy = TuiProxyManager::new(repository.clone());
+        Self::new_with_runtimes(config, app_server_runtime, tui_proxy).await
+    }
+
+    pub async fn new_with_runtimes(
+        config: AppConfig,
+        app_server_runtime: WorkspaceRuntimeManager,
+        tui_proxy: TuiProxyManager,
+    ) -> Result<Self> {
+        Self::new_with_runtimes_and_mode(
+            config,
+            app_server_runtime,
+            tui_proxy,
+            RuntimeOwnershipMode::SelfManaged,
+        )
+        .await
+    }
+
+    pub(crate) async fn new_with_runtimes_and_mode(
+        config: AppConfig,
+        app_server_runtime: WorkspaceRuntimeManager,
+        tui_proxy: TuiProxyManager,
+        runtime_ownership_mode: RuntimeOwnershipMode,
+    ) -> Result<Self> {
         let repository = ThreadRepository::open(&config.runtime.data_root_path).await?;
         let seed_template_path = validate_seed_template(
             &config
@@ -80,13 +114,18 @@ impl AppState {
         )?;
         Ok(Self {
             codex: CodexRunner::new(config.runtime.codex_model.clone()),
-            app_server_runtime: WorkspaceRuntimeManager::new(),
-            tui_proxy: TuiProxyManager::new(repository.clone()),
+            app_server_runtime,
+            tui_proxy,
             repository,
             seed_template_path,
             workspace_status_cache: WorkspaceStatusCache::new(),
+            runtime_ownership_mode,
             config,
         })
+    }
+
+    pub(crate) fn runtime_is_owner_managed(&self) -> bool {
+        self.runtime_ownership_mode == RuntimeOwnershipMode::DesktopOwner
     }
 }
 
@@ -436,11 +475,33 @@ pub(crate) async fn ensure_bound_workspace_runtime(
         &workspace,
     )
     .await?;
-    let _ = state
+    if state.runtime_is_owner_managed() {
+        let _ = read_owner_managed_workspace_runtime(&workspace).await?;
+    } else {
+        let _ = state
+            .app_server_runtime
+            .ensure_workspace_daemon(&workspace)
+            .await?;
+    }
+    Ok(workspace)
+}
+
+pub(crate) async fn prepare_workspace_runtime_for_control(
+    state: &AppState,
+    workspace: PathBuf,
+) -> Result<CodexWorkspace> {
+    let runtime = state
         .app_server_runtime
         .ensure_workspace_daemon(&workspace)
         .await?;
-    Ok(workspace)
+    let _ = state
+        .tui_proxy
+        .ensure_workspace_proxy(&workspace, &runtime.daemon_ws_url)
+        .await?;
+    Ok(CodexWorkspace {
+        working_directory: workspace,
+        app_server_url: Some(runtime.daemon_ws_url),
+    })
 }
 
 async fn should_route_telegram_input_to_live_tui_session(
@@ -511,25 +572,61 @@ pub(crate) async fn shared_codex_workspace(
     state: &AppState,
     workspace: PathBuf,
 ) -> Result<CodexWorkspace> {
-    let runtime = state
-        .app_server_runtime
-        .ensure_workspace_daemon(&workspace)
-        .await?;
-    let _ = state
-        .tui_proxy
-        .ensure_workspace_proxy(&workspace, &runtime.daemon_ws_url)
-        .await?;
+    let runtime = if state.runtime_is_owner_managed() {
+        read_owner_managed_workspace_runtime(&workspace).await?
+    } else {
+        state
+            .app_server_runtime
+            .ensure_workspace_daemon(&workspace)
+            .await?
+    };
     Ok(CodexWorkspace {
         working_directory: workspace,
         app_server_url: Some(runtime.daemon_ws_url),
     })
 }
 
+async fn read_owner_managed_workspace_runtime(
+    workspace: &std::path::Path,
+) -> Result<crate::app_server_runtime::WorkspaceRuntimeState> {
+    let state_path = workspace
+        .join(".threadbridge")
+        .join("state")
+        .join("app-server")
+        .join("current.json");
+    let contents = tokio::fs::read_to_string(&state_path)
+        .await
+        .with_context(|| {
+            format!(
+                "missing owner-managed runtime state: {}",
+                state_path.display()
+            )
+        })?;
+    let state: crate::app_server_runtime::WorkspaceRuntimeState = serde_json::from_str(&contents)
+        .with_context(|| {
+        format!(
+            "invalid owner-managed runtime state: {}",
+            state_path.display()
+        )
+    })?;
+    let Some(socket_addr) = state.daemon_ws_url.strip_prefix("ws://") else {
+        anyhow::bail!("owner-managed daemon url must start with ws://");
+    };
+    if TcpStream::connect(socket_addr).await.is_err() {
+        anyhow::bail!(
+            "workspace runtime is not ready for {}. Repair Runtime from desktop owner first.",
+            workspace.display()
+        );
+    }
+    Ok(state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, Command, command_list, maybe_route_telegram_input_to_tui_session,
-        should_cleanup_topic_rename_service_message, topic_rename_service_message_thread_id,
+        AppState, Command, RuntimeOwnershipMode, command_list,
+        maybe_route_telegram_input_to_tui_session, should_cleanup_topic_rename_service_message,
+        topic_rename_service_message_thread_id,
     };
     use crate::app_server_runtime::WorkspaceRuntimeManager;
     use crate::codex::CodexRunner;
@@ -669,6 +766,7 @@ mod tests {
             tui_proxy: TuiProxyManager::new(repository.clone()),
             seed_template_path: root.join("seed.md"),
             workspace_status_cache: WorkspaceStatusCache::new(),
+            runtime_ownership_mode: RuntimeOwnershipMode::SelfManaged,
         };
 
         let session: Option<SessionBinding> =
