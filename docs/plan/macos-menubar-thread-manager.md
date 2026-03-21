@@ -45,7 +45,7 @@
 
 - desktop runtime owner 對 handoff continuity / adoption 狀態的 owner 收斂仍不完整
 - managed Codex source build 目前仍是直接呼叫 cargo 的實作骨架，尚未收斂成更正式的 update/install UX
-- web 管理面的 UI 還是內嵌 HTML，尚未拆成更正式的前端結構
+- web 管理面已拆出靜態 asset，但前端結構仍偏輕量，尚未收斂成更正式的模組化 UI
 
 ## 問題
 
