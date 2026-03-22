@@ -55,6 +55,7 @@
   - pick-and-add、adopt / reject TUI、runtime-owner reconcile、launch config 等 control 已進入 management API
   - managed Codex source build / cache refresh / build defaults 已進入 management API
   - management health view 目前仍反映過渡性的多來源 heartbeat 模型
+  - web 管理面新增確認的 UI 收斂方向是可評估以 HeroUI 重構
   - 目前新增確認的收斂方向是 `workspace = thread` 主模型與移除暫不可用的 onboarding
 
 ## 純草稿

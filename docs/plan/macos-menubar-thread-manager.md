@@ -58,6 +58,11 @@
 - managed Codex source build 目前仍是直接呼叫 cargo 的實作骨架，尚未收斂成更正式的 update/install UX
 - web 管理面已拆成靜態 HTML/CSS/JS asset，但前端結構仍偏輕量，尚未收斂成更正式的模組化 UI
 
+目前新增確認的一個 UI 收斂方向是：
+
+- web 管理面可評估以 HeroUI 作為前端組件庫重構基礎
+- tray menu 應進一步收斂；workspace submenu 在 v1 只保留 `New Session` 與 `Continue Telegram Session` 兩個入口，不再承擔 recent session browser 或其他 control action
+
 目前新增確認的優先級判斷是：
 
 - owner 責任收斂應視為這條 plan 的高優先級工作
@@ -113,17 +118,40 @@
 
 每個 workspace submenu 固定包含：
 
-- `Start New hcodex Session`
-- 分隔線
-- 最近 5 個 Codex `thread.id`
+- `New Session`
+- `Continue Telegram Session`
 
-點 recent `thread.id` 時，語義應等價於：
+`New Session` 的語義應等價於：
 
-- 對該 workspace 走受管 `hcodex resume <thread.id>`
+- 對該 workspace 走受管的新 `hcodex` session 啟動
+
+`Continue Telegram Session` 的語義應等價於：
+
+- 對該 workspace 恢復目前 Telegram thread 綁定的 `current_codex_thread_id`
+
+v1 的 tray menu 明確不再提供：
+
+- recent session list / arbitrary session picker
+- archive / restore / reconnect / repair runtime
+- runtime/debug 類 control action
 
 ### 2. Web 管理面
 
 瀏覽器管理面是正式管理面，不是單純 token 設定頁。
+
+在前端實作上，現在的靜態 HTML/CSS/JS 骨架比較像過渡方案。
+
+若之後要把管理面收斂成更正式的產品 UI，一個合理方向是：
+
+- 以 HeroUI 作為組件庫基礎重構 web 管理面
+
+這條線的重點不是單純換皮，而是讓下面這些區塊有更穩定的組件化結構：
+
+- workspace list / cards
+- runtime health summary
+- recent session list
+- managed Codex settings
+- archive / restore / repair / adopt 等 action 的確認流程
 
 v1 的主模型固定為：
 
@@ -163,6 +191,12 @@ workspace 管理頁至少顯示：
 
 目前代碼已開始同時暴露 `GET /api/threads`、`GET /api/workspaces`、`GET /api/archived-threads`，但主 UI 應以 `GET /api/workspaces` 與 `GET /api/archived-threads` 為準；`GET /api/threads` 不再作為普通用戶的一級列表。
 
+如果引入 HeroUI，較合理的定位應是：
+
+- 只重構前端呈現與互動組件
+- 不改變 workspace-first 的資訊架構
+- 不在 UI 層重新發明狀態模型
+
 ### 3. Workspace 快捷操作
 
 web 管理面中的 v1 action 以既有 lifecycle/control 語義為主：
@@ -177,6 +211,7 @@ web 管理面中的 v1 action 以既有 lifecycle/control 語義為主：
 
 其中：
 
+- tray menu 不應再分流這些 action；除 `New Session` 與 `Continue Telegram Session` 外，其餘入口都留在 web 管理面
 - `Add Workspace` 應走 native folder picker，而不是要求普通用戶輸入絕對路徑
 - `repair continuity` 應按狀態自動選擇 `Adopt TUI` 或 `Repair Session`
 - raw `bind workspace` / `reject TUI` 可以保留，但只應存在於 advanced / debug 區
@@ -271,6 +306,14 @@ web 管理面中的 v1 action 以既有 lifecycle/control 語義為主：
 - `build_info`
 
 這一層應盡量沿用 [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md) 的命名，而不是在 UI 層另造狀態模型。
+
+也就是說，HeroUI 這條線若落地，應被理解為：
+
+- web 管理面前端實作收斂
+
+而不是：
+
+- 管理面產品模型重寫
 
 ## 建議的架構方向
 
@@ -398,6 +441,7 @@ v1 明確限制：
 - desktop runtime 是否最終要拆成 tray 進程 + helper 進程？
 - managed Codex binary 的 update UX 要做成自動、手動，還是兩者並存？
 - web 管理面與未來 observability 面是否共用同一個 web shell？
+- HeroUI 若引入，是只先用在首頁與 workspace list，還是整個 web 管理面一起重構？
 
 ## 建議的下一步
 
@@ -405,3 +449,4 @@ v1 明確限制：
 2. 先把 [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md) 補上 desktop runtime owner 的最新責任邊界。
 3. 先在 runtime 裡補齊 local query / control API 與 managed Codex update 能力。
 4. 在 API 穩定後，再持續收斂 tray-icon UI 與 workspace-first 瀏覽器管理頁。
+5. 若要正式重構 web 管理面，可評估以 HeroUI 作為前端組件庫基礎。
