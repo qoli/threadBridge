@@ -24,7 +24,7 @@
 title 現在承載的是非常少量的 durable runtime state：
 
 - `broken`
-  - 目前 binding 已失效，需要 `/reconnect_codex` 或 `/new`
+  - 目前 binding 已失效，需要 `/repair_session` 或 `/new_session`
 
 `busy` 已從 title 語義移除：
 
@@ -58,7 +58,7 @@ title 現在承載的是非常少量的 durable runtime state：
 
 也就是說，title 現在不再對齊：
 
-- Telegram 當前採用的 Codex session 是否正在執行
+- `current_codex_thread_id` 對應的 active turn 是否正在執行
 - 某個本地 live session
 - 某個 attach viewer 狀態
 

@@ -12,12 +12,14 @@
 - ordinary Telegram command / text / image gate 已開始改走 shared resolver，而不是各自直接讀 `Archived` / `session_broken`
 - management API 的 `ThreadStateView` 已開始直接暴露 canonical `lifecycle_status` / `binding_status` / `run_status`
 - management API 的 `ThreadStateView` / `ManagedWorkspaceView` / `ArchivedThreadView` / `RuntimeHealthView` 已開始透過共享的 protocol/view builder 收斂，而不是各自在 handler 內重組狀態
-- topic title 的 `busy` / `broken` suffix 已開始從 canonical state axes 派生
+- topic title 的 `broken` suffix 已開始從 canonical binding state 派生；`busy` 已退出 title 語義
 - `binding_status=conflict`、`run_status=unbound` 這類過渡值已從 canonical state axes 中移除
 
 目前尚未完成的部分：
 
 - 讓更多 surface 在呈現 thread / workspace state 時完全只引用同一套 canonical axes
+- 把 canonical view 的欄位命名完全收斂到現行模型，例如 `current_codex_thread_id`
+- 把狀態轉移 authority 再集中，避免 archive / restore / control action 仍分散在多個入口各自更新 metadata/binding
 - 把 `/api/events` 與 observability 層也收斂到同一套正式 protocol，而不是保留目前的 invalidation-style SSE
 
 ## 問題
@@ -133,7 +135,8 @@ source of truth：
 - `binding_status`
 - `run_status`
 - `workspace_cwd`
-- `codex_thread_id`
+- `current_codex_thread_id`
+- `tui_active_codex_thread_id`
 - `session_broken_reason`
 - `last_verified_at`
 - `last_codex_turn_at`
@@ -142,6 +145,11 @@ source of truth：
 這不是要求目前從零新增 API。
 
 目前代碼中已存在名稱相近的 `ThreadStateView` / `ManagedWorkspaceView`，但欄位與來源仍是過渡狀態；後續應往這份文檔收斂，而不是把現在的回傳 shape 直接當成最終主規格。
+
+這裡要明確固定一個命名原則：
+
+- 若描述 Telegram thread 目前正式採用的 Codex continuity，應直接寫 `current_codex_thread_id`
+- 不應在主規格裡再退回泛稱 `codex_thread_id`
 
 ## 狀態轉移
 
@@ -162,7 +170,7 @@ source of truth：
 - `lifecycle_status = active`
 - `binding_status = healthy`
 - `run_status = idle`
-- `workspace_cwd` 與 `codex_thread_id` 成為可用值
+- `workspace_cwd` 與 `current_codex_thread_id` 成為可用值
 
 ### 一般 turn 開始
 
@@ -220,7 +228,12 @@ archive 後：
 
 - `lifecycle_status = archived`
 - `binding_status` 原樣保留
-- `run_status` 不應處於 `running`
+- 在 idle 情況下，`run_status` 維持 `idle`
+
+目前仍要承認一個過渡現況：
+
+- archive 目前主要仍是 Telegram lifecycle / metadata 變化
+- 若之後要嚴格禁止 archived thread 保持 `running`，仍需要更集中化的 transition authority 或明確 gate
 
 ### restore
 

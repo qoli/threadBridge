@@ -6,8 +6,8 @@
 
 目前實際行為仍然是：
 
-- `/bind_workspace` 會安裝 `.threadbridge/`
-- `/bind_workspace` 會同步更新 workspace `AGENTS.md` 的 managed appendix
+- `/add_workspace` / 等價 create-bind flow 會安裝 `.threadbridge/`
+- `/add_workspace` / 等價 create-bind flow 會同步更新 workspace `AGENTS.md` 的 managed appendix
 
 也就是說，目前還沒有 `tools only` 或 `no injection` 模式。
 
@@ -111,7 +111,7 @@
 
 - `AGENTS.md`
   - 保留使用者原始內容
-  - 追加一段很短的 managed handoff block
+  - 追加一段很短的 managed 轉介段落
 - `AGENTS.threadbridge.md`
   - 放完整 runtime appendix 內容
 
@@ -123,7 +123,7 @@
 
 ## 可能的產品語意
 
-目前 `/bind_workspace` 的語意比較接近：
+目前 `/add_workspace` / create-bind flow 的語意比較接近：
 
 - 綁定 workspace
 - 安裝 runtime
@@ -131,15 +131,15 @@
 
 未來可以改成更細：
 
-- `/bind_workspace <path>`
+- `/add_workspace <path>`
   - 只做基礎 binding
 - `/enable_threadbridge_appendix`
   - 明確啟用 inline appendix
 - `/enable_threadbridge_child_agents`
   - 建立子文檔並在 root `AGENTS.md` 注入轉介
-- 或 `/bind_workspace <path> --tools-only`
+- 或 `/add_workspace <path> --tools-only`
   - 綁定但不注入 appendix
-- 或 `/bind_workspace <path> --agents-mode=inline|child|external|tools-only`
+- 或 `/add_workspace <path> --agents-mode=inline|child|external|tools-only`
   - 明確選擇指令面策略
 
 如果不想把命令做太複雜，也可以先從 config 開關開始。
@@ -167,7 +167,7 @@
 
 如果採用 `child_document`，bootstrap 還需要再拆出兩個穩定責任：
 
-- `ensure_workspace_agents_handoff()`
+- `ensure_workspace_agents_referral_block()`
   - 在 root `AGENTS.md` 建立或更新短轉介段落
 - `ensure_workspace_agents_child_document()`
   - 寫入或更新 `AGENTS.threadbridge.md`
@@ -206,7 +206,7 @@
 - runtime 模型會變得多一個分支
 - prompt preamble、inline appendix、child document 模式要同時維護
 - 如果沒有 appendix，Codex 使用 `.threadbridge/` 的穩定性可能稍弱
-- 需要決定 child document 的固定命名、相對路徑與 handoff 文案格式
+- 需要決定 child document 的固定命名、相對路徑與轉介文案格式
 
 ## 開放問題
 
@@ -215,13 +215,13 @@
 - 如果使用者手動修改了 `AGENTS.md` managed block，要如何處理？
 - 未來是否要支援「先 tools-only，之後再手動開啟 appendix」？
 - `child_document` 的檔名應該是 `AGENTS.threadbridge.md`、`.threadbridge/AGENTS.md`，還是別的固定位置？
-- root `AGENTS.md` 的 handoff block 要做到多短，才既可靠又不惹人嫌？
+- root `AGENTS.md` 的轉介段落要做到多短，才既可靠又不惹人嫌？
 - 如果專案本身已經有多份子 AGENTS 文件，threadBridge 要不要遵循既有命名慣例？
 
 ## 建議的下一步
 
 1. 先把 runtime bootstrap API 拆成 tools 與 appendix 兩部分。
 2. 把 appendix enablement 改成明確的 `agents_injection_mode`，不要只用布林值。
-3. 為 `child_document` 模式定義固定檔名、handoff block 格式與更新策略。
+3. 為 `child_document` 模式定義固定檔名、轉介段落格式與更新策略。
 4. 決定預設策略是 `inline_appendix`、`child_document`、還是 `tools_only`。
 5. 為「非 inline 模式」設計 prompt fallback，確保 `.threadbridge/` 仍然可用。
