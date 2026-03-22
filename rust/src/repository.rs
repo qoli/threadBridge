@@ -69,16 +69,6 @@ pub struct SessionBinding {
     legacy_codex_thread_id: Option<String>,
     #[serde(default, skip_serializing, rename = "selected_session_id")]
     legacy_selected_session_id: Option<String>,
-    #[serde(default, skip_serializing, rename = "attachment_state")]
-    legacy_attachment_state: Option<SessionAttachmentState>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionAttachmentState {
-    #[default]
-    None,
-    LocalHandoff,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,7 +219,6 @@ impl SessionBinding {
         }
         self.legacy_codex_thread_id = None;
         self.legacy_selected_session_id = None;
-        self.legacy_attachment_state = None;
         self
     }
 
@@ -251,7 +240,6 @@ impl SessionBinding {
             updated_at: now,
             legacy_codex_thread_id: None,
             legacy_selected_session_id: None,
-            legacy_attachment_state: None,
         }
     }
 }
@@ -1250,7 +1238,7 @@ pub struct AppendPendingImageInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppendPendingImageInput, ThreadRepository, ThreadScope, ThreadStatus,
+        AppendPendingImageInput, SessionBinding, ThreadRepository, ThreadScope, ThreadStatus,
         TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
         TranscriptMirrorPhase, TranscriptMirrorRole,
     };
@@ -1326,6 +1314,31 @@ mod tests {
         let binding = repo.read_session_binding(&updated).await.unwrap().unwrap();
         assert_eq!(binding.current_codex_thread_id.as_deref(), Some("thr_cli"));
         assert_eq!(binding.tui_active_codex_thread_id, None);
+        assert!(!binding.tui_session_adoption_pending);
+    }
+
+    #[test]
+    fn session_binding_ignores_legacy_attachment_state_key() {
+        let binding: SessionBinding = serde_json::from_value(serde_json::json!({
+            "schema_version": 3,
+            "workspace_cwd": "/tmp/workspace",
+            "current_codex_thread_id": "thr_123",
+            "bound_at": "2026-03-22T00:00:00.000Z",
+            "initialized_at": "2026-03-22T00:00:00.000Z",
+            "last_verified_at": "2026-03-22T00:00:00.000Z",
+            "session_broken": false,
+            "session_broken_at": null,
+            "session_broken_reason": null,
+            "tui_active_codex_thread_id": null,
+            "tui_session_adoption_pending": false,
+            "tui_session_adoption_prompt_message_id": null,
+            "updated_at": "2026-03-22T00:00:00.000Z",
+            "attachment_state": "local_handoff"
+        }))
+        .unwrap();
+
+        assert_eq!(binding.current_codex_thread_id.as_deref(), Some("thr_123"));
+        assert_eq!(binding.workspace_cwd.as_deref(), Some("/tmp/workspace"));
         assert!(!binding.tui_session_adoption_pending);
     }
 
