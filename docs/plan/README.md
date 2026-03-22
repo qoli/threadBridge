@@ -42,11 +42,13 @@
 - [session-lifecycle.md](/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md)
   - `/add_workspace`、`/new_session`、`/repair_session` 的正式生命週期已存在
   - `current_codex_thread_id` 已成為 canonical pointer，`tui_active_codex_thread_id` / adoption 也已進入正式 runtime
+  - Telegram thread 內的一般輸入與 session-control gate 已開始直接讀 canonical state
   - 剩餘工作主要是兼容層與狀態語義收尾
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
   - 本地 management API 已開始承接它的 view / action 命名
   - local HTTP + SSE 已從草稿變成實際 transport
   - 近期已再補上 runtime-owner reconcile、managed Codex build defaults、workspace launch config、continue-current launch control，以及 thread transcript read API
+  - `GET /api/threads` 已開始對外暴露 canonical `lifecycle_status`
   - runtime health 已改成 owner-canonical，`workspace_state` 僅保留 debug/observation 語義
   - process transcript event / mirror model 已接到 management API、web UI 與 Telegram rolling preview，但 protocol 仍未收斂成正式 transport-neutral 契約
 - [macos-menubar-thread-manager.md](/Volumes/Data/Github/threadBridge/docs/plan/macos-menubar-thread-manager.md)
@@ -60,7 +62,7 @@
   - 目前新增確認的收斂方向是 `workspace = thread` 主模型、desktop-only 啟動與移除暫不可用的 onboarding
 - [runtime-state-machine.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-state-machine.md)
   - canonical `lifecycle_status` / `binding_status` / `run_status` 已開始透過 shared resolver 進入代碼
-  - management API、Telegram busy gate、topic title 已開始共用同一套 `run_status` 判定
+  - ordinary Telegram gate、management API、topic title 已開始共用同一套 canonical state axes
   - `binding_status=conflict`、`run_status=unbound` 這類過渡值已退出 canonical state axes
   - 但它仍未成為所有 surface 的完整唯一 source of truth
 

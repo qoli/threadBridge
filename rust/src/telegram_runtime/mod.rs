@@ -17,9 +17,9 @@ pub(crate) use crate::image_artifacts::{
 };
 pub(crate) use crate::repository::{
     AppendPendingImageInput, LogDirection, SessionBinding, ThreadRecord, ThreadRepository,
-    ThreadStatus, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
-    TranscriptMirrorRole,
+    TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin, TranscriptMirrorRole,
 };
+use crate::thread_state::{BindingStatus, ResolvedThreadState};
 pub(crate) use crate::tool_results::{TelegramOutboxItem, parse_telegram_outbox};
 use crate::tui_proxy::TuiProxyManager;
 pub(crate) use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
@@ -552,6 +552,24 @@ pub(crate) fn session_binding_hint(session: Option<&SessionBinding>) -> &'static
     }
 }
 
+pub(crate) fn session_binding_hint_for_state(
+    state: ResolvedThreadState,
+    session: Option<&SessionBinding>,
+) -> &'static str {
+    match state.binding_status {
+        BindingStatus::Broken => {
+            "This workspace's Codex session is invalid. Use /repair_session to verify it again or /new_session to start a fresh one for the same workspace."
+        }
+        BindingStatus::Unbound => {
+            "This workspace thread is not bound yet. Archive it and re-add the workspace from the control chat with /add_workspace <absolute-path>."
+        }
+        BindingStatus::Healthy if usable_bound_session_id(session).is_none() => {
+            "This workspace is missing a usable Codex session id. Use /new_session to start a fresh one."
+        }
+        BindingStatus::Healthy => session_binding_hint(session),
+    }
+}
+
 pub(crate) fn command_argument_text<'a>(msg: &'a Message, command_name: &str) -> Option<&'a str> {
     let text = msg.text()?.trim();
     let prefix = format!("/{command_name}");
@@ -744,13 +762,14 @@ mod tests {
     use super::{
         AppState, Command, RuntimeOwnershipMode, TelegramSystemIntent, TelegramTextRole,
         command_list, format_role_text, format_system_text,
-        maybe_route_telegram_input_to_tui_session, should_cleanup_topic_rename_service_message,
-        topic_rename_service_message_thread_id,
+        maybe_route_telegram_input_to_tui_session, session_binding_hint_for_state,
+        should_cleanup_topic_rename_service_message, topic_rename_service_message_thread_id,
     };
     use crate::app_server_runtime::WorkspaceRuntimeManager;
     use crate::codex::CodexRunner;
     use crate::config::{AppConfig, RuntimeConfig, TelegramConfig};
     use crate::repository::{SessionBinding, ThreadRepository};
+    use crate::thread_state::{BindingStatus, LifecycleStatus, ResolvedThreadState, RunStatus};
     use crate::tui_proxy::TuiProxyManager;
     use crate::workspace_status::{
         SessionStatusOwner, WorkspaceStatusCache, WorkspaceStatusPhase, read_session_status,
@@ -866,6 +885,18 @@ mod tests {
             format_system_text(TelegramSystemIntent::Warning, "failed"),
             "Warning: failed"
         );
+    }
+
+    #[test]
+    fn binding_hint_prefers_resolved_broken_state() {
+        let state = ResolvedThreadState {
+            lifecycle_status: LifecycleStatus::Active,
+            binding_status: BindingStatus::Broken,
+            run_status: RunStatus::Idle,
+        };
+        let hint = session_binding_hint_for_state(state, None);
+        assert!(hint.contains("/repair_session"));
+        assert!(hint.contains("/new_session"));
     }
 
     #[tokio::test]

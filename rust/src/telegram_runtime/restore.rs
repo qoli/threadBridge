@@ -3,6 +3,7 @@ use teloxide::payloads::setters::*;
 use teloxide::types::{CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup};
 
 use super::*;
+use crate::thread_state::{LifecycleStatus, resolve_lifecycle_status};
 
 pub(crate) const CALLBACK_RESTORE_PICK: &str = "restore_pick";
 pub(crate) const CALLBACK_RESTORE_PAGE: &str = "restore_page";
@@ -102,7 +103,10 @@ pub(crate) async fn restore_thread(
         return Ok(());
     };
 
-    if !matches!(thread_record.metadata.status, ThreadStatus::Archived) {
+    if !matches!(
+        resolve_lifecycle_status(&thread_record.metadata),
+        LifecycleStatus::Archived
+    ) {
         bot.answer_callback_query(query.id.clone())
             .text("That thread binding is already active.")
             .await?;

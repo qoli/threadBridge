@@ -9,7 +9,9 @@
 - `active` / `archived`
 - `healthy` / `broken` / `unbound` 的 session 綁定語義
 - shared thread-state resolver 已開始成為 `lifecycle_status` / `binding_status` / `run_status` 的共同判定來源
-- management API、Telegram busy gate、topic title 已開始共用同一套 `run_status` 解析
+- ordinary Telegram command / text / image gate 已開始改走 shared resolver，而不是各自直接讀 `Archived` / `session_broken`
+- management API 的 `ThreadStateView` 已開始直接暴露 canonical `lifecycle_status` / `binding_status` / `run_status`
+- topic title 的 `busy` / `broken` suffix 已開始從 canonical state axes 派生
 - `binding_status=conflict`、`run_status=unbound` 這類過渡值已從 canonical state axes 中移除
 
 目前尚未完成的部分：

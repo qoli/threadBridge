@@ -14,7 +14,9 @@ use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
 use super::status_sync;
 use super::*;
 use crate::image_artifacts::PendingImageBatch;
-use crate::thread_state::cached_effective_busy_snapshot_for_binding;
+use crate::thread_state::{
+    cached_effective_busy_snapshot_for_binding, resolve_thread_state_with_cache,
+};
 
 pub(crate) const CALLBACK_IMAGE_BATCH_ANALYZE: &str = "image_batch_analyze";
 const TELEGRAM_OUTBOX_FILE: &str = ".threadbridge/tool_results/telegram_outbox.json";
@@ -253,16 +255,6 @@ pub(crate) async fn queue_image_for_thread(
         .repository
         .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
         .await?;
-    if matches!(record.metadata.status, ThreadStatus::Archived) {
-        send_scoped_message(
-            bot,
-            msg.chat.id,
-            Some(thread_id),
-            "This thread is archived.",
-        )
-        .await?;
-        return Ok(());
-    }
     let session = state.repository.read_session_binding(&record).await?;
     let (record, session) = if session
         .as_ref()
@@ -283,12 +275,28 @@ pub(crate) async fn queue_image_for_thread(
     } else {
         (record, session)
     };
+    let resolved_state = resolve_thread_state_with_cache(
+        &record.metadata,
+        session.as_ref(),
+        &state.workspace_status_cache,
+    )
+    .await?;
+    if resolved_state.is_archived() {
+        send_scoped_message(
+            bot,
+            msg.chat.id,
+            Some(thread_id),
+            "This thread is archived.",
+        )
+        .await?;
+        return Ok(());
+    }
     if usable_bound_session_id(session.as_ref()).is_none() {
         send_scoped_message(
             bot,
             msg.chat.id,
             Some(thread_id),
-            session_binding_hint(session.as_ref()),
+            session_binding_hint_for_state(resolved_state, session.as_ref()),
         )
         .await?;
         return Ok(());
@@ -379,7 +387,14 @@ pub(crate) async fn analyze_pending_image_batch(
     user_prompt: Option<&str>,
     callback_query_id: Option<&CallbackQueryId>,
 ) -> Result<()> {
-    if matches!(record.metadata.status, ThreadStatus::Archived) {
+    let session = state.repository.read_session_binding(&record).await?;
+    let resolved_state = resolve_thread_state_with_cache(
+        &record.metadata,
+        session.as_ref(),
+        &state.workspace_status_cache,
+    )
+    .await?;
+    if resolved_state.is_archived() {
         if let Some(callback_query_id) = callback_query_id {
             bot.answer_callback_query(callback_query_id.clone())
                 .text("This thread is archived.")
@@ -388,13 +403,21 @@ pub(crate) async fn analyze_pending_image_batch(
         }
         return Ok(());
     }
-    let session = state.repository.read_session_binding(&record).await?;
     let (record, session) =
         maybe_route_telegram_input_to_tui_session(state, record, session).await?;
+    let resolved_state = resolve_thread_state_with_cache(
+        &record.metadata,
+        session.as_ref(),
+        &state.workspace_status_cache,
+    )
+    .await?;
     let Some(existing_thread_id) = usable_bound_session_id(session.as_ref()) else {
         if let Some(callback_query_id) = callback_query_id {
             bot.answer_callback_query(callback_query_id.clone())
-                .text(session_binding_hint(session.as_ref()))
+                .text(session_binding_hint_for_state(
+                    resolved_state,
+                    session.as_ref(),
+                ))
                 .show_alert(true)
                 .await?;
         }
@@ -403,7 +426,8 @@ pub(crate) async fn analyze_pending_image_batch(
     let workspace_path =
         ensure_bound_workspace_runtime(state, session.as_ref().context("missing session binding")?)
             .await?;
-    if let Some(binding) = session.as_ref()
+    if resolved_state.is_running()
+        && let Some(binding) = session.as_ref()
         && let Some(busy) =
             cached_effective_busy_snapshot_for_binding(&state.workspace_status_cache, Some(binding))
                 .await?

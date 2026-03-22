@@ -219,6 +219,7 @@ pub struct ThreadStateView {
     pub thread_key: String,
     pub title: Option<String>,
     pub workspace_cwd: Option<String>,
+    pub lifecycle_status: &'static str,
     pub binding_status: &'static str,
     pub run_status: &'static str,
     pub current_codex_thread_id: Option<String>,
@@ -1148,12 +1149,12 @@ impl ManagementApiState {
                 .read_recent_workspace_sessions(&workspace_cwd)
                 .await
                 .unwrap_or_default();
-            let session_broken = binding.session_broken || record.metadata.session_broken;
+            let resolved_state = resolve_thread_state(&record.metadata, Some(&binding)).await?;
+            let session_broken = resolved_state.is_broken();
             let session_broken_reason = binding
                 .session_broken_reason
                 .clone()
                 .or(record.metadata.session_broken_reason.clone());
-            let resolved_state = resolve_thread_state(&record.metadata, Some(&binding)).await?;
             let recovery_hint = workspace_recovery_hint(
                 false,
                 session_broken,
@@ -1237,6 +1238,7 @@ impl ManagementApiState {
                 thread_key: record.metadata.thread_key,
                 title: record.metadata.title,
                 workspace_cwd,
+                lifecycle_status: resolved_state.lifecycle_status.as_str(),
                 binding_status: resolved_state.binding_status.as_str(),
                 run_status: resolved_state.run_status.as_str(),
                 current_codex_thread_id: binding
@@ -2300,7 +2302,7 @@ impl IntoResponse for ManagementApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::aggregate_handoff_status;
+    use super::{ThreadStateView, aggregate_handoff_status};
 
     #[test]
     fn aggregate_handoff_status_treats_pending_adoption_as_degraded() {
@@ -2312,5 +2314,28 @@ mod tests {
             aggregate_handoff_status(["pending_adoption"].into_iter()),
             "degraded"
         );
+    }
+
+    #[test]
+    fn thread_state_view_serializes_lifecycle_status() {
+        let view = ThreadStateView {
+            thread_key: "thread-1".to_owned(),
+            title: Some("Workspace".to_owned()),
+            workspace_cwd: Some("/tmp/workspace".to_owned()),
+            lifecycle_status: "active",
+            binding_status: "healthy",
+            run_status: "idle",
+            current_codex_thread_id: Some("thr_current".to_owned()),
+            tui_active_codex_thread_id: None,
+            tui_session_adoption_pending: false,
+            archived_at: None,
+            last_used_at: None,
+            last_error: None,
+        };
+
+        let value = serde_json::to_value(view).unwrap();
+        assert_eq!(value["lifecycle_status"], "active");
+        assert_eq!(value["binding_status"], "healthy");
+        assert_eq!(value["run_status"], "idle");
     }
 }

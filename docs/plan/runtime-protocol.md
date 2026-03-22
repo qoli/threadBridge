@@ -25,6 +25,7 @@
 - local HTTP + SSE 已成為目前最務實的實驗載體
 - runtime health 已開始改成 owner-canonical；`workspace_state` 不再是 primary readiness source
 - process transcript 已開始透過 `GET /api/threads/:thread_key/transcript` 對外暴露，且本地 web / Telegram preview 已開始共用同一份摘要來源
+- `ThreadStateView` 已開始對外暴露 canonical `lifecycle_status`
 - `binding_status` / `run_status` 已開始透過 shared resolver 收斂成同一套 wire semantics
 - `conflict` 已明確保留為 workspace-view 的獨立欄位，而不是 `binding_status` 的另一個值
 
@@ -87,6 +88,7 @@
 - `thread_key`
 - `title`
 - `workspace_cwd`
+- `lifecycle_status`
 - `binding_status`
 - `run_status`
 - `current_codex_thread_id`

@@ -75,6 +75,24 @@ pub struct ResolvedThreadState {
     pub run_status: RunStatus,
 }
 
+impl ResolvedThreadState {
+    pub fn is_archived(self) -> bool {
+        self.lifecycle_status == LifecycleStatus::Archived
+    }
+
+    pub fn is_unbound(self) -> bool {
+        self.binding_status == BindingStatus::Unbound
+    }
+
+    pub fn is_broken(self) -> bool {
+        self.binding_status == BindingStatus::Broken
+    }
+
+    pub fn is_running(self) -> bool {
+        self.run_status == RunStatus::Running
+    }
+}
+
 fn binding_workspace_path(binding: Option<&SessionBinding>) -> Option<PathBuf> {
     binding
         .and_then(|binding| binding.workspace_cwd.as_deref())
@@ -182,6 +200,23 @@ pub async fn resolve_run_status(binding: Option<&SessionBinding>) -> Result<RunS
     )
 }
 
+pub async fn resolve_run_status_with_cache(
+    cache: &WorkspaceStatusCache,
+    binding: Option<&SessionBinding>,
+) -> Result<RunStatus> {
+    Ok(
+        if cached_effective_busy_snapshot_for_binding(cache, binding)
+            .await?
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.phase.is_turn_busy())
+        {
+            RunStatus::Running
+        } else {
+            RunStatus::Idle
+        },
+    )
+}
+
 pub async fn resolve_thread_state(
     metadata: &ThreadMetadata,
     binding: Option<&SessionBinding>,
@@ -193,13 +228,25 @@ pub async fn resolve_thread_state(
     })
 }
 
+pub async fn resolve_thread_state_with_cache(
+    metadata: &ThreadMetadata,
+    binding: Option<&SessionBinding>,
+    cache: &WorkspaceStatusCache,
+) -> Result<ResolvedThreadState> {
+    Ok(ResolvedThreadState {
+        lifecycle_status: resolve_lifecycle_status(metadata),
+        binding_status: resolve_binding_status(metadata, binding),
+        run_status: resolve_run_status_with_cache(cache, binding).await?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        BindingStatus, LifecycleStatus, RunStatus, effective_busy_snapshot_for_binding,
-        resolve_thread_state,
+        BindingStatus, LifecycleStatus, ResolvedThreadState, RunStatus,
+        effective_busy_snapshot_for_binding, resolve_thread_state,
     };
     use crate::repository::{SessionBinding, ThreadMetadata, ThreadScope, ThreadStatus};
     use crate::workspace_status::{
@@ -372,5 +419,35 @@ mod tests {
         assert_eq!(state.run_status, RunStatus::Idle);
 
         let _ = fs::remove_dir_all(workspace).await;
+    }
+
+    #[test]
+    fn resolved_state_helpers_follow_canonical_axes() {
+        let archived = ResolvedThreadState {
+            lifecycle_status: LifecycleStatus::Archived,
+            binding_status: BindingStatus::Healthy,
+            run_status: RunStatus::Idle,
+        };
+        assert!(archived.is_archived());
+        assert!(!archived.is_unbound());
+        assert!(!archived.is_broken());
+        assert!(!archived.is_running());
+
+        let broken_running = ResolvedThreadState {
+            lifecycle_status: LifecycleStatus::Active,
+            binding_status: BindingStatus::Broken,
+            run_status: RunStatus::Running,
+        };
+        assert!(!broken_running.is_archived());
+        assert!(!broken_running.is_unbound());
+        assert!(broken_running.is_broken());
+        assert!(broken_running.is_running());
+
+        let unbound_idle = ResolvedThreadState {
+            lifecycle_status: LifecycleStatus::Active,
+            binding_status: BindingStatus::Unbound,
+            run_status: RunStatus::Idle,
+        };
+        assert!(unbound_idle.is_unbound());
     }
 }

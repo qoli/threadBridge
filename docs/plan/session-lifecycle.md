@@ -13,6 +13,7 @@
 - canonical pointer 已收斂到 `current_codex_thread_id`
 - 本地 management API / desktop runtime 已開始承接等價的 create-bind / reconnect control flow
 - `binding_status` / `run_status` 已開始透過 shared resolver 與 `runtime-state-machine` 對齊
+- Telegram thread 內的一般輸入與 session-control gate 已開始直接讀 canonical state，而不是各自重寫 archived / broken / running 判定
 
 目前尚未完成：
 

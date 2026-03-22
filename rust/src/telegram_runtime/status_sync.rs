@@ -11,10 +11,12 @@ use tracing::{info, warn};
 use super::preview::TurnPreviewController;
 use super::*;
 use crate::repository::{
-    ThreadStatus, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
-    TranscriptMirrorPhase, TranscriptMirrorRole,
+    TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin, TranscriptMirrorPhase,
+    TranscriptMirrorRole,
 };
-use crate::thread_state::cached_effective_busy_snapshot_for_binding;
+use crate::thread_state::{
+    BindingStatus, LifecycleStatus, resolve_lifecycle_status, resolve_thread_state_with_cache,
+};
 use crate::workspace_status::{
     LocalSessionClaim, SessionCurrentStatus, SessionStatusOwner, WorkspaceAggregateStatus,
     WorkspaceStatusEventRecord, events_path, read_local_session_claim, read_session_status,
@@ -114,6 +116,7 @@ pub(crate) fn render_topic_title(
     record: &ThreadRecord,
     workspace_path: Option<&Path>,
     marker: TopicActivityMarker,
+    broken: bool,
 ) -> String {
     let base = record
         .metadata
@@ -130,7 +133,7 @@ pub(crate) fn render_topic_title(
         TopicActivityMarker::Busy => suffix.push_str(" · busy"),
         TopicActivityMarker::None => {}
     }
-    if record.metadata.session_broken {
+    if broken {
         suffix.push_str(" · broken");
     }
 
@@ -175,17 +178,21 @@ pub(crate) async fn refresh_thread_topic_title(
         .as_ref()
         .and_then(|binding| binding.workspace_cwd.as_deref())
         .map(PathBuf::from);
-    let current_snapshot = if let Some(path) = workspace_path.as_ref() {
-        let _ = path;
-        cached_effective_busy_snapshot_for_binding(&state.workspace_status_cache, session.as_ref())
-            .await?
-    } else {
-        None
-    };
+    let resolved_state = resolve_thread_state_with_cache(
+        &record.metadata,
+        session.as_ref(),
+        &state.workspace_status_cache,
+    )
+    .await?;
     let title = render_topic_title(
         record,
         workspace_path.as_deref(),
-        topic_marker_for_snapshot(current_snapshot.as_ref()),
+        if resolved_state.is_running() {
+            TopicActivityMarker::Busy
+        } else {
+            TopicActivityMarker::None
+        },
+        resolved_state.binding_status == BindingStatus::Broken,
     );
     apply_thread_topic_title(
         bot,
@@ -437,17 +444,22 @@ async fn sync_workspace_titles_once(
         } else {
             None
         };
-        let current_snapshot = if workspace_path.is_some() {
-            cached_effective_busy_snapshot_for_binding(
-                &state.workspace_status_cache,
-                session.as_ref(),
-            )
-            .await?
-        } else {
-            None
-        };
-        let marker = topic_marker_for_snapshot(current_snapshot.as_ref());
-        let rendered = render_topic_title(&record, workspace_path.as_deref(), marker);
+        let resolved_state = resolve_thread_state_with_cache(
+            &record.metadata,
+            session.as_ref(),
+            &state.workspace_status_cache,
+        )
+        .await?;
+        let rendered = render_topic_title(
+            &record,
+            workspace_path.as_deref(),
+            if resolved_state.is_running() {
+                TopicActivityMarker::Busy
+            } else {
+                TopicActivityMarker::None
+            },
+            resolved_state.binding_status == BindingStatus::Broken,
+        );
         let previous = applied_titles.get(&record.conversation_key);
         if previous.is_some_and(|value| value == &rendered) {
             continue;
@@ -511,7 +523,10 @@ async fn sync_local_transcript_mirrors_once(
     let mut by_workspace: HashMap<String, Vec<ThreadRecord>> = HashMap::new();
     let mut active_thread_keys = HashSet::new();
     for record in records {
-        if matches!(record.metadata.status, ThreadStatus::Archived) {
+        if matches!(
+            resolve_lifecycle_status(&record.metadata),
+            LifecycleStatus::Archived
+        ) {
             continue;
         }
         active_thread_keys.insert(record.metadata.thread_key.clone());
@@ -956,6 +971,7 @@ mod tests {
             &record(None, false),
             Some(PathBuf::from("/tmp/example-workspace").as_path()),
             topic_marker_for_snapshot(Some(&snapshot)),
+            false,
         );
         assert_eq!(title, "example-workspace · busy");
     }
@@ -975,6 +991,7 @@ mod tests {
             &record(Some(&long_title), false),
             Some(PathBuf::from("/tmp/workspace").as_path()),
             TopicActivityMarker::Busy,
+            false,
         );
         assert!(title.ends_with(" · busy"));
         assert!(title.chars().count() <= 128);
@@ -1002,6 +1019,7 @@ mod tests {
             &record(Some("Broken"), true),
             Some(PathBuf::from("/tmp/workspace").as_path()),
             topic_marker_for_snapshot(Some(&snapshot)),
+            true,
         );
         assert_eq!(title, "Broken · busy · broken");
     }
