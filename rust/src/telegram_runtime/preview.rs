@@ -291,6 +291,20 @@ impl PreviewRenderer {
         changed
     }
 
+    pub(crate) fn consume_preview_text(&mut self, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() {
+            return false;
+        }
+        self.in_progress = true;
+        self.status = preview_status("Drafting...");
+        self.draft_text = text.to_owned();
+        let next_render = self.render_text();
+        let changed = next_render != self.latest_render;
+        self.latest_render = next_render;
+        changed
+    }
+
     pub(crate) fn heartbeat(&mut self) -> bool {
         if !self.in_progress {
             return false;
@@ -331,6 +345,21 @@ impl PreviewRenderer {
 
     pub(crate) fn get_final_response(&self) -> &str {
         &self.final_response
+    }
+
+    pub(crate) fn complete_with_final_text(&mut self, final_text: &str) -> bool {
+        let final_text = final_text.trim();
+        if final_text.is_empty() {
+            return false;
+        }
+        self.in_progress = false;
+        self.status = preview_status("Finalized");
+        self.draft_text = final_text.to_owned();
+        self.final_response = final_text.to_owned();
+        let next_render = self.render_text();
+        let changed = next_render != self.latest_render;
+        self.latest_render = next_render;
+        changed
     }
 }
 
@@ -375,6 +404,13 @@ impl TurnPreviewController {
 
     pub(crate) async fn consume_process_entry(&mut self, entry: &TranscriptMirrorEntry) {
         if !self.renderer.consume_process_entry(entry) {
+            return;
+        }
+        self.flush_render().await;
+    }
+
+    pub(crate) async fn consume_preview_text(&mut self, text: &str) {
+        if !self.renderer.consume_preview_text(text) {
             return;
         }
         self.flush_render().await;
@@ -430,7 +466,12 @@ impl TurnPreviewController {
     }
 
     pub(crate) async fn complete(&mut self, _final_text: &str) -> bool {
-        false
+        if !self.renderer.complete_with_final_text(_final_text) {
+            return false;
+        }
+        self.last_update_at = None;
+        self.flush_render().await;
+        true
     }
 
     pub(crate) fn fallback_final_response(&self) -> &str {
@@ -543,5 +584,34 @@ mod tests {
             text: "Command: cargo test".to_owned(),
         }));
         assert_eq!(renderer.get_render_text(), "● Command: cargo test");
+    }
+
+    #[test]
+    fn preview_renderer_uses_preview_text_without_touching_final_response() {
+        let mut renderer = PreviewRenderer::new(3500, 800);
+        assert!(
+            renderer
+                .consume_preview_text("我先直接查看這個 repo 最近 2 個 commit，整理出摘要給你。")
+        );
+        assert_eq!(
+            renderer.get_render_text(),
+            "● 我先直接查看這個 repo 最近 2 個 commit，整理出摘要給你。"
+        );
+        assert_eq!(renderer.get_final_response(), "");
+    }
+
+    #[test]
+    fn preview_renderer_complete_replaces_draft_without_marker() {
+        let mut renderer = PreviewRenderer::new(3500, 800);
+        renderer.consume_preview_text("我先查一下这个仓库最近 2 个 commit。");
+        assert!(renderer.complete_with_final_text("最近 2 個 commit 都在修 redraw。"));
+        assert_eq!(
+            renderer.get_render_text(),
+            "最近 2 個 commit 都在修 redraw。"
+        );
+        assert_eq!(
+            renderer.get_final_response(),
+            "最近 2 個 commit 都在修 redraw。"
+        );
     }
 }

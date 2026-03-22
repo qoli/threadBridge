@@ -670,6 +670,36 @@ async fn sync_cli_transcript_mirrors_once(
                     }
                     continue;
                 }
+                "preview_text" => {
+                    let Some(session_id) = event
+                        .payload
+                        .get("session_id")
+                        .and_then(|value| value.as_str())
+                    else {
+                        continue;
+                    };
+                    if owner_claim
+                        .session_id
+                        .as_deref()
+                        .is_some_and(|expected| expected != session_id)
+                    {
+                        continue;
+                    }
+                    let Some(text) = event.payload.get("text").and_then(|value| value.as_str())
+                    else {
+                        continue;
+                    };
+                    ensure_mirror_preview(
+                        mirror_previews,
+                        bot,
+                        state,
+                        &owner_record,
+                        message_thread_id,
+                    )
+                    .consume_preview_text(text)
+                    .await;
+                    continue;
+                }
                 "turn_completed" => {
                     if let Some(session_id) = event
                         .payload
@@ -701,7 +731,10 @@ async fn sync_cli_transcript_mirrors_once(
                     .repository
                     .append_transcript_mirror(&owner_record, &entry)
                     .await?;
-                if inserted && entry.delivery == TranscriptMirrorDelivery::Process {
+                if inserted
+                    && entry.delivery == TranscriptMirrorDelivery::Final
+                    && let Some(message_thread_id) = owner_record.metadata.message_thread_id
+                {
                     ensure_mirror_preview(
                         mirror_previews,
                         bot,
@@ -709,13 +742,8 @@ async fn sync_cli_transcript_mirrors_once(
                         &owner_record,
                         message_thread_id,
                     )
-                    .consume_process_entry(&entry)
+                    .complete(&entry.text)
                     .await;
-                }
-                if inserted
-                    && entry.delivery == TranscriptMirrorDelivery::Final
-                    && let Some(message_thread_id) = owner_record.metadata.message_thread_id
-                {
                     send_scoped_message(
                         bot,
                         ChatId(owner_record.metadata.chat_id),

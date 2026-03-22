@@ -16,12 +16,12 @@ use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tracing::{debug, info, warn};
 
 use crate::app_server_runtime::{WorkspaceRuntimeState, write_workspace_runtime_state_file};
-use crate::process_transcript::process_entry_from_workspace_message;
+use crate::process_transcript::{process_entry_from_workspace_message, workspace_item_diagnostic};
 use crate::repository::ThreadRepository;
 use crate::repository::TranscriptMirrorOrigin;
 use crate::workspace_status::{
     record_tui_proxy_completed, record_tui_proxy_connected, record_tui_proxy_disconnected,
-    record_tui_proxy_process_event, record_tui_proxy_prompt,
+    record_tui_proxy_preview_text, record_tui_proxy_process_event, record_tui_proxy_prompt,
 };
 
 const PROXY_HEALTH_PATH: &str = "/healthz";
@@ -228,6 +228,7 @@ async fn handle_proxy_connection(
     let mut current_session_id: Option<String> = None;
     let mut local_turn_ids: HashSet<String> = HashSet::new();
     let mut latest_assistant_message = String::new();
+    let mut latest_preview_segment = String::new();
 
     info!(
         event = "tui_proxy.connection.accepted",
@@ -271,6 +272,7 @@ async fn handle_proxy_connection(
                     &mut current_session_id,
                     &mut local_turn_ids,
                     &mut latest_assistant_message,
+                    &mut latest_preview_segment,
                 ).await?;
                 if matches!(daemon_message, WsMessage::Close(_)) {
                     let _ = client_ws.send(daemon_message).await;
@@ -454,6 +456,7 @@ async fn maybe_track_server_message(
     current_session_id: &mut Option<String>,
     local_turn_ids: &mut HashSet<String>,
     latest_assistant_message: &mut String,
+    latest_preview_segment: &mut String,
 ) -> Result<()> {
     if let Some(session_id) = maybe_track_server_response(
         repository,
@@ -468,15 +471,31 @@ async fn maybe_track_server_message(
         *current_session_id = Some(session_id);
     }
 
+    if should_reset_assistant_preview_segment(message)? {
+        latest_assistant_message.clear();
+        latest_preview_segment.clear();
+    }
+
+    let mut preview_text: Option<String> = None;
     if let Some(text) = maybe_extract_agent_message_text(message)? {
         if is_agent_message_delta(message)? {
             latest_assistant_message.push_str(&text);
+            latest_preview_segment.push_str(&text);
+            let preview = latest_preview_segment.trim();
+            if !preview.is_empty() {
+                preview_text = Some(preview.to_owned());
+            }
         } else {
-            *latest_assistant_message = text;
+            *latest_assistant_message = text.clone();
+            *latest_preview_segment = text.clone();
+            preview_text = Some(text);
         }
     }
 
     if let Some(session_id) = current_session_id.as_deref() {
+        if let Some(preview_text) = preview_text.as_deref() {
+            record_tui_proxy_preview_text(workspace_path, session_id, preview_text).await?;
+        }
         if let Some(entry) =
             process_entry_from_workspace_message(message, session_id, TranscriptMirrorOrigin::Tui)?
         {
@@ -489,6 +508,26 @@ async fn maybe_track_server_message(
                 record_tui_proxy_process_event(workspace_path, session_id, phase, &entry.text)
                     .await?;
             }
+        } else if let Some(diagnostic) = workspace_item_diagnostic(message)?
+            && matches!(
+                diagnostic.method.as_str(),
+                "item.started"
+                    | "item/started"
+                    | "item.completed"
+                    | "item/completed"
+                    | "item.updated"
+                    | "item/updated"
+            )
+        {
+            debug!(
+                event = "tui_proxy.process_transcript.unmatched_item",
+                thread_key = %thread_key,
+                session_id = %session_id,
+                method = %diagnostic.method,
+                item_type = %diagnostic.item_type,
+                item_keys = ?diagnostic.item_keys,
+                "workspace item notification did not map to process transcript"
+            );
         }
         if let Some(completed_turn_id) = extract_completed_turn_id(message)? {
             if local_turn_ids.remove(&completed_turn_id) {
@@ -506,11 +545,42 @@ async fn maybe_track_server_message(
                 .await?;
             }
             latest_assistant_message.clear();
+            latest_preview_segment.clear();
         } else if is_turn_completed(message)? {
             latest_assistant_message.clear();
+            latest_preview_segment.clear();
         }
     }
     Ok(())
+}
+
+fn should_reset_assistant_preview_segment(message: &WsMessage) -> Result<bool> {
+    let Some(diagnostic) = workspace_item_diagnostic(message)? else {
+        return Ok(false);
+    };
+    let is_item_lifecycle = matches!(
+        diagnostic.method.as_str(),
+        "item.started"
+            | "item/started"
+            | "item.completed"
+            | "item/completed"
+            | "item.updated"
+            | "item/updated"
+    );
+    if !is_item_lifecycle {
+        return Ok(false);
+    }
+    Ok(matches!(
+        diagnostic.item_type.as_str(),
+        "command_execution"
+            | "commandExecution"
+            | "mcp_tool_call"
+            | "mcpToolCall"
+            | "web_search"
+            | "webSearch"
+            | "todo_list"
+            | "plan"
+    ))
 }
 
 fn maybe_extract_agent_message_text(message: &WsMessage) -> Result<Option<String>> {
@@ -612,7 +682,11 @@ fn canonical_workspace_key(workspace_path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TrackedRequestMethod, should_reuse_existing_proxy, track_client_request};
+    use super::{
+        TrackedRequestMethod, should_reset_assistant_preview_segment, should_reuse_existing_proxy,
+        track_client_request,
+    };
+    use serde_json::json;
     use tokio_tungstenite::tungstenite::Message as WsMessage;
 
     #[test]
@@ -642,5 +716,41 @@ mod tests {
             "ws://127.0.0.1:40111",
             true
         ));
+    }
+
+    #[test]
+    fn tool_items_reset_assistant_preview_segment() {
+        let message = WsMessage::Text(
+            json!({
+                "method": "item/started",
+                "params": {
+                    "item": {
+                        "type": "commandExecution",
+                        "command": "git log -2"
+                    }
+                }
+            })
+            .to_string()
+            .into(),
+        );
+        assert!(should_reset_assistant_preview_segment(&message).unwrap());
+    }
+
+    #[test]
+    fn agent_message_items_do_not_reset_assistant_preview_segment() {
+        let message = WsMessage::Text(
+            json!({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "agent_message",
+                        "text": "我先查一下"
+                    }
+                }
+            })
+            .to_string()
+            .into(),
+        );
+        assert!(!should_reset_assistant_preview_segment(&message).unwrap());
     }
 }
