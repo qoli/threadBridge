@@ -14,6 +14,7 @@ use crate::repository::{
     ThreadStatus, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
     TranscriptMirrorPhase, TranscriptMirrorRole,
 };
+use crate::thread_state::cached_effective_busy_snapshot_for_binding;
 use crate::workspace_status::{
     LocalSessionClaim, SessionCurrentStatus, SessionStatusOwner, WorkspaceAggregateStatus,
     WorkspaceStatusEventRecord, events_path, read_local_session_claim, read_session_status,
@@ -160,41 +161,6 @@ pub(crate) fn tui_adoption_prompt_markup(thread_key: &str) -> InlineKeyboardMark
     ]])
 }
 
-async fn effective_busy_snapshot_for_binding(
-    workspace_path: &Path,
-    binding: Option<&SessionBinding>,
-) -> Result<Option<SessionCurrentStatus>> {
-    let Some(binding) = binding else {
-        return Ok(None);
-    };
-    let current_snapshot = if let Some(session_id) = usable_bound_session_id(Some(binding)) {
-        read_session_status(workspace_path, session_id).await?
-    } else {
-        None
-    };
-    if current_snapshot
-        .as_ref()
-        .is_some_and(|snapshot| snapshot.phase.is_turn_busy())
-    {
-        return Ok(current_snapshot);
-    }
-    let Some(tui_session_id) = binding.tui_active_codex_thread_id.as_deref() else {
-        return Ok(current_snapshot);
-    };
-    if Some(tui_session_id) == usable_bound_session_id(Some(binding)) {
-        return Ok(current_snapshot);
-    }
-    let tui_snapshot = read_session_status(workspace_path, tui_session_id).await?;
-    if tui_snapshot
-        .as_ref()
-        .is_some_and(|snapshot| snapshot.phase.is_turn_busy())
-    {
-        Ok(tui_snapshot)
-    } else {
-        Ok(current_snapshot)
-    }
-}
-
 pub(crate) async fn refresh_thread_topic_title(
     bot: &Bot,
     state: &AppState,
@@ -210,8 +176,9 @@ pub(crate) async fn refresh_thread_topic_title(
         .and_then(|binding| binding.workspace_cwd.as_deref())
         .map(PathBuf::from);
     let current_snapshot = if let Some(path) = workspace_path.as_ref() {
-        let _ = read_workspace_status_with_cache(&state.workspace_status_cache, path).await?;
-        effective_busy_snapshot_for_binding(path, session.as_ref()).await?
+        let _ = path;
+        cached_effective_busy_snapshot_for_binding(&state.workspace_status_cache, session.as_ref())
+            .await?
     } else {
         None
     };
@@ -470,8 +437,12 @@ async fn sync_workspace_titles_once(
         } else {
             None
         };
-        let current_snapshot = if let Some(workspace_path) = workspace_path.as_ref() {
-            effective_busy_snapshot_for_binding(workspace_path, session.as_ref()).await?
+        let current_snapshot = if workspace_path.is_some() {
+            cached_effective_busy_snapshot_for_binding(
+                &state.workspace_status_cache,
+                session.as_ref(),
+            )
+            .await?
         } else {
             None
         };
@@ -891,15 +862,15 @@ fn local_mirror_entry_from_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        STARTUP_STALE_BUSY_RECOVERED_LOG, TopicActivityMarker, effective_busy_snapshot_for_binding,
-        initial_workspace_event_offset, local_mirror_entry_from_event,
-        reconcile_stale_bot_busy_sessions_for_repository, render_topic_title,
-        topic_marker_for_snapshot, tui_adoption_prompt_text,
+        STARTUP_STALE_BUSY_RECOVERED_LOG, TopicActivityMarker, initial_workspace_event_offset,
+        local_mirror_entry_from_event, reconcile_stale_bot_busy_sessions_for_repository,
+        render_topic_title, topic_marker_for_snapshot, tui_adoption_prompt_text,
     };
     use crate::repository::{
         SessionBinding, ThreadMetadata, ThreadRecord, ThreadRepository, ThreadScope, ThreadStatus,
         TranscriptMirrorOrigin, TranscriptMirrorRole,
     };
+    use crate::thread_state::effective_busy_snapshot_for_binding;
     use crate::workspace_status::{
         LocalSessionClaim, SessionCurrentStatus, SessionStatusOwner, WorkspaceStatusEventRecord,
         WorkspaceStatusPhase, ensure_workspace_status_surface, read_session_status,
@@ -1352,7 +1323,7 @@ mod tests {
         }))
         .unwrap();
 
-        let snapshot = effective_busy_snapshot_for_binding(&workspace, Some(&binding))
+        let snapshot = effective_busy_snapshot_for_binding(Some(&binding))
             .await
             .unwrap()
             .unwrap();

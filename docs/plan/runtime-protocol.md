@@ -25,6 +25,8 @@
 - local HTTP + SSE 已成為目前最務實的實驗載體
 - runtime health 已開始改成 owner-canonical；`workspace_state` 不再是 primary readiness source
 - process transcript 已開始透過 `GET /api/threads/:thread_key/transcript` 對外暴露，且本地 web / Telegram preview 已開始共用同一份摘要來源
+- `binding_status` / `run_status` 已開始透過 shared resolver 收斂成同一套 wire semantics
+- `conflict` 已明確保留為 workspace-view 的獨立欄位，而不是 `binding_status` 的另一個值
 
 ## 問題
 
@@ -78,6 +80,8 @@
 
 這個 view 保留給 runtime / debug / advanced maintenance，不作為普通用戶主列表。
 
+目前 management API 的 `ThreadStateView` 仍只列 active threads；archived threads 先繼續由 `ArchivedThreadView` 承接。
+
 至少包含：
 
 - `thread_key`
@@ -105,6 +109,15 @@
 ### 3. `ManagedWorkspaceView`
 
 這是 workspace-first 管理頁的主要 view。
+
+這裡要明確固定一個語義：
+
+- `binding_status`
+  - 只使用 canonical 值：`unbound` / `healthy` / `broken`
+- `conflict`
+  - 是 workspace-level 衍生欄位，不是 `binding_status` 的另一個枚舉值
+- `run_status`
+  - 代表 active Codex turn 是否 busy，不等於 local session claim 是否存在
 
 至少包含：
 

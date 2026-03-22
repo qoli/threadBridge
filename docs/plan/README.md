@@ -58,11 +58,14 @@
   - management UI 已補上 transcript observability pane，且 adoption/repair action 已改成 owner-canonical 語義
   - web 管理面新增確認的 UI 收斂方向是可評估以 HeroUI 重構
   - 目前新增確認的收斂方向是 `workspace = thread` 主模型、desktop-only 啟動與移除暫不可用的 onboarding
+- [runtime-state-machine.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-state-machine.md)
+  - canonical `lifecycle_status` / `binding_status` / `run_status` 已開始透過 shared resolver 進入代碼
+  - management API、Telegram busy gate、topic title 已開始共用同一套 `run_status` 判定
+  - `binding_status=conflict`、`run_status=unbound` 這類過渡值已退出 canonical state axes
+  - 但它仍未成為所有 surface 的完整唯一 source of truth
 
 ## 純草稿
 
-- [runtime-state-machine.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-state-machine.md)
-  - 狀態語義主規格草稿
 - [message-queue-and-status-delivery.md](/Volumes/Data/Github/threadBridge/docs/plan/message-queue-and-status-delivery.md)
   - Telegram outbound delivery 主規格草稿
   - 也承接 busy / running 狀態訊息上的互動 control surface 規格
@@ -92,7 +95,7 @@
 - [message-queue-and-status-delivery.md](/Volumes/Data/Github/threadBridge/docs/plan/message-queue-and-status-delivery.md)
   - 目標是 Telegram delivery 主規格
 
-目前這兩份都還沒有變成實際代碼的唯一 source of truth。
+目前這兩份都還沒有完全變成實際代碼的唯一 source of truth。
 
 ## 依賴關係
 

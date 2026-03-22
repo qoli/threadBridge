@@ -24,8 +24,7 @@ pub(crate) use crate::tool_results::{TelegramOutboxItem, parse_telegram_outbox};
 use crate::tui_proxy::TuiProxyManager;
 pub(crate) use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 pub(crate) use crate::workspace_status::{
-    WorkspaceStatusCache, busy_selected_session_status, read_local_session_claim,
-    read_session_status, read_workspace_status_with_cache, record_bot_status_event,
+    WorkspaceStatusCache, read_local_session_claim, read_session_status, record_bot_status_event,
 };
 
 pub mod final_reply;

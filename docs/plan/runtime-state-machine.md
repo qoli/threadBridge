@@ -2,14 +2,15 @@
 
 ## 目前進度
 
-這份文檔目前仍是主規格草稿，尚未完全落地。
+這份文檔已開始部分落地，但仍不是完整唯一主規格。
 
 目前部分已在代碼中可見的狀態語義：
 
 - `active` / `archived`
 - `healthy` / `broken` / `unbound` 的 session 綁定語義
-- workspace shared status 裡的 `idle` / `shell_active` / `turn_running` / `turn_finalizing`
-- management API 已開始對外暴露 `ThreadStateView` / `ManagedWorkspaceView`，但仍不是完整主規格
+- shared thread-state resolver 已開始成為 `lifecycle_status` / `binding_status` / `run_status` 的共同判定來源
+- management API、Telegram busy gate、topic title 已開始共用同一套 `run_status` 解析
+- `binding_status=conflict`、`run_status=unbound` 這類過渡值已從 canonical state axes 中移除
 
 目前尚未完成的部分：
 
@@ -110,7 +111,7 @@ source of truth：
 source of truth：
 
 - 不是 repository 的 long-term persistent artifact
-- 目前實作主要從 workspace shared status / local session claim 推導
+- 目前實作主要從目前採用的 Codex session snapshot 推導，必要時才 fallback 到 `tui_active_codex_thread_id`
 - 後續仍應收斂成更清楚的 canonical runtime view，而不是讓各 surface 各自讀檔
 
 初版規則：

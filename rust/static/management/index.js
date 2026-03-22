@@ -240,6 +240,7 @@ function renderWorkspaceCards(items) {
         <div class="badge-row">
           ${badge('binding', item.binding_status)}
           ${badge('run', item.run_status)}
+          ${item.conflict ? badge('conflict', 'conflict') : ''}
           ${badge('app', item.app_server_status)}
           ${badge('proxy', item.tui_proxy_status)}
           ${badge('handoff', item.handoff_readiness)}

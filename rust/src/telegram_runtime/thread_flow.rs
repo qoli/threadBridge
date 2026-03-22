@@ -8,6 +8,7 @@ use tracing::{error, info};
 
 use crate::local_control::LocalControlHandle;
 use crate::process_transcript::process_entry_from_codex_event;
+use crate::thread_state::cached_effective_busy_snapshot_for_binding;
 
 use super::final_reply::send_final_assistant_reply;
 use super::media::{self, dispatch_workspace_telegram_outbox};
@@ -34,32 +35,6 @@ async fn start_fresh_binding(
         .repository
         .bind_workspace(record, binding.cwd, binding.thread_id)
         .await
-}
-
-async fn busy_snapshot_for_binding(
-    state: &AppState,
-    binding: &SessionBinding,
-) -> Result<Option<crate::workspace_status::BusySelectedSessionStatus>> {
-    let workspace_path = workspace_path_from_binding(binding)?;
-    if let Some(session_id) = usable_bound_session_id(Some(binding))
-        && let Some(busy) =
-            busy_selected_session_status(&state.workspace_status_cache, &workspace_path, session_id)
-                .await?
-    {
-        return Ok(Some(busy));
-    }
-    let Some(tui_session_id) = binding.tui_active_codex_thread_id.as_deref() else {
-        return Ok(None);
-    };
-    if Some(tui_session_id) == usable_bound_session_id(Some(binding)) {
-        return Ok(None);
-    }
-    busy_selected_session_status(
-        &state.workspace_status_cache,
-        &workspace_path,
-        tui_session_id,
-    )
-    .await
 }
 
 async fn render_thread_info(state: &AppState, record: &ThreadRecord) -> Result<String> {
@@ -204,12 +179,17 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             };
-            if let Some(busy) = busy_snapshot_for_binding(state, binding).await? {
+            if let Some(busy) = cached_effective_busy_snapshot_for_binding(
+                &state.workspace_status_cache,
+                Some(binding),
+            )
+            .await?
+            {
                 send_scoped_message(
                     bot,
                     msg.chat.id,
                     Some(thread_id),
-                    status_sync::busy_command_message(&busy.snapshot),
+                    status_sync::busy_command_message(&busy),
                 )
                 .await?;
                 return Ok(());
@@ -286,13 +266,17 @@ pub(crate) async fn run_command(
                 return Ok(());
             };
             if let Some(binding) = session.as_ref()
-                && let Some(busy) = busy_snapshot_for_binding(state, binding).await?
+                && let Some(busy) = cached_effective_busy_snapshot_for_binding(
+                    &state.workspace_status_cache,
+                    Some(binding),
+                )
+                .await?
             {
                 send_scoped_message(
                     bot,
                     msg.chat.id,
                     Some(thread_id),
-                    status_sync::busy_command_message(&busy.snapshot),
+                    status_sync::busy_command_message(&busy),
                 )
                 .await?;
                 return Ok(());
@@ -423,13 +407,17 @@ pub(crate) async fn run_command(
                 return Ok(());
             };
             if let Some(binding) = session.as_ref()
-                && let Some(busy) = busy_snapshot_for_binding(state, binding).await?
+                && let Some(busy) = cached_effective_busy_snapshot_for_binding(
+                    &state.workspace_status_cache,
+                    Some(binding),
+                )
+                .await?
             {
                 send_scoped_message(
                     bot,
                     msg.chat.id,
                     Some(thread_id),
-                    status_sync::busy_command_message(&busy.snapshot),
+                    status_sync::busy_command_message(&busy),
                 )
                 .await?;
                 return Ok(());
@@ -621,13 +609,15 @@ pub(crate) async fn run_text_message(
     let workspace_path =
         ensure_bound_workspace_runtime(state, session.as_ref().context("missing binding")?).await?;
     if let Some(binding) = session.as_ref()
-        && let Some(busy) = busy_snapshot_for_binding(state, binding).await?
+        && let Some(busy) =
+            cached_effective_busy_snapshot_for_binding(&state.workspace_status_cache, Some(binding))
+                .await?
     {
         send_scoped_message(
             bot,
             msg.chat.id,
             Some(thread_id),
-            status_sync::busy_text_message(&busy.snapshot, false),
+            status_sync::busy_text_message(&busy, false),
         )
         .await?;
         return Ok(());

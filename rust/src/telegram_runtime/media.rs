@@ -14,35 +14,10 @@ use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
 use super::status_sync;
 use super::*;
 use crate::image_artifacts::PendingImageBatch;
+use crate::thread_state::cached_effective_busy_snapshot_for_binding;
 
 pub(crate) const CALLBACK_IMAGE_BATCH_ANALYZE: &str = "image_batch_analyze";
 const TELEGRAM_OUTBOX_FILE: &str = ".threadbridge/tool_results/telegram_outbox.json";
-
-async fn busy_snapshot_for_binding(
-    state: &AppState,
-    binding: &SessionBinding,
-) -> Result<Option<crate::workspace_status::BusySelectedSessionStatus>> {
-    let workspace_path = workspace_path_from_binding(binding)?;
-    if let Some(session_id) = usable_bound_session_id(Some(binding))
-        && let Some(busy) =
-            busy_selected_session_status(&state.workspace_status_cache, &workspace_path, session_id)
-                .await?
-    {
-        return Ok(Some(busy));
-    }
-    let Some(tui_session_id) = binding.tui_active_codex_thread_id.as_deref() else {
-        return Ok(None);
-    };
-    if Some(tui_session_id) == usable_bound_session_id(Some(binding)) {
-        return Ok(None);
-    }
-    busy_selected_session_status(
-        &state.workspace_status_cache,
-        &workspace_path,
-        tui_session_id,
-    )
-    .await
-}
 
 #[derive(Clone)]
 pub(crate) struct IncomingImage {
@@ -380,13 +355,15 @@ pub(crate) async fn queue_image_for_thread(
             .await?;
     }
     if let Some(binding) = session.as_ref()
-        && let Some(busy) = busy_snapshot_for_binding(state, binding).await?
+        && let Some(busy) =
+            cached_effective_busy_snapshot_for_binding(&state.workspace_status_cache, Some(binding))
+                .await?
     {
         send_scoped_message(
             bot,
             msg.chat.id,
             Some(thread_id),
-            status_sync::busy_text_message(&busy.snapshot, true),
+            status_sync::busy_text_message(&busy, true),
         )
         .await?;
     }
@@ -427,9 +404,11 @@ pub(crate) async fn analyze_pending_image_batch(
         ensure_bound_workspace_runtime(state, session.as_ref().context("missing session binding")?)
             .await?;
     if let Some(binding) = session.as_ref()
-        && let Some(busy) = busy_snapshot_for_binding(state, binding).await?
+        && let Some(busy) =
+            cached_effective_busy_snapshot_for_binding(&state.workspace_status_cache, Some(binding))
+                .await?
     {
-        let text = status_sync::busy_text_message(&busy.snapshot, false);
+        let text = status_sync::busy_text_message(&busy, false);
         if let Some(callback_query_id) = callback_query_id {
             bot.answer_callback_query(callback_query_id.clone())
                 .text(text)

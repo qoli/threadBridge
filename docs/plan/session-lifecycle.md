@@ -12,10 +12,11 @@
 - `session-binding.json` 持久化 Telegram thread / workspace / Codex thread 關聯
 - canonical pointer 已收斂到 `current_codex_thread_id`
 - 本地 management API / desktop runtime 已開始承接等價的 create-bind / reconnect control flow
+- `binding_status` / `run_status` 已開始透過 shared resolver 與 `runtime-state-machine` 對齊
 
 目前尚未完成：
 
-- 與 `runtime-state-machine` 的完整對齊
+- 與 `runtime-state-machine` 的完整 API / 文檔收斂
 
 ## 核心模型
 

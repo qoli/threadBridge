@@ -26,8 +26,8 @@ use crate::repository::{
     RecentCodexSessionEntry, ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry,
 };
 use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus, WorkspaceRuntimeHeartbeat};
+use crate::thread_state::resolve_thread_state;
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
-use crate::workspace_status::{read_local_session_claim, read_workspace_aggregate_status};
 
 const MANAGED_CODEX_SOURCE_FILE: &str = ".threadbridge/codex/source.txt";
 const MANAGED_CODEX_CACHE_BINARY: &str = ".threadbridge/codex/codex";
@@ -388,7 +388,6 @@ struct ManagedCodexBuildConfigFile {
 
 #[derive(Debug)]
 struct WorkspaceAggregateView {
-    workspace_cwd: String,
     items: Vec<ManagedWorkspaceView>,
 }
 
@@ -1131,24 +1130,14 @@ impl ManagementApiState {
             let Some(workspace_cwd) = binding.workspace_cwd.clone() else {
                 continue;
             };
-            let aggregate =
-                grouped
-                    .entry(workspace_cwd.clone())
-                    .or_insert_with(|| WorkspaceAggregateView {
-                        workspace_cwd: workspace_cwd.clone(),
-                        items: Vec::new(),
-                    });
+            let aggregate = grouped
+                .entry(workspace_cwd.clone())
+                .or_insert_with(|| WorkspaceAggregateView { items: Vec::new() });
             let workspace_path = Path::new(&workspace_cwd);
             let hcodex_path = workspace_path
                 .join(".threadbridge")
                 .join("bin")
                 .join("hcodex");
-            let workspace_status = read_workspace_aggregate_status(workspace_path)
-                .await
-                .unwrap_or_else(|_| {
-                    crate::workspace_status::default_workspace_status(workspace_path)
-                });
-            let has_live_local = !workspace_status.live_local_session_ids.is_empty();
             let mut runtime_status =
                 read_workspace_runtime_health(workspace_path, runtime_owner.as_ref()).await;
             if binding.tui_session_adoption_pending && runtime_status.handoff_readiness == "ready" {
@@ -1164,6 +1153,7 @@ impl ManagementApiState {
                 .session_broken_reason
                 .clone()
                 .or(record.metadata.session_broken_reason.clone());
+            let resolved_state = resolve_thread_state(&record.metadata, Some(&binding)).await?;
             let recovery_hint = workspace_recovery_hint(
                 false,
                 session_broken,
@@ -1176,8 +1166,8 @@ impl ManagementApiState {
                 workspace_cwd: workspace_cwd.clone(),
                 title: record.metadata.title.clone(),
                 thread_key: Some(record.metadata.thread_key.clone()),
-                binding_status: if session_broken { "broken" } else { "healthy" },
-                run_status: if has_live_local { "running" } else { "idle" },
+                binding_status: resolved_state.binding_status.as_str(),
+                run_status: resolved_state.run_status.as_str(),
                 current_codex_thread_id: binding.current_codex_thread_id.clone(),
                 tui_active_codex_thread_id: binding.tui_active_codex_thread_id.clone(),
                 tui_session_adoption_pending: binding.tui_session_adoption_pending,
@@ -1203,7 +1193,6 @@ impl ManagementApiState {
             let conflict = aggregate.items.len() > 1;
             if conflict {
                 for mut item in aggregate.items {
-                    item.binding_status = "conflict";
                     item.conflict = true;
                     item.recovery_hint = workspace_recovery_hint(
                         true,
@@ -1224,21 +1213,11 @@ impl ManagementApiState {
                 }
                 continue;
             }
-            let mut item = aggregate
+            let item = aggregate
                 .items
                 .into_iter()
                 .next()
                 .expect("workspace group is non-empty");
-            let workspace_path = Path::new(&aggregate.workspace_cwd);
-            if read_local_session_claim(workspace_path)
-                .await
-                .ok()
-                .flatten()
-                .is_some()
-                && item.run_status != "running"
-            {
-                item.run_status = "running";
-            }
             views.push(item);
         }
         views.sort_by(|a, b| a.workspace_cwd.cmp(&b.workspace_cwd));
@@ -1253,37 +1232,13 @@ impl ManagementApiState {
             let workspace_cwd = binding
                 .as_ref()
                 .and_then(|binding| binding.workspace_cwd.clone());
-            let run_status = match workspace_cwd.as_deref() {
-                Some(workspace_cwd) => {
-                    let workspace_path = Path::new(workspace_cwd);
-                    let status = read_workspace_aggregate_status(workspace_path)
-                        .await
-                        .unwrap_or_else(|_| {
-                            crate::workspace_status::default_workspace_status(workspace_path)
-                        });
-                    if status.live_local_session_ids.is_empty() {
-                        "idle"
-                    } else {
-                        "running"
-                    }
-                }
-                None => "unbound",
-            };
-            let session_broken = binding
-                .as_ref()
-                .map(|binding| binding.session_broken)
-                .unwrap_or(record.metadata.session_broken)
-                || record.metadata.session_broken;
+            let resolved_state = resolve_thread_state(&record.metadata, binding.as_ref()).await?;
             views.push(ThreadStateView {
                 thread_key: record.metadata.thread_key,
                 title: record.metadata.title,
                 workspace_cwd,
-                binding_status: match binding.as_ref() {
-                    Some(_) if session_broken => "broken",
-                    Some(_) => "healthy",
-                    None => "unbound",
-                },
-                run_status,
+                binding_status: resolved_state.binding_status.as_str(),
+                run_status: resolved_state.run_status.as_str(),
                 current_codex_thread_id: binding
                     .as_ref()
                     .and_then(|binding| binding.current_codex_thread_id.clone()),

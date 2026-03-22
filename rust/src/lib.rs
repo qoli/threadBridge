@@ -13,6 +13,7 @@ pub mod repository;
 pub mod runtime_owner;
 pub mod telegram_probe;
 pub mod telegram_runtime;
+pub mod thread_state;
 pub mod tool_results;
 pub mod tui_proxy;
 pub mod workspace;
