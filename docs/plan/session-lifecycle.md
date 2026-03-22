@@ -66,7 +66,7 @@
 - `/repair_session` 對 Telegram 來說是主要 continuity repair 命令
 - 本地 management API 目前也提供等價的 reconnect control action
 - 但現階段不能把它理解成「保證 shared ws endpoint 之後持續存活」
-- 如果 `current.json` 指到 stale endpoint，本地 `hcodex` 會再做 self-heal
+- 如果 `current.json` 指到 stale endpoint，本地 `hcodex` 不會再 self-heal，而是要求 desktop runtime repair runtime
 
 ## `session-binding.json`
 

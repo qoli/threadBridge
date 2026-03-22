@@ -38,25 +38,25 @@
 - [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md)
   - shared app-server daemon、`./.threadbridge/bin/hcodex`、TUI proxy、mirror、adoption、auto-adopt 已落地
   - `/attach_cli_session`、viewer handoff、attach-intent、hooks-based CLI sync、`.cli/.attach` title 已退場
-  - owner 責任收斂目前應視為高優先級工作
+  - desktop runtime 已成為正式 owner 啟動模型，headless 啟動路徑已退場
+  - `hcodex` self-heal 已移除，缺少 desktop owner 時會明確失敗
+  - workspace heartbeat / runtime health 已改成以 desktop owner heartbeat 為主 authority
+  - process transcript 已開始區分 final / process，並補上 plan/tool mirror 入口
   - 它同時也是 Telegram 退回通用 adapter 模式的前置條件
-  - 目前新增確認的缺口是 desktop runtime owner 尚未完全收斂；`hcodex` self-heal 目前仍只是 fallback，bot 重寫出的 ws state 也仍可能 stale
-  - workspace heartbeat / runtime health 目前仍是 transitional multi-source model，canonical authority 仍待收斂到 desktop owner
-  - local management API 與無 Telegram 憑據先啟動的 groundwork 已開始落地
-  - 剩餘工作主要是 runtime ownership 與本地管理面收尾
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
   - 本地 management API 已開始承接它的 view / action 命名
   - local HTTP + SSE 已從草稿變成實際 transport
-  - 近期已再補上 runtime-owner reconcile、managed Codex build defaults、workspace launch config 等 control / view
-  - `owner_heartbeat` 與 `workspace_state` 的雙來源目前仍是過渡語義，不應視為最終 canonical health model
-  - 但 protocol 仍未收斂成正式 transport-neutral 契約
+  - 近期已再補上 runtime-owner reconcile、managed Codex build defaults、workspace launch config 與 continue-current launch control
+  - runtime health 已改成 owner-canonical，`workspace_state` 僅保留 debug/observation 語義
+  - process transcript event / mirror model 已開始落地，但 protocol 仍未收斂成正式 transport-neutral 契約
 - [macos-menubar-thread-manager.md](/Volumes/Data/Github/threadBridge/docs/plan/macos-menubar-thread-manager.md)
   - `threadbridge_desktop`、macOS-first tray menu、workspace-first browser management UI 已開始落地
   - pick-and-add、adopt / reject TUI、runtime-owner reconcile、launch config 等 control 已進入 management API
   - managed Codex source build / cache refresh / build defaults 已進入 management API
-  - management health view 目前仍反映過渡性的多來源 heartbeat 模型
+  - tray menu 已收斂成 `New Session` 與 `Continue Telegram Session`
+  - management health view 已改成 owner heartbeat 為主的 desktop-first 模型
   - web 管理面新增確認的 UI 收斂方向是可評估以 HeroUI 重構
-  - 目前新增確認的收斂方向是 `workspace = thread` 主模型與移除暫不可用的 onboarding
+  - 目前新增確認的收斂方向是 `workspace = thread` 主模型、desktop-only 啟動與移除暫不可用的 onboarding
 
 ## 純草稿
 

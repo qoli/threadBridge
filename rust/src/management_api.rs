@@ -19,12 +19,10 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::app_server_runtime::{WorkspaceRuntimeState, daemon_endpoint_is_live};
 use crate::config::{RuntimeConfig, load_optional_telegram_config};
 use crate::local_control::LocalControlHandle;
 use crate::repository::{RecentCodexSessionEntry, ThreadRepository};
 use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus, WorkspaceRuntimeHeartbeat};
-use crate::tui_proxy::proxy_endpoint_is_live;
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 use crate::workspace_status::{read_cli_owner_claim, read_workspace_aggregate_status};
 
@@ -92,6 +90,15 @@ impl ManagementApiHandle {
 
     pub async fn launch_workspace_new(&self, thread_key: &str) -> Result<LaunchWorkspaceResponse> {
         self.state.launch_workspace_new(thread_key).await
+    }
+
+    pub async fn launch_workspace_continue_current(
+        &self,
+        thread_key: &str,
+    ) -> Result<LaunchWorkspaceResponse> {
+        self.state
+            .launch_workspace_continue_current(thread_key)
+            .await
     }
 
     pub async fn launch_workspace_resume(
@@ -237,6 +244,7 @@ pub struct HcodexLaunchConfigView {
     pub current_codex_thread_id: Option<String>,
     pub recent_codex_sessions: Vec<RecentCodexSessionEntry>,
     pub launch_new_command: String,
+    pub launch_current_command: Option<String>,
     pub launch_resume_commands: Vec<String>,
 }
 
@@ -451,6 +459,10 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
             post(post_launch_workspace_new),
         )
         .route(
+            "/api/workspaces/:thread_key/launch-current",
+            post(post_launch_workspace_continue_current),
+        )
+        .route(
             "/api/workspaces/:thread_key/launch-resume",
             post(post_launch_workspace_resume),
         )
@@ -636,6 +648,15 @@ async fn post_launch_workspace_new(
     AxumPath(thread_key): AxumPath<String>,
 ) -> Result<Json<LaunchWorkspaceResponse>, ManagementApiError> {
     Ok(Json(state.launch_workspace_new(&thread_key).await?))
+}
+
+async fn post_launch_workspace_continue_current(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+) -> Result<Json<LaunchWorkspaceResponse>, ManagementApiError> {
+    Ok(Json(
+        state.launch_workspace_continue_current(&thread_key).await?,
+    ))
 }
 
 async fn post_launch_workspace_resume(
@@ -1370,12 +1391,20 @@ impl ManagementApiState {
             thread_key: record.metadata.thread_key,
             hcodex_path: hcodex_path.display().to_string(),
             hcodex_available: hcodex_path.exists(),
-            current_codex_thread_id: binding.current_codex_thread_id,
+            current_codex_thread_id: binding.current_codex_thread_id.clone(),
             launch_new_command: format!(
                 "{} --thread-key {}",
                 shell_quote_path(&hcodex_path),
                 shell_quote(thread_key)
             ),
+            launch_current_command: binding.current_codex_thread_id.as_ref().map(|session_id| {
+                format!(
+                    "{} --thread-key {} resume {}",
+                    shell_quote_path(&hcodex_path),
+                    shell_quote(thread_key),
+                    shell_quote(session_id)
+                )
+            }),
             launch_resume_commands: recent_codex_sessions
                 .iter()
                 .map(|entry| {
@@ -1481,9 +1510,12 @@ impl ManagementApiState {
     }
 
     async fn maybe_reconcile_owner_workspace(&self, workspace_cwd: &str) -> Result<()> {
-        let Some(owner) = self.runtime_owner.read().await.clone() else {
-            return Ok(());
-        };
+        let owner = self
+            .runtime_owner
+            .read()
+            .await
+            .clone()
+            .context("desktop runtime owner is not active")?;
         let _ = owner.reconcile_managed_workspaces([workspace_cwd]).await?;
         Ok(())
     }
@@ -1495,6 +1527,23 @@ impl ManagementApiState {
             launched: true,
             thread_key: thread_key.to_owned(),
             command: config.launch_new_command,
+        })
+    }
+
+    async fn launch_workspace_continue_current(
+        &self,
+        thread_key: &str,
+    ) -> Result<LaunchWorkspaceResponse> {
+        let config = self.workspace_launch_config(thread_key).await?;
+        let command = config
+            .launch_current_command
+            .clone()
+            .context("managed workspace is missing a current Telegram session")?;
+        launch_hcodex_via_terminal(&command).await?;
+        Ok(LaunchWorkspaceResponse {
+            launched: true,
+            thread_key: thread_key.to_owned(),
+            command,
         })
     }
 
@@ -1747,71 +1796,33 @@ async fn read_workspace_runtime_health(
     workspace_path: &Path,
     runtime_owner: Option<&DesktopRuntimeOwner>,
 ) -> WorkspaceRuntimeHealth {
-    if let Some(owner) = runtime_owner
-        && let Some(heartbeat) = owner.workspace_heartbeat(workspace_path).await
-    {
-        return WorkspaceRuntimeHealth::from_heartbeat(heartbeat);
-    }
-    let state_path = workspace_path
-        .join(".threadbridge")
-        .join("state")
-        .join("app-server")
-        .join("current.json");
-    let contents = match tokio::fs::read_to_string(&state_path).await {
-        Ok(contents) => contents,
-        Err(_) => {
-            return WorkspaceRuntimeHealth {
+    match runtime_owner {
+        Some(owner) => {
+            if let Some(heartbeat) = owner.workspace_heartbeat(workspace_path).await {
+                return WorkspaceRuntimeHealth::from_heartbeat(heartbeat);
+            }
+            WorkspaceRuntimeHealth {
                 app_server_status: "missing",
                 tui_proxy_status: "missing",
                 handoff_readiness: "unavailable",
-                source: "workspace_state",
+                source: "owner_pending",
                 last_checked_at: None,
-                last_error: Some(format!("missing {}", state_path.display())),
-            };
+                last_error: Some(format!(
+                    "desktop runtime owner has not published a heartbeat for {} yet",
+                    workspace_path.display()
+                )),
+            }
         }
-    };
-    let state: WorkspaceRuntimeState = match serde_json::from_str(&contents) {
-        Ok(state) => state,
-        Err(_) => {
-            return WorkspaceRuntimeHealth {
-                app_server_status: "invalid",
-                tui_proxy_status: "invalid",
-                handoff_readiness: "unavailable",
-                source: "workspace_state",
-                last_checked_at: None,
-                last_error: Some(format!("invalid {}", state_path.display())),
-            };
-        }
-    };
-    let app_server_running = daemon_endpoint_is_live(&state.daemon_ws_url).await;
-    let proxy_running = match state.tui_proxy_base_ws_url.as_deref() {
-        Some(url) => proxy_endpoint_is_live(url).await,
-        None => false,
-    };
-    let app_server_status = if app_server_running {
-        "running"
-    } else {
-        "stale"
-    };
-    let tui_proxy_status = match state.tui_proxy_base_ws_url.as_deref() {
-        Some(_) if proxy_running => "running",
-        Some(_) => "stale",
-        None => "missing",
-    };
-    let handoff_readiness = if app_server_running && proxy_running {
-        "ready"
-    } else if app_server_running {
-        "degraded"
-    } else {
-        "unavailable"
-    };
-    WorkspaceRuntimeHealth {
-        app_server_status,
-        tui_proxy_status,
-        handoff_readiness,
-        source: "workspace_state",
-        last_checked_at: None,
-        last_error: None,
+        None => WorkspaceRuntimeHealth {
+            app_server_status: "missing",
+            tui_proxy_status: "missing",
+            handoff_readiness: "unavailable",
+            source: "owner_required",
+            last_checked_at: None,
+            last_error: Some(
+                "desktop runtime owner is required for managed workspace runtime".to_owned(),
+            ),
+        },
     }
 }
 
@@ -1839,6 +1850,12 @@ fn workspace_recovery_hint(
     if conflict {
         return Some(
             "Resolve the active workspace binding conflict first. Tray launch stays disabled until only one active binding remains."
+                .to_owned(),
+        );
+    }
+    if matches!(runtime_status.source, "owner_required" | "owner_pending") {
+        return Some(
+            "Desktop runtime owner is required for this workspace. Start threadbridge_desktop and run Repair Runtime or Reconcile Runtime Owner."
                 .to_owned(),
         );
     }

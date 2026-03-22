@@ -231,6 +231,7 @@ function renderWorkspaceCards(items) {
       <div class="actions-grid">
         <button class="secondary" onclick="openWorkspace('${item.thread_key}')">Open Workspace</button>
         <button ${item.conflict ? 'disabled' : ''} onclick="launchNew('${item.thread_key}')">New Session</button>
+        <button ${item.conflict || !item.current_codex_thread_id ? 'disabled' : ''} onclick="launchCurrent('${item.thread_key}')">Continue Telegram Session</button>
         <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="repairContinuity('${item.thread_key}', ${item.session_broken ? 'true' : 'false'}, ${item.tui_active_codex_thread_id ? 'true' : 'false'})">${item.tui_active_codex_thread_id ? 'Adopt TUI' : 'Repair Session'}</button>
         <button class="secondary" onclick="repairRuntime('${item.thread_key}')">Repair Runtime</button>
         <button ${item.conflict ? 'disabled' : ''} onclick="showLaunchConfig('${item.thread_key}')">Show Launch Commands</button>
@@ -339,6 +340,17 @@ async function showLaunchConfig(threadKey) {
 
 async function launchNew(threadKey) {
   const response = await fetch(`/api/workspaces/${threadKey}/launch-new`, { method: 'POST' });
+  const data = await response.json();
+  if (!response.ok) {
+    alert(data.error || 'Launch failed');
+    return;
+  }
+  openLaunchOutput(threadKey, data);
+  await refresh();
+}
+
+async function launchCurrent(threadKey) {
+  const response = await fetch(`/api/workspaces/${threadKey}/launch-current`, { method: 'POST' });
   const data = await response.json();
   if (!response.ok) {
     alert(data.error || 'Launch failed');

@@ -25,6 +25,7 @@
   - `POST /api/workspaces/:thread_key/open`
   - `POST /api/workspaces/:thread_key/repair-runtime`
   - `POST /api/workspaces/:thread_key/launch-new`
+  - `POST /api/workspaces/:thread_key/launch-current`
   - `POST /api/workspaces/:thread_key/launch-resume`
   - `POST /api/threads/:thread_key/archive`
   - `POST /api/threads/:thread_key/restore`
@@ -38,7 +39,7 @@
 - 已新增 `threadbridge_desktop`：
   - macOS-first `tray-icon` 常駐入口
   - top-level tray menu 會列出 managed workspace submenu
-  - 每個 workspace submenu 會列出 `Start New hcodex Session` 與最近 5 個 session id
+  - 每個 workspace submenu 已收斂成 `New Session` 與 `Continue Telegram Session`
 - `Settings` 會在預設瀏覽器中打開本地 management UI
 - managed Codex health 已開始暴露真實 source / binary path / version，且本地管理面可切換 Codex source preference 並同步已綁定 workspace 的 launcher
 - desktop runtime owner 已開始在背景定期 reconcile 已管理 workspace，並主動 ensure shared app-server 與 TUI proxy；同時也提供單 workspace 的 `repair runtime` control action
@@ -49,7 +50,7 @@
 - managed Codex source build defaults 已開始持久化到 repo-local config，而不是只依賴 shell env 或單次 request
 - 本地管理面已開始提供 `open workspace` control action
 - 本地管理面已開始提供 adopt / reject pending TUI handoff control action
-- Telegram bot 啟動已抽成可複用 runner，headless `threadbridge` 與 desktop runtime 共用同一套 bot/runtime 啟動邏輯
+- Telegram bot 啟動已抽成可複用 runner，並由 desktop runtime 單一路徑持有
 - setup 儲存後，desktop runtime 已會在背景重新嘗試拉起 Telegram polling，不再只剩重啟一條路
 
 目前仍缺：
@@ -61,7 +62,7 @@
 目前新增確認的一個 UI 收斂方向是：
 
 - web 管理面可評估以 HeroUI 作為前端組件庫重構基礎
-- tray menu 應進一步收斂；workspace submenu 在 v1 只保留 `New Session` 與 `Continue Telegram Session` 兩個入口，不再承擔 recent session browser 或其他 control action
+- tray menu 已收斂；workspace submenu 在 v1 只保留 `New Session` 與 `Continue Telegram Session` 兩個入口，不再承擔 recent session browser 或其他 control action
 
 目前新增確認的優先級判斷是：
 
@@ -279,7 +280,8 @@ web 管理面中的 v1 action 以既有 lifecycle/control 語義為主：
 - `handoff_readiness`
 - `runtime_health_source`
   - `owner_heartbeat`
-  - `workspace_state`
+  - `owner_pending`
+  - `owner_required`
 - `heartbeat_last_checked_at`
 - `heartbeat_last_error`
 - `session_broken_reason`
@@ -373,7 +375,7 @@ v1 對外不再以 `brew/source` 雙來源模型作為管理面概念。
 
 ### 5. Workspace 維度的 recent session history
 
-tray menu 需要每個 workspace 最近 5 個 Codex `thread.id`。
+web 管理面需要每個 workspace 最近 5 個 Codex `thread.id`；tray 已不再提供 recent session browser。
 
 這份歷史應由 runtime 正式維護，而不是由 UI 掃描本地檔案臨時拼裝。
 

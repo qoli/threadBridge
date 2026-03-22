@@ -8,6 +8,7 @@
 
 - final reply renderer 已有較清楚的 Telegram 專用邊界
 - topic title watcher / busy gate 開始把平台表現和狀態來源分開
+- desktop runtime 已成為正式 owner 啟動模型，Telegram 不再是共享 runtime 的正式 owner
 
 但整體架構仍未完成 Telegram adapter 化。
 
@@ -33,7 +34,7 @@
 
 目前新增確認的一點是：
 
-- owner 責任收斂應先於更完整的 Telegram adapter 遷移
+- owner 責任收斂已先行落地，接下來才適合做更完整的 Telegram adapter 遷移
 
 原因是：
 
@@ -86,6 +87,12 @@
 - 哪些路徑只能讀 owner state，而不能自行補拉 runtime
 
 這一步的目標不是 UI 遷移，而是把 runtime authority 從 Telegram 路徑抽出去。
+
+目前這一階段的已知結果應視為：
+
+- desktop runtime 是正式 owner
+- Telegram 只讀 owner state 或送 control action
+- `hcodex` 不再自補 shared runtime
 
 ### Phase 3：定義 Telegram Adapter 邊界
 

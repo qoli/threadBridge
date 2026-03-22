@@ -167,8 +167,8 @@ runtime 對 adapter 應該提供穩定語意，而不是平台特定 callback：
   - 偏向 core runtime
 - `rust/src/telegram_runtime/`
   - 偏向 adapter，但目前可能仍摻雜一些核心流程假設
-- `rust/src/bin/threadbridge.rs`
-  - 目前像是 Telegram app 的 entrypoint，未來應更像 adapter-specific launcher
+- `rust/src/bin/threadbridge_desktop.rs`
+  - 目前是 desktop host / owner launcher，之後仍應更清楚區分 host 與 adapter 邊界
 - `rust/src/runtime_owner.rs`
   - 應逐步成為 machine-level runtime authority，而不是只是一個額外的 repair helper
 

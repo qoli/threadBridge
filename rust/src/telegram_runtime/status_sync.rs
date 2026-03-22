@@ -11,7 +11,7 @@ use tracing::{info, warn};
 use super::*;
 use crate::repository::{
     ThreadStatus, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
-    TranscriptMirrorRole,
+    TranscriptMirrorPhase, TranscriptMirrorRole,
 };
 use crate::workspace_status::{
     CliOwnerClaim, SessionCurrentStatus, SessionStatusOwner, WorkspaceAggregateStatus,
@@ -640,6 +640,7 @@ async fn sync_cli_transcript_mirrors_once(
                         .append_transcript_mirror(&owner_record, &entry)
                         .await?;
                     if inserted
+                        && entry.delivery == TranscriptMirrorDelivery::Final
                         && let Some(message_thread_id) = owner_record.metadata.message_thread_id
                     {
                         send_scoped_message(
@@ -683,7 +684,9 @@ async fn sync_cli_transcript_mirrors_once(
                     .repository
                     .append_transcript_mirror(&owner_record, &entry)
                     .await?;
-                if inserted && let Some(message_thread_id) = owner_record.metadata.message_thread_id
+                if inserted
+                    && entry.delivery == TranscriptMirrorDelivery::Final
+                    && let Some(message_thread_id) = owner_record.metadata.message_thread_id
                 {
                     send_scoped_message(
                         bot,
@@ -762,6 +765,7 @@ fn cli_mirror_entry_from_event(
                 origin: transcript_origin_from_event(event),
                 role: TranscriptMirrorRole::User,
                 delivery: TranscriptMirrorDelivery::Final,
+                phase: None,
                 text: text.to_owned(),
             })
         }
@@ -784,6 +788,31 @@ fn cli_mirror_entry_from_event(
                 origin: transcript_origin_from_event(event),
                 role: TranscriptMirrorRole::Assistant,
                 delivery: TranscriptMirrorDelivery::Final,
+                phase: None,
+                text: text.to_owned(),
+            })
+        }
+        "process_transcript" => {
+            let session_id = event.payload.get("session_id")?.as_str()?;
+            if expected_session_id.is_some_and(|expected| expected != session_id) {
+                return None;
+            }
+            let phase = match event.payload.get("phase")?.as_str()? {
+                "plan" => TranscriptMirrorPhase::Plan,
+                "tool" => TranscriptMirrorPhase::Tool,
+                _ => return None,
+            };
+            let text = event.payload.get("text")?.as_str()?.trim();
+            if text.is_empty() {
+                return None;
+            }
+            Some(TranscriptMirrorEntry {
+                timestamp: event.occurred_at.clone(),
+                session_id: session_id.to_owned(),
+                origin: transcript_origin_from_event(event),
+                role: TranscriptMirrorRole::Assistant,
+                delivery: TranscriptMirrorDelivery::Process,
+                phase: Some(phase),
                 text: text.to_owned(),
             })
         }

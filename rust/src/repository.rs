@@ -120,6 +120,14 @@ pub enum TranscriptMirrorRole {
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptMirrorDelivery {
     Final,
+    Process,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptMirrorPhase {
+    Plan,
+    Tool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -129,6 +137,8 @@ pub struct TranscriptMirrorEntry {
     pub origin: TranscriptMirrorOrigin,
     pub role: TranscriptMirrorRole,
     pub delivery: TranscriptMirrorDelivery,
+    #[serde(default)]
+    pub phase: Option<TranscriptMirrorPhase>,
     pub text: String,
 }
 
@@ -1431,6 +1441,7 @@ mod tests {
             origin: TranscriptMirrorOrigin::Tui,
             role: TranscriptMirrorRole::Assistant,
             delivery: TranscriptMirrorDelivery::Final,
+            phase: None,
             text: "Hi.".to_owned(),
         };
 

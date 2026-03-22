@@ -685,6 +685,7 @@ pub(crate) async fn run_text_message(
                 origin: TranscriptMirrorOrigin::Telegram,
                 role: TranscriptMirrorRole::User,
                 delivery: TranscriptMirrorDelivery::Final,
+                phase: None,
                 text: text.to_owned(),
             },
         )
@@ -774,13 +775,26 @@ async fn execute_text_turn(
         state.config.stream_edit_interval_ms,
     )));
     let preview_heartbeat = PreviewHeartbeat::start(preview.clone());
+    let mirror_record = record.clone();
+    let mirror_repository = state.repository.clone();
+    let mirror_session_id = existing_thread_id.to_owned();
 
     let result = state
         .codex
         .run_locked_prompt_with_events(&codex_workspace, existing_thread_id, text, |event| {
             let preview = preview.clone();
+            let mirror_record = mirror_record.clone();
+            let mirror_repository = mirror_repository.clone();
+            let mirror_session_id = mirror_session_id.clone();
             async move {
                 preview.lock().await.consume(&event).await;
+                if let Some(entry) =
+                    process_mirror_entry_from_codex_event(&event, &mirror_session_id)
+                {
+                    let _ = mirror_repository
+                        .append_transcript_mirror(&mirror_record, &entry)
+                        .await;
+                }
             }
         })
         .await;
@@ -821,6 +835,7 @@ async fn execute_text_turn(
                         origin: TranscriptMirrorOrigin::Telegram,
                         role: TranscriptMirrorRole::Assistant,
                         delivery: TranscriptMirrorDelivery::Final,
+                        phase: None,
                         text: result.final_response.clone(),
                     },
                 )
@@ -891,6 +906,78 @@ async fn execute_text_turn(
     }
 
     Ok(())
+}
+
+fn process_mirror_entry_from_codex_event(
+    event: &CodexThreadEvent,
+    session_id: &str,
+) -> Option<TranscriptMirrorEntry> {
+    let item = match event {
+        CodexThreadEvent::ItemStarted { item } | CodexThreadEvent::ItemCompleted { item } => item,
+        _ => return None,
+    };
+    let item_type = item.get("type").and_then(|value| value.as_str())?;
+    let (phase, text) = match item_type {
+        "todo_list" if matches!(event, CodexThreadEvent::ItemCompleted { .. }) => {
+            (TranscriptMirrorPhase::Plan, summarize_todo_list_item(item)?)
+        }
+        "command_execution" if matches!(event, CodexThreadEvent::ItemStarted { .. }) => (
+            TranscriptMirrorPhase::Tool,
+            summarize_tool_item("Command", item)?,
+        ),
+        "mcp_tool_call" if matches!(event, CodexThreadEvent::ItemStarted { .. }) => (
+            TranscriptMirrorPhase::Tool,
+            summarize_tool_item("MCP tool", item)?,
+        ),
+        "web_search" if matches!(event, CodexThreadEvent::ItemStarted { .. }) => (
+            TranscriptMirrorPhase::Tool,
+            summarize_tool_item("Web search", item)?,
+        ),
+        _ => return None,
+    };
+    Some(TranscriptMirrorEntry {
+        timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        session_id: session_id.to_owned(),
+        origin: TranscriptMirrorOrigin::Telegram,
+        role: TranscriptMirrorRole::Assistant,
+        delivery: TranscriptMirrorDelivery::Process,
+        phase: Some(phase),
+        text,
+    })
+}
+
+fn summarize_todo_list_item(item: &serde_json::Value) -> Option<String> {
+    let items = item.get("items")?.as_array()?;
+    let todos = items
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("content")
+                .or_else(|| entry.get("text"))
+                .or_else(|| entry.get("title"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_owned())
+        })
+        .collect::<Vec<_>>();
+    if todos.is_empty() {
+        return None;
+    }
+    Some(format!("Plan: {}", todos.join(" | ")))
+}
+
+fn summarize_tool_item(prefix: &str, item: &serde_json::Value) -> Option<String> {
+    let detail = item
+        .get("command")
+        .and_then(|value| value.as_str())
+        .or_else(|| item.get("query").and_then(|value| value.as_str()))
+        .or_else(|| item.get("tool_name").and_then(|value| value.as_str()))
+        .or_else(|| item.get("server").and_then(|value| value.as_str()))
+        .or_else(|| item.get("tool").and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(format!("{prefix}: {detail}"))
 }
 
 #[cfg(test)]

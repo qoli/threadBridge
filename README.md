@@ -11,7 +11,7 @@ Telegram bot that maps Telegram threads to Codex app-server threads bound to rea
 - Installs a managed runtime appendix and `.threadbridge/` wrapper surface into the bound workspace.
 - Exposes a managed `hcodex` launcher for the bound workspace through `codex --remote <ws-url>`.
 - Starts a local management API for setup, runtime health, active thread views, and workspace views on loopback HTTP.
-- On macOS, also has a desktop runtime entrypoint with a tray menu that opens the local management UI in the system default browser and can add a workspace from a native folder picker.
+- Uses a macOS desktop runtime entrypoint with a tray menu that opens the local management UI in the system default browser and can add a workspace from a native folder picker.
 
 ## Requirements
 
@@ -25,14 +25,7 @@ Telegram bot that maps Telegram threads to Codex app-server threads bound to rea
 
 1. Copy `.env.example` to `.env.local`.
 2. Fill in your own Telegram token, authorized user IDs, and image-provider settings.
-3. Start the bot:
-
-```bash
-export CARGO_HOME="$PWD/.cargo" CARGO_TARGET_DIR="$PWD/target"
-cargo run --bin threadbridge
-```
-
-Or start the macOS desktop runtime:
+3. Start the macOS desktop runtime:
 
 ```bash
 export CARGO_HOME="$PWD/.cargo" CARGO_TARGET_DIR="$PWD/target"
@@ -45,24 +38,20 @@ Or use the local helper script:
 scripts/local_threadbridge.sh build
 scripts/local_threadbridge.sh build --codex-source source
 scripts/local_threadbridge.sh start
-scripts/local_threadbridge.sh start --runtime desktop
 scripts/local_threadbridge.sh restart --codex-source brew
 scripts/local_threadbridge.sh restart --codex-source source
-scripts/local_threadbridge.sh restart --runtime desktop --codex-source source
 ```
 
 `--codex-source brew|source` controls which local `codex` binary `hcodex` should prefer. The choice is persisted in `.threadbridge/codex/source.txt` and is picked up the next time a workspace runtime is bootstrapped.
 
-`--runtime headless|desktop` controls which local threadBridge runtime the helper manages. On macOS, `--runtime desktop` starts `threadbridge_desktop` from the repo root in its own tmux session and will stop the conflicting headless runtime first so both owners do not fight over the same local management port.
-
 - `brew`: prefer the system `codex` on `PATH`, with the managed copy as fallback.
 - `source`: build `codex-cli` from the local Codex source tree and cache it under `.threadbridge/codex/codex`, then prefer that managed copy.
-- `scripts/local_threadbridge.sh build` now builds the local runtime binaries ahead of time; on macOS it builds both `threadbridge` and `threadbridge_desktop`.
+- `scripts/local_threadbridge.sh` now manages the desktop runtime only.
 
 ## Behavior
 
+- `threadBridge` now starts through the desktop runtime only; supported local startup is macOS-only.
 - Main private chat acts as the control console.
-- If Telegram credentials are missing, threadBridge still starts the local management API but does not start Telegram polling.
 - `threadbridge_desktop` also starts without Telegram credentials; it keeps the tray and local management UI available so Telegram setup and workspace management can still happen before polling is active.
 - In the desktop runtime, saving Telegram setup through the local management UI will trigger a background retry to start polling; a full process restart is no longer the only path.
 - Only Telegram user IDs listed in `AUTHORIZED_TELEGRAM_USER_IDS` can trigger the bot.
@@ -72,8 +61,9 @@ scripts/local_threadbridge.sh restart --runtime desktop --codex-source source
 - `/repair_session` verifies that the saved Codex session still matches the stored workspace path.
 - Topic titles currently reflect `busy` and `broken` state.
 - `hcodex` is the managed local TUI path. It resolves the workspace daemon from `.threadbridge/state/app-server/current.json` and launches `codex --remote ...`.
+- `hcodex` no longer self-heals the shared runtime; if the workspace runtime is unavailable, start `threadbridge_desktop` and repair the workspace runtime from the management UI first.
 - The local management API defaults to `http://127.0.0.1:38420` and can be changed with `THREADBRIDGE_MANAGEMENT_BIND_ADDR`.
-- On macOS, the tray menu lists one submenu per managed workspace, `Start New hcodex Session`, and the recent 5 session IDs for resume.
+- On macOS, the tray menu lists one submenu per managed workspace with `New Session` and `Continue Telegram Session`.
 - On macOS, tray `Add Workspace` opens a native folder picker, treats `workspace = thread`, creates and binds immediately when the workspace is new, and shows a desktop notification instead of auto-opening the browser.
 - The browser-based management UI now follows the same `workspace = thread` model. Its main surface is `Workspaces` and `Archived Workspaces`; first-run onboarding is intentionally not exposed until a usable flow exists.
 - The local management UI can open a managed workspace in Finder, repair a workspace runtime, refresh the managed Codex cache from the current `codex` on `PATH`, and build a managed source Codex binary from the local Codex Rust workspace.
@@ -83,10 +73,11 @@ scripts/local_threadbridge.sh restart --runtime desktop --codex-source source
 - Those managed Codex build defaults are now persisted under `.threadbridge/codex/build-config.json`, so the desktop runtime keeps using the same local source-build settings across restarts.
 - The desktop runtime owner now proactively ensures both the shared app-server daemon and the workspace TUI proxy for managed workspaces.
 - The management surface now shows TUI adoption-pending state per thread and workspace, so local handoff is visible without reading raw state files.
-- Workspace and aggregate runtime health now surface that same handoff state as `pending_adoption`/degraded readiness instead of reporting a fully ready handoff while TUI adoption is still unresolved.
+- Workspace and aggregate runtime health now treat desktop owner heartbeat as the primary authority and surface handoff state as `pending_adoption`/degraded readiness instead of reporting a fully ready handoff while TUI adoption is still unresolved.
 - Aggregate runtime health now also exposes desktop runtime owner state, last successful reconcile timestamp, last error, and the last reconcile report through the local management API.
 - In the desktop runtime, saving Telegram setup no longer always implies a restart; the local UI now reports restart-required only when no active runtime owner can auto-retry polling.
 - The local management UI can now explicitly adopt or reject a pending TUI session handoff instead of waiting for Telegram callback controls or implicit auto-adopt.
+- Transcript mirror now distinguishes final transcript entries from process transcript entries, including plan/tool events from the shared runtime.
 - The local server now serves the management UI from a checked-in static asset instead of embedding the entire page as an inline Rust string.
 
 ## Runtime Layout

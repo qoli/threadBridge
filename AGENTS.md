@@ -14,7 +14,7 @@ The runtime is organized in three layers:
 
 Important repo areas:
 
-- `rust/src/bin/threadbridge.rs`: Telegram bot entrypoint.
+- `rust/src/bin/threadbridge_desktop.rs`: desktop runtime entrypoint, tray host, and Telegram bot launcher.
 - `rust/src/codex.rs`: app-server JSON-RPC client, thread lifecycle helpers, and event normalization for previews.
 - `rust/src/workspace.rs`: workspace bootstrap logic that appends the managed runtime block into a real workspace `AGENTS.md` and installs `.threadbridge/`.
 - `rust/src/repository.rs`: persistent bot-local thread state for metadata, transcripts, session bindings, and image-state artifacts.
@@ -71,14 +71,14 @@ Use the repo-local Cargo paths from the README:
 
 ```bash
 export CARGO_HOME="$PWD/.cargo" CARGO_TARGET_DIR="$PWD/target"
-cargo run --bin threadbridge
+cargo run --bin threadbridge_desktop
 cargo check
 cargo test
 cargo fmt
 cargo clippy --all-targets --all-features
 ```
 
-`cargo run --bin threadbridge` starts the Telegram bot. `cargo check` is the fastest correctness pass. `cargo test` runs the Rust unit tests. `cargo fmt` and `cargo clippy` use standard Rust tooling.
+`cargo run --bin threadbridge_desktop` starts the supported desktop runtime, local management API, and Telegram bot launcher path. `cargo check` is the fastest correctness pass. `cargo test` runs the Rust unit tests. `cargo fmt` and `cargo clippy` use standard Rust tooling.
 
 ## Coding Style & Naming Conventions
 Follow `rustfmt` defaults for Rust: 4-space indentation, `snake_case` for functions and modules, `PascalCase` for types, and small focused modules. Match the existing style in `rust/src/` by returning `anyhow::Result`, using `serde`-friendly structs, and keeping async I/O in Tokio-aware helpers.

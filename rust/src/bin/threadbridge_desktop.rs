@@ -60,8 +60,8 @@ mod macos_app {
     struct TrayWorkspaceSignature {
         thread_key: String,
         label: String,
-        launch_ready: bool,
-        recent_session_ids: Vec<String>,
+        can_launch_new: bool,
+        can_continue_current: bool,
     }
 
     #[derive(Debug, Clone)]
@@ -69,13 +69,8 @@ mod macos_app {
         OpenSettings,
         OpenAddWorkspace,
         Quit,
-        LaunchNew {
-            thread_key: String,
-        },
-        Resume {
-            thread_key: String,
-            session_id: String,
-        },
+        LaunchNew { thread_key: String },
+        ContinueCurrent { thread_key: String },
     }
 
     struct MenuModel {
@@ -359,31 +354,24 @@ mod macos_app {
                 continue;
             };
             let submenu = Submenu::new(workspace_tray_label(workspace), true);
-            let launch_ready = workspace_launch_ready(workspace);
-            let start_item = MenuItem::new("Start New hcodex Session", launch_ready, None);
+            let can_launch_new = workspace_launch_ready(workspace);
+            let can_continue_current = workspace_continue_current_ready(workspace);
+            let start_item = MenuItem::new("New Session", can_launch_new, None);
             actions.insert(
                 start_item.id().clone(),
                 TrayAction::LaunchNew {
                     thread_key: thread_key.clone(),
                 },
             );
-            submenu.append_items(&[&start_item, &PredefinedMenuItem::separator()])?;
-            if workspace.recent_codex_sessions.is_empty() {
-                let empty_item = MenuItem::new("No recent sessions", false, None);
-                submenu.append(&empty_item)?;
-            } else {
-                for session in workspace.recent_codex_sessions.iter().take(5) {
-                    let item = MenuItem::new(session.session_id.clone(), launch_ready, None);
-                    actions.insert(
-                        item.id().clone(),
-                        TrayAction::Resume {
-                            thread_key: thread_key.clone(),
-                            session_id: session.session_id.clone(),
-                        },
-                    );
-                    submenu.append(&item)?;
-                }
-            }
+            let continue_item =
+                MenuItem::new("Continue Telegram Session", can_continue_current, None);
+            actions.insert(
+                continue_item.id().clone(),
+                TrayAction::ContinueCurrent {
+                    thread_key: thread_key.clone(),
+                },
+            );
+            submenu.append_items(&[&start_item, &continue_item])?;
             menu.append(&submenu)?;
         }
         if !snapshot.workspaces.is_empty() {
@@ -440,13 +428,8 @@ mod macos_app {
                     Some(TrayWorkspaceSignature {
                         thread_key: workspace.thread_key.clone()?,
                         label: workspace_tray_label(workspace),
-                        launch_ready: workspace_launch_ready(workspace),
-                        recent_session_ids: workspace
-                            .recent_codex_sessions
-                            .iter()
-                            .take(5)
-                            .map(|session| session.session_id.clone())
-                            .collect(),
+                        can_launch_new: workspace_launch_ready(workspace),
+                        can_continue_current: workspace_continue_current_ready(workspace),
                     })
                 })
                 .collect(),
@@ -471,6 +454,14 @@ mod macos_app {
         workspace.hcodex_available
             && workspace.app_server_status == "running"
             && !matches!(workspace.handoff_readiness, "unavailable")
+    }
+
+    fn workspace_continue_current_ready(workspace: &ManagedWorkspaceView) -> bool {
+        workspace_launch_ready(workspace)
+            && workspace
+                .current_codex_thread_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
     }
 
     fn handle_menu_event(
@@ -520,23 +511,19 @@ mod macos_app {
                     let _ = proxy.send_event(UserEvent::Refresh);
                 });
             }
-            TrayAction::Resume {
-                thread_key,
-                session_id,
-            } => {
+            TrayAction::ContinueCurrent { thread_key } => {
                 let runtime = app.runtime.clone();
                 let management_api = app.management_api.clone();
                 let proxy = proxy.clone();
                 runtime.spawn(async move {
                     if let Err(error) = management_api
-                        .launch_workspace_resume(&thread_key, &session_id)
+                        .launch_workspace_continue_current(&thread_key)
                         .await
                     {
                         warn!(
-                            event = "desktop_runtime.launch_resume.failed",
+                            event = "desktop_runtime.launch_current.failed",
                             error = %error,
                             thread_key = %thread_key,
-                            session_id = %session_id
                         );
                     }
                     let _ = proxy.send_event(UserEvent::Refresh);

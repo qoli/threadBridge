@@ -19,7 +19,7 @@ use crate::app_server_runtime::{WorkspaceRuntimeState, write_workspace_runtime_s
 use crate::repository::ThreadRepository;
 use crate::workspace_status::{
     record_tui_proxy_completed, record_tui_proxy_connected, record_tui_proxy_disconnected,
-    record_tui_proxy_prompt,
+    record_tui_proxy_process_event, record_tui_proxy_prompt,
 };
 
 const PROXY_HEALTH_PATH: &str = "/healthz";
@@ -475,6 +475,9 @@ async fn maybe_track_server_message(
     }
 
     if let Some(session_id) = current_session_id.as_deref() {
+        if let Some((phase, text)) = maybe_extract_process_entry(message)? {
+            record_tui_proxy_process_event(workspace_path, session_id, phase, &text).await?;
+        }
         if let Some(completed_turn_id) = extract_completed_turn_id(message)? {
             if local_turn_ids.remove(&completed_turn_id) {
                 let final_text = if latest_assistant_message.trim().is_empty() {
@@ -496,6 +499,74 @@ async fn maybe_track_server_message(
         }
     }
     Ok(())
+}
+
+fn maybe_extract_process_entry(message: &WsMessage) -> Result<Option<(&'static str, String)>> {
+    let text = match message {
+        WsMessage::Text(text) => text.as_str(),
+        WsMessage::Binary(bytes) => {
+            std::str::from_utf8(bytes).context("invalid utf8 daemon frame")?
+        }
+        _ => return Ok(None),
+    };
+    let payload: Value = match serde_json::from_str(text) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(None),
+    };
+    let method = payload.get("method").and_then(Value::as_str);
+    let item = payload.get("params").and_then(|params| params.get("item"));
+    let item_type = item
+        .and_then(|item| item.get("type"))
+        .and_then(Value::as_str);
+    match (method, item, item_type) {
+        (Some("item/completed"), Some(item), Some("todo_list")) => {
+            Ok(summarize_todo_list_item(item).map(|text| ("plan", text)))
+        }
+        (Some("item/started"), Some(item), Some("command_execution")) => {
+            Ok(summarize_tool_item("Command", item).map(|text| ("tool", text)))
+        }
+        (Some("item/started"), Some(item), Some("mcp_tool_call")) => {
+            Ok(summarize_tool_item("MCP tool", item).map(|text| ("tool", text)))
+        }
+        (Some("item/started"), Some(item), Some("web_search")) => {
+            Ok(summarize_tool_item("Web search", item).map(|text| ("tool", text)))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn summarize_todo_list_item(item: &Value) -> Option<String> {
+    let items = item.get("items")?.as_array()?;
+    let todos = items
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("content")
+                .or_else(|| entry.get("text"))
+                .or_else(|| entry.get("title"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_owned())
+        })
+        .collect::<Vec<_>>();
+    if todos.is_empty() {
+        return None;
+    }
+    Some(format!("Plan: {}", todos.join(" | ")))
+}
+
+fn summarize_tool_item(prefix: &str, item: &Value) -> Option<String> {
+    let detail = item
+        .get("command")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("query").and_then(Value::as_str))
+        .or_else(|| item.get("tool_name").and_then(Value::as_str))
+        .or_else(|| item.get("server").and_then(Value::as_str))
+        .or_else(|| item.get("tool").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(format!("{prefix}: {detail}"))
 }
 
 fn maybe_extract_agent_message_text(message: &WsMessage) -> Result<Option<String>> {

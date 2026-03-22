@@ -580,6 +580,34 @@ pub async fn record_tui_proxy_prompt(
     Ok(current)
 }
 
+pub async fn record_tui_proxy_process_event(
+    workspace_path: &Path,
+    session_id: &str,
+    phase: &str,
+    text: &str,
+) -> Result<()> {
+    ensure_workspace_status_surface(workspace_path).await?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let record = WorkspaceStatusEventRecord {
+        schema_version: STATUS_SCHEMA_VERSION,
+        event: "process_transcript".to_owned(),
+        source: SessionStatusOwner::Cli,
+        workspace_cwd: canonical_workspace_string(workspace_path),
+        occurred_at: now_iso(),
+        payload: json!({
+            "session_id": session_id,
+            "phase": phase,
+            "text": trimmed,
+            "client": "threadbridge-tui-proxy",
+        }),
+    };
+    append_status_event(workspace_path, &record).await?;
+    Ok(())
+}
+
 pub async fn record_tui_proxy_completed(
     workspace_path: &Path,
     session_id: &str,

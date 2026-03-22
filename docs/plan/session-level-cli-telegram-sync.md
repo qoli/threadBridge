@@ -10,16 +10,15 @@
 - `tui_active_codex_thread_id`、adoption、auto-adopt、mirror 已落地
 - threadBridge 會為每個 bound workspace 啟動共享的 `codex app-server`
 - `./.threadbridge/bin/hcodex` 已是受管 remote TUI 入口
-- `hcodex` 目前仍保留過渡性的本地 self-heal
+- `hcodex` 已改成依賴 desktop runtime owner，不再自行補拉 shared runtime
 - threadBridge 已開始提供本地 management API 骨架，且可在沒有 Telegram 憑據時先啟動本地 runtime
+- desktop runtime 已成為正式啟動入口；headless `threadbridge` 已退場
 
 目前仍未完成：
 
-- workspace `ws` runtime 的正式長壽命 owner 尚未完全收斂
-- desktop runtime 對 handoff continuity / adoption 的 owner 職責仍是部分實作
-- `hcodex` self-heal 仍未收斂成純 fallback
-- Codex mirror 目前仍未完整承接 Plan / Tool 過程中的文本
-- workspace heartbeat / runtime health 目前仍是過渡性多來源模型
+- desktop runtime 對 handoff continuity / adoption 的 owner 職責仍有收尾空間
+- Codex mirror / observability 對 Plan / Tool 過程文本仍只算起步
+- process transcript 雖已開始落地，但尚未成為完整的通用 transcript surface
 
 目前新增確認的優先級判斷是：
 
@@ -32,11 +31,11 @@
 - 若 owner 邊界不先收斂，其他上層功能很容易繼續建立在過渡性行為上
 - 它同時也是把 Telegram 從 runtime core 收斂成通用 adapter 的前置條件
 
-目前新增確認的一個具體症狀是：
+目前新增確認的一個具體結論是：
 
-- workspace heartbeat 還沒有單一 canonical authority
-- `owner_heartbeat` 與 workspace shared status / runtime state 目前同時存在
-- 這不是單純 view model 問題，而是 owner 收斂尚未完成的直接表現
+- workspace heartbeat 已應以 desktop owner 為 canonical authority
+- workspace shared status / runtime state 只保留 activity / observation 語義
+- 後續剩餘工作主要是 adapter / protocol / UX 收尾，而不是再回到多 owner 模型
 
 ## 現況定位
 
@@ -67,17 +66,17 @@
 
 ## Runtime Ownership 現況
 
-- bot 目前是 shared runtime client，但還不是可靠的長壽命 owner
-- `hcodex` 仍保留補拉 runtime 的能力，但它不應成為正式 owner
+- bot 現在是 shared runtime client，不再是正式 owner
+- `hcodex` 不再補拉 runtime，只是 owner-managed shared runtime 的受管 CLI 入口
 - threadBridge 現在已能在無 Telegram 憑據時先啟動本地 management API
-- 這表示 owner 模型正在從「bot / `hcodex` 臨時補位」移向「desktop runtime 正式持有本地 runtime」
+- 這表示 owner 模型已正式從「bot / `hcodex` 臨時補位」收斂到「desktop runtime 持有本地 runtime」
 
 因此目前的 operational reality 是：
 
-- Telegram turn 在 bot 成功 `ensure` 當下可走 shared websocket daemon
-- 本地 `hcodex` 仍依賴 self-heal 作為 fallback
-- workspace `ws` runtime 的正式 owner 還需要進一步收斂到 desktop runtime
-- runtime health 目前仍會在 `owner_heartbeat` 與 `workspace_state` 之間切換來源
+- Telegram turn 走 desktop owner 管理下的 shared websocket daemon
+- 本地 `hcodex` 若找不到 owner-managed runtime 會直接失敗並要求 desktop repair
+- workspace `ws` runtime 的正式 owner 已固定為 desktop runtime
+- runtime health 以 `owner_heartbeat` 為主，`workspace_state` 不再作 primary source
 
 更具體地說，目前系統其實在同時保存兩類不同訊號：
 
@@ -116,7 +115,7 @@
   - Telegram adapter / client
 - `hcodex`
   - workspace 內的正式受管 CLI 入口
-  - owner 尚未完全切換前的 fallback
+  - 不再承擔 fallback owner 職責
 
 ## 與 `hcodex` 的關係
 
@@ -126,7 +125,7 @@ tray 或 web 管理面新增 workspace 啟動入口後，不能和現有 `./.thr
 
 - `hcodex` 保持 workspace 內的正式受管 CLI 入口
 - tray / web 管理面只負責找到 workspace、展示 recent session、發送 launch action
-- `hcodex` self-heal 應逐步收斂成 fallback，而不是長期 owner 模型
+- `hcodex` 不再 self-heal shared runtime；缺 owner 時直接回報 desktop-required
 
 ## Mirror 文本覆蓋缺口
 
@@ -137,11 +136,11 @@ tray 或 web 管理面新增 workspace 啟動入口後，不能和現有 `./.thr
 - user prompt submitted
 - final assistant message
 
-目前缺口是：
+目前已開始補上的缺口是：
 
-- Plan 過程中的文本尚未正式 mirror
-- Tool 執行過程中的文本尚未正式 mirror
-- 因此 Telegram thread 看到的 mirror，仍偏向「輸入 + 最終回覆」，而不是完整的過程文本
+- Plan 過程中的文本已開始以 `process transcript` 形式落地
+- Tool 執行過程中的文本已開始透過同一模型進入 mirror
+- 但它們仍未成為完整的通用 UI / observability surface
 
 這個缺口的影響包括：
 
@@ -159,7 +158,7 @@ tray 或 web 管理面新增 workspace 啟動入口後，不能和現有 `./.thr
 
 ## recent session history
 
-tray menu 需要每個 workspace 最近 5 個 Codex `thread.id`。
+web 管理面仍需要每個 workspace 最近 5 個 Codex `thread.id`；tray 已不再承擔 recent session browser。
 
 這份歷史應由 runtime 維護，至少從這些事件更新：
 
@@ -184,8 +183,7 @@ tray menu 需要每個 workspace 最近 5 個 Codex `thread.id`。
 
 ## 下一步
 
-1. 優先把 desktop runtime owner 模型補齊。
-2. 讓本地 management API 成為正式 query / control surface。
-3. 讓 `hcodex` 的 self-heal 逐步收斂成 fallback。
-4. 明確補上 mirror 對 Plan / Tool 過程文本的事件與顯示語義。
-5. 在 owner 去 Telegram 化之後，再推進更完整的 transport / adapter 抽象。
+1. 繼續收尾 desktop runtime owner 對 adoption / continuity 的細節邊界。
+2. 讓本地 management API / tray / web surface 完全站穩 owner-canonical 語義。
+3. 把 process transcript 從已落地的 mirror/storage 擴展成更正式的 UI / observability surface。
+4. 在 owner 去 Telegram 化之後，再推進更完整的 transport / adapter 抽象。

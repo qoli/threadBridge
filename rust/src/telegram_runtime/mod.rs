@@ -18,7 +18,7 @@ pub(crate) use crate::image_artifacts::{
 pub(crate) use crate::repository::{
     AppendPendingImageInput, LogDirection, SessionBinding, ThreadRecord, ThreadRepository,
     ThreadStatus, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
-    TranscriptMirrorRole,
+    TranscriptMirrorPhase, TranscriptMirrorRole,
 };
 pub(crate) use crate::tool_results::{TelegramOutboxItem, parse_telegram_outbox};
 use crate::tui_proxy::TuiProxyManager;
@@ -632,7 +632,7 @@ async fn read_owner_managed_workspace_runtime(
     };
     if TcpStream::connect(socket_addr).await.is_err() {
         anyhow::bail!(
-            "workspace runtime is not ready for {}. Repair Runtime from desktop owner first.",
+            "workspace runtime is not ready for {}. Start threadbridge_desktop and repair the workspace runtime first.",
             workspace.display()
         );
     }

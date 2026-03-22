@@ -10,7 +10,7 @@
   - `approvalPolicy = never`
   - `sandbox = danger-full-access`
 - 這代表 threadBridge 目前只有一種近似固定的執行模式，還沒有正式的 session execution profile 概念
-- management API 的 `launch-config` 目前只提供 `hcodex` 啟動命令與 recent session，尚未暴露 execution mode
+- management API 的 `launch-config` 目前已提供 `new` / `continue current` / recent-session resume 等 `hcodex` 啟動命令，但尚未暴露 execution mode
 - Telegram turn、背景執行、busy gate、mirror 等流程目前也都建立在這個固定模式上
 
 ## 問題

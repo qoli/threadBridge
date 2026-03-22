@@ -7,10 +7,6 @@ edition = "2024"
 path = "rust/src/lib.rs"
 
 [[bin]]
-name = "threadbridge"
-path = "rust/src/bin/threadbridge.rs"
-
-[[bin]]
 name = "threadbridge_desktop"
 path = "rust/src/bin/threadbridge_desktop.rs"
 

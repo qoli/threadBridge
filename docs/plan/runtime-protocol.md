@@ -18,10 +18,11 @@
   - managed Codex preference / cache refresh / source build / build-defaults
   - workspace launch config
   - adopt / reject pending TUI handoff
-  - `launch_hcodex_new` / `launch_hcodex_resume`
+  - `launch_hcodex_new` / `launch_hcodex_continue_current` / `launch_hcodex_resume`
 - `threadbridge_desktop` 已開始直接依賴這些本地 view / action
 - transport-neutral 的正式 view / action 命名仍未完全收斂
 - local HTTP + SSE 已成為目前最務實的實驗載體
+- runtime health 已開始改成 owner-canonical；`workspace_state` 不再是 primary readiness source
 
 ## 問題
 
@@ -121,23 +122,24 @@
 - `handoff_readiness`
 - `runtime_health_source`
   - `owner_heartbeat`
-  - `workspace_state`
+  - `owner_pending`
+  - `owner_required`
 - `heartbeat_last_checked_at`
 - `heartbeat_last_error`
 - `session_broken_reason`
 
 這裡目前要明確承認一件事：
 
-- `owner_heartbeat` 與 `workspace_state` 不是同一層訊號
+- `owner_heartbeat` 與 workspace observation 不是同一層訊號
 
 比較合理的語義應是：
 
 - `owner_heartbeat`
   - machine / owner 對 workspace runtime health 的正式判斷
-- `workspace_state`
-  - workspace 內現有 artifact / endpoint state 的觀測結果
+- `owner_pending` / `owner_required`
+  - owner 尚未提供 heartbeat，或 desktop owner 根本不存在
 
-目前代碼裡兩者仍會在沒有 owner heartbeat 時互相補位，這是過渡期做法，不應被當成最終 protocol 語義。
+workspace 內現有 artifact / endpoint state 可以作為 debug observation，但不再作 primary health fallback。
 
 ### 4. `RecentCodexSessionView`
 
@@ -185,10 +187,7 @@
 - `degraded_workspaces`
 - `unavailable_workspaces`
 
-這個 view 之後還需要更明確回答：
-
-- runtime health 的 canonical authority 是否已收斂到 owner
-- 若沒有 owner heartbeat，目前看到的是正式 health，還是 fallback observation
+這個 view 的 canonical authority 應固定為 owner；若沒有 owner heartbeat，回傳的應是 owner 缺席/待就緒語義，而不是 fallback runtime health。
 
 ### 7. `SetupStateView`
 
@@ -219,6 +218,7 @@ v1 至少定義：
 - `adopt_tui_session`
 - `reject_tui_session`
 - `launch_hcodex_new`
+- `launch_hcodex_continue_current`
 - `launch_hcodex_resume`
 - `archive_thread`
 - `restore_thread`
@@ -285,10 +285,7 @@ v1 至少保留：
 
 目前新增確認的缺口是：
 
-- mirror / observability 若要承接更完整的 Codex 過程文本，event model 之後還需要回答是否正式暴露：
-  - `plan_text`
-  - `tool_text`
-  - 或其他等價的 process transcript event
+- mirror / observability 已開始承接更完整的 Codex 過程文本，event model 應收斂成等價的 process transcript 事件，而不是各 adapter 自己拼 `plan_text` / `tool_text`
 
 ## Query / Control / Stream 分離
 

@@ -8,9 +8,8 @@ use tokio::fs;
 use tokio::net::TcpStream;
 use tokio::process::Command;
 
-use crate::app_server_runtime::{WorkspaceRuntimeManager, WorkspaceRuntimeState};
+use crate::app_server_runtime::WorkspaceRuntimeState;
 use crate::repository::ThreadRepository;
-use crate::tui_proxy::TuiProxyManager;
 use crate::workspace_status::{record_hcodex_launcher_ended, record_hcodex_launcher_started};
 
 pub async fn maybe_run_from_args(args: Vec<OsString>) -> Result<bool> {
@@ -172,24 +171,19 @@ async fn ensure_hcodex_runtime_inner(
 ) -> Result<()> {
     if runtime_state_is_live(workspace).await? {
         write_ready_file(ready_file).await?;
+        if let Some(parent_pid) = parent_pid {
+            while process_is_alive(parent_pid) {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
         return Ok(());
     }
 
-    let repository = ThreadRepository::open(data_root).await?;
-    let runtime_manager = WorkspaceRuntimeManager::new();
-    let runtime = runtime_manager.ensure_workspace_daemon(workspace).await?;
-    let proxy_manager = TuiProxyManager::new(repository);
-    let _ = proxy_manager
-        .ensure_workspace_proxy(workspace, &runtime.daemon_ws_url)
-        .await?;
-    write_ready_file(ready_file).await?;
-
-    if let Some(parent_pid) = parent_pid {
-        while process_is_alive(parent_pid) {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-    }
-    Ok(())
+    let _ = ThreadRepository::open(data_root).await?;
+    bail!(
+        "hcodex requires the desktop runtime owner. Start threadbridge_desktop and repair the workspace runtime for {}.",
+        workspace.display()
+    )
 }
 
 async fn run_hcodex_session(config: &RunHcodexSessionCli) -> Result<()> {
