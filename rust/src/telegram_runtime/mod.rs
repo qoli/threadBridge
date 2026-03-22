@@ -60,7 +60,13 @@ pub enum Command {
 pub(crate) enum TelegramTextRole {
     User,
     Assistant,
-    System,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TelegramSystemIntent {
+    Info,
+    Question,
+    Warning,
 }
 
 #[derive(Clone)]
@@ -149,7 +155,7 @@ pub async fn handle_command(
     }
     if let Err(error) = thread_flow::run_command(&bot, &msg, command, &state).await {
         error!(event = "telegram.command.failed", error = %error, chat_id = msg.chat.id.0);
-        let _ = send_scoped_message(
+        let _ = send_scoped_warning_message(
             &bot,
             msg.chat.id,
             msg.thread_id,
@@ -170,7 +176,7 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
     if let Some(image) = media::extract_incoming_image(&msg) {
         if let Err(error) = media::queue_image_for_thread(&bot, &msg, &state, image).await {
             error!(event = "telegram.image.failed", error = %error, chat_id = msg.chat.id.0);
-            let _ = send_scoped_message(
+            let _ = send_scoped_warning_message(
                 &bot,
                 msg.chat.id,
                 msg.thread_id,
@@ -188,7 +194,7 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
     }
     if let Err(error) = thread_flow::run_text_message(&bot, &msg, text, &state).await {
         error!(event = "telegram.message.failed", error = %error, chat_id = msg.chat.id.0);
-        let _ = send_scoped_message(
+        let _ = send_scoped_warning_message(
             &bot,
             msg.chat.id,
             msg.thread_id,
@@ -346,8 +352,8 @@ async fn run_callback_query(bot: &Bot, query: &CallbackQuery, state: &AppState) 
             bot.edit_message_text(
                 message.chat.id,
                 message.id,
-                format_role_text(
-                    TelegramTextRole::System,
+                format_system_text(
+                    TelegramSystemIntent::Info,
                     "已採納 TUI session，後續 Telegram 對話將接續該 session。",
                 ),
             )
@@ -374,8 +380,8 @@ async fn run_callback_query(bot: &Bot, query: &CallbackQuery, state: &AppState) 
             bot.edit_message_text(
                 message.chat.id,
                 message.id,
-                format_role_text(
-                    TelegramTextRole::System,
+                format_system_text(
+                    TelegramSystemIntent::Info,
                     "已保留原對話，TUI session 不會被採納為目前 Telegram session。",
                 ),
             )
@@ -413,14 +419,31 @@ pub(crate) fn thread_id_to_i32(thread_id: ThreadId) -> i32 {
 
 pub(crate) fn telegram_role_marker(role: TelegramTextRole) -> &'static str {
     match role {
-        TelegramTextRole::User => "👤",
-        TelegramTextRole::Assistant => "🤖",
-        TelegramTextRole::System => "❗️",
+        TelegramTextRole::User => "›",
+        TelegramTextRole::Assistant => "⌘",
     }
 }
 
 pub(crate) fn format_role_text(role: TelegramTextRole, text: &str) -> String {
     let marker = telegram_role_marker(role);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        marker.to_owned()
+    } else {
+        format!("{marker}\n{trimmed}")
+    }
+}
+
+pub(crate) fn telegram_system_marker(intent: TelegramSystemIntent) -> &'static str {
+    match intent {
+        TelegramSystemIntent::Info => "ℹ",
+        TelegramSystemIntent::Question => "？",
+        TelegramSystemIntent::Warning => "⚠",
+    }
+}
+
+pub(crate) fn format_system_text(intent: TelegramSystemIntent, text: &str) -> String {
+    let marker = telegram_system_marker(intent);
     let trimmed = text.trim();
     if trimmed.is_empty() {
         marker.to_owned()
@@ -446,13 +469,53 @@ pub(crate) async fn send_scoped_role_message(
     }
 }
 
+pub(crate) async fn send_scoped_system_message_with_intent(
+    bot: &Bot,
+    chat_id: ChatId,
+    thread_id: Option<ThreadId>,
+    intent: TelegramSystemIntent,
+    text: impl Into<String>,
+) -> ResponseResult<Message> {
+    let text = format_system_text(intent, &text.into());
+    let request = bot
+        .send_message(chat_id, text)
+        .link_preview_options(disabled_link_preview_options());
+    match thread_id {
+        Some(thread_id) => request.message_thread_id(thread_id).await,
+        None => request.await,
+    }
+}
+
 pub(crate) async fn send_scoped_message(
     bot: &Bot,
     chat_id: ChatId,
     thread_id: Option<ThreadId>,
     text: impl Into<String>,
 ) -> ResponseResult<Message> {
-    send_scoped_role_message(bot, chat_id, thread_id, TelegramTextRole::System, text).await
+    send_scoped_system_message_with_intent(
+        bot,
+        chat_id,
+        thread_id,
+        TelegramSystemIntent::Info,
+        text,
+    )
+    .await
+}
+
+pub(crate) async fn send_scoped_warning_message(
+    bot: &Bot,
+    chat_id: ChatId,
+    thread_id: Option<ThreadId>,
+    text: impl Into<String>,
+) -> ResponseResult<Message> {
+    send_scoped_system_message_with_intent(
+        bot,
+        chat_id,
+        thread_id,
+        TelegramSystemIntent::Warning,
+        text,
+    )
+    .await
 }
 
 pub(crate) fn disabled_link_preview_options() -> LinkPreviewOptions {
@@ -683,7 +746,8 @@ async fn read_owner_managed_workspace_runtime(
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, Command, RuntimeOwnershipMode, command_list,
+        AppState, Command, RuntimeOwnershipMode, TelegramSystemIntent, TelegramTextRole,
+        command_list, format_role_text, format_system_text,
         maybe_route_telegram_input_to_tui_session, should_cleanup_topic_rename_service_message,
         topic_rename_service_message_thread_id,
     };
@@ -780,6 +844,34 @@ mod tests {
             !commands
                 .iter()
                 .any(|command| command == "/reset_codex_session")
+        );
+    }
+
+    #[test]
+    fn role_formatter_uses_symbol_headers() {
+        assert_eq!(
+            format_role_text(TelegramTextRole::User, "hello"),
+            "›\nhello"
+        );
+        assert_eq!(
+            format_role_text(TelegramTextRole::Assistant, "hello"),
+            "⌘\nhello"
+        );
+    }
+
+    #[test]
+    fn system_formatter_uses_intent_specific_headers() {
+        assert_eq!(
+            format_system_text(TelegramSystemIntent::Info, "ready"),
+            "ℹ\nready"
+        );
+        assert_eq!(
+            format_system_text(TelegramSystemIntent::Question, "continue?"),
+            "？\ncontinue?"
+        );
+        assert_eq!(
+            format_system_text(TelegramSystemIntent::Warning, "failed"),
+            "⚠\nfailed"
         );
     }
 

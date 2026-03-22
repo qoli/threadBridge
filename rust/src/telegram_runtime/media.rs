@@ -125,8 +125,8 @@ async fn upsert_pending_image_batch_message(
     record: &ThreadRecord,
     batch: crate::image_artifacts::PendingImageBatch,
 ) -> Result<crate::image_artifacts::PendingImageBatch> {
-    let text = format_role_text(
-        TelegramTextRole::System,
+    let text = format_system_text(
+        TelegramSystemIntent::Info,
         &render_pending_image_batch(&batch),
     );
     let markup = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
@@ -504,7 +504,7 @@ fn spawn_image_analysis_turn(
                 error = %error,
                 "background image analysis failed"
             );
-            let _ = send_scoped_message(
+            let _ = send_scoped_warning_message(
                 &bot,
                 chat_id,
                 Some(thread_id),

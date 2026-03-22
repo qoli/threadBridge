@@ -25,8 +25,8 @@ pub(crate) async fn render_restore_page(
     let archived = state.repository.list_archived_threads(chat_id).await?;
     if archived.is_empty() {
         return Ok((
-            format_role_text(
-                TelegramTextRole::System,
+            format_system_text(
+                TelegramSystemIntent::Info,
                 "No archived threads are available.",
             ),
             InlineKeyboardMarkup::default(),
@@ -72,8 +72,8 @@ pub(crate) async fn render_restore_page(
         keyboard.push(pagination);
     }
     Ok((
-        format_role_text(
-            TelegramTextRole::System,
+        format_system_text(
+            TelegramSystemIntent::Info,
             &format!(
                 "Archived threads:\n{}\n\nChoose one to restore.",
                 lines.join("\n")

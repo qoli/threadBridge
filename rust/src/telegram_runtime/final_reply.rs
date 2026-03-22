@@ -692,8 +692,9 @@ fn rewrite_markdown_links_as_code(html: &str) -> String {
 mod tests {
     use super::{
         OVERFLOW_NOTICE, TelegramReplyPlan, first_preview_snippet, plan_final_assistant_reply,
-        render_markdown_to_telegram_html,
+        render_markdown_to_telegram_html, render_role_markdown_to_telegram_html,
     };
+    use crate::telegram_runtime::TelegramTextRole;
 
     #[test]
     fn renders_supported_markdown_to_html() {
@@ -710,6 +711,12 @@ mod tests {
         assert!(text.contains("<b>this</b>"));
         assert!(text.contains("- one"));
         assert!(text.contains("- two"));
+    }
+
+    #[test]
+    fn assistant_html_render_uses_command_header() {
+        let html = render_role_markdown_to_telegram_html(TelegramTextRole::Assistant, "**Hello**");
+        assert_eq!(html, "⌘\n<b>Hello</b>");
     }
 
     #[test]

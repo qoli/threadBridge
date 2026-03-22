@@ -167,7 +167,7 @@ pub(crate) async fn run_command(
             match control.add_workspace(argument).await {
                 Ok(_) => {}
                 Err(error) => {
-                    send_scoped_message(
+                    send_scoped_warning_message(
                         bot,
                         msg.chat.id,
                         None,
@@ -248,7 +248,7 @@ pub(crate) async fn run_command(
                         .repository
                         .mark_session_binding_broken(record, error.to_string())
                         .await?;
-                    send_scoped_message(
+                    send_scoped_warning_message(
                         bot,
                         msg.chat.id,
                         Some(thread_id),
@@ -344,7 +344,7 @@ pub(crate) async fn run_command(
                         .repository
                         .mark_session_binding_broken(record, error.to_string())
                         .await?;
-                    send_scoped_message(
+                    send_scoped_warning_message(
                         bot,
                         msg.chat.id,
                         Some(thread_id),
@@ -468,7 +468,7 @@ pub(crate) async fn run_command(
                         .repository
                         .mark_session_binding_broken(record, error.to_string())
                         .await?;
-                    send_scoped_message(
+                    send_scoped_warning_message(
                         bot,
                         msg.chat.id,
                         Some(thread_id),
@@ -744,7 +744,7 @@ fn spawn_text_turn(
                 error = %error,
                 "background text turn failed"
             );
-            let _ = send_scoped_message(
+            let _ = send_scoped_warning_message(
                 &bot,
                 chat_id,
                 Some(thread_id),
@@ -892,7 +892,7 @@ async fn execute_text_turn(
                     None,
                 )
                 .await?;
-            send_scoped_message(
+            send_scoped_warning_message(
                 bot,
                 chat_id,
                 Some(thread_id),

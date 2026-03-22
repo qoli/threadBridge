@@ -144,7 +144,7 @@ pub(crate) fn topic_activity_marker_label(marker: TopicActivityMarker) -> &'stat
 }
 
 pub(crate) fn tui_adoption_prompt_text() -> String {
-    format_role_text(TelegramTextRole::System, "詢問：後續對話是否以 TUI session")
+    format_system_text(TelegramSystemIntent::Question, "後續對話是否以 TUI session")
 }
 
 pub(crate) fn tui_adoption_prompt_markup(thread_key: &str) -> InlineKeyboardMarkup {
@@ -895,7 +895,7 @@ mod tests {
         STARTUP_STALE_BUSY_RECOVERED_LOG, TopicActivityMarker, effective_busy_snapshot_for_binding,
         initial_workspace_event_offset, local_mirror_entry_from_event,
         reconcile_stale_bot_busy_sessions_for_repository, render_topic_title,
-        topic_marker_for_snapshot,
+        topic_marker_for_snapshot, tui_adoption_prompt_text,
     };
     use crate::repository::{
         SessionBinding, ThreadMetadata, ThreadRecord, ThreadRepository, ThreadScope, ThreadStatus,
@@ -988,6 +988,11 @@ mod tests {
             topic_marker_for_snapshot(Some(&snapshot)),
         );
         assert_eq!(title, "example-workspace · busy");
+    }
+
+    #[test]
+    fn tui_adoption_prompt_uses_question_header_without_prefix() {
+        assert_eq!(tui_adoption_prompt_text(), "？\n後續對話是否以 TUI session");
     }
 
     #[test]
