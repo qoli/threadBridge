@@ -6,6 +6,7 @@ use teloxide::payloads::setters::*;
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
+use crate::execution_mode::workspace_execution_mode;
 use crate::local_control::LocalControlHandle;
 use crate::process_transcript::process_entry_from_codex_event;
 
@@ -29,10 +30,14 @@ async fn start_fresh_binding(
     )
     .await?;
     let codex_workspace = prepare_workspace_runtime_for_control(state, workspace_path).await?;
-    let binding = state.codex.start_thread(&codex_workspace).await?;
+    let execution_mode = workspace_execution_mode(&codex_workspace.working_directory).await?;
+    let binding = state
+        .codex
+        .start_thread_with_mode(&codex_workspace, execution_mode)
+        .await?;
     state
         .repository
-        .bind_workspace(record, binding.cwd, binding.thread_id)
+        .bind_workspace(record, binding.cwd, binding.thread_id, binding.execution)
         .await
 }
 
@@ -44,8 +49,17 @@ async fn render_thread_info(state: &AppState, record: &ThreadRecord) -> Result<S
         .as_ref()
         .and_then(|binding| binding.workspace_cwd.as_deref())
         .map(PathBuf::from);
+    let workspace_execution_mode = match workspace_path.as_deref() {
+        Some(path) => workspace_execution_mode(path).await.ok(),
+        None => None,
+    };
     let current_codex_thread_id = usable_bound_session_id(session.as_ref())
         .map(str::to_owned)
+        .unwrap_or_else(|| "none".to_owned());
+    let current_execution_mode = session
+        .as_ref()
+        .and_then(|binding| binding.current_execution_mode)
+        .map(|mode| mode.as_str().to_owned())
         .unwrap_or_else(|| "none".to_owned());
     let current_snapshot = if let Some(path) = workspace_path.as_ref() {
         read_session_status(path, &current_codex_thread_id).await?
@@ -92,9 +106,13 @@ async fn render_thread_info(state: &AppState, record: &ThreadRecord) -> Result<S
         .unwrap_or_else(|| "none".to_owned());
 
     Ok(format!(
-        "thread_key: `{}`\nworkspace: `{}`\ncurrent_codex_thread_id: `{}`\ntui_active_codex_thread_id: `{}`\nadoption_state: `{}`\nlifecycle_status: `{}`\nbinding_status: `{}`\nrun_status: `{}`\ntitle_suffix: `{}`\ncurrent_phase: `{}`\ncurrent_owner: `{}`\ngate_session_id: `{}`\ngate_phase: `{}`\ngate_owner: `{}`",
+        "thread_key: `{}`\nworkspace: `{}`\nworkspace_execution_mode: `{}`\ncurrent_execution_mode: `{}`\ncurrent_codex_thread_id: `{}`\ntui_active_codex_thread_id: `{}`\nadoption_state: `{}`\nlifecycle_status: `{}`\nbinding_status: `{}`\nrun_status: `{}`\ntitle_suffix: `{}`\ncurrent_phase: `{}`\ncurrent_owner: `{}`\ngate_session_id: `{}`\ngate_phase: `{}`\ngate_owner: `{}`",
         record.metadata.thread_key,
         workspace,
+        workspace_execution_mode
+            .map(|mode| mode.as_str().to_owned())
+            .unwrap_or_else(|| "none".to_owned()),
+        current_execution_mode,
         current_codex_thread_id,
         tui_active_codex_thread_id,
         adoption_state,
@@ -794,28 +812,35 @@ async fn execute_text_turn(
     let mirror_record = record.clone();
     let mirror_repository = state.repository.clone();
     let mirror_session_id = existing_thread_id.to_owned();
+    let execution_mode = workspace_execution_mode(&workspace_path).await?;
 
     let result = state
         .codex
-        .run_locked_prompt_with_events(&codex_workspace, existing_thread_id, text, |event| {
-            let preview = preview.clone();
-            let mirror_record = mirror_record.clone();
-            let mirror_repository = mirror_repository.clone();
-            let mirror_session_id = mirror_session_id.clone();
-            async move {
-                preview.lock().await.consume(&event).await;
-                if let Some(entry) = process_entry_from_codex_event(
-                    &event,
-                    &mirror_session_id,
-                    TranscriptMirrorOrigin::Telegram,
-                ) {
-                    preview.lock().await.consume_process_entry(&entry).await;
-                    let _ = mirror_repository
-                        .append_transcript_mirror(&mirror_record, &entry)
-                        .await;
+        .run_locked_prompt_with_events_and_mode(
+            &codex_workspace,
+            existing_thread_id,
+            Some(execution_mode),
+            text,
+            |event| {
+                let preview = preview.clone();
+                let mirror_record = mirror_record.clone();
+                let mirror_repository = mirror_repository.clone();
+                let mirror_session_id = mirror_session_id.clone();
+                async move {
+                    preview.lock().await.consume(&event).await;
+                    if let Some(entry) = process_entry_from_codex_event(
+                        &event,
+                        &mirror_session_id,
+                        TranscriptMirrorOrigin::Telegram,
+                    ) {
+                        preview.lock().await.consume_process_entry(&entry).await;
+                        let _ = mirror_repository
+                            .append_transcript_mirror(&mirror_record, &entry)
+                            .await;
+                    }
                 }
-            }
-        })
+            },
+        )
         .await;
     preview_heartbeat.stop().await;
     typing.stop().await;
@@ -833,6 +858,10 @@ async fn execute_text_turn(
             record = state
                 .repository
                 .mark_session_binding_verified(record)
+                .await?;
+            record = state
+                .repository
+                .update_session_execution_snapshot(record, &result.execution)
                 .await?;
             state
                 .repository

@@ -883,6 +883,9 @@ mod tests {
                 record,
                 workspace.display().to_string(),
                 "thr_test".to_owned(),
+                crate::execution_mode::SessionExecutionSnapshot::from_mode(
+                    crate::execution_mode::ExecutionMode::FullAuto,
+                ),
             )
             .await
             .unwrap();
@@ -1172,6 +1175,9 @@ mod tests {
                 record_a,
                 workspace.display().to_string(),
                 "thr_shared".to_owned(),
+                crate::execution_mode::SessionExecutionSnapshot::from_mode(
+                    crate::execution_mode::ExecutionMode::FullAuto,
+                ),
             )
             .await
             .unwrap();
@@ -1181,6 +1187,9 @@ mod tests {
                 record_b,
                 workspace.display().to_string(),
                 "thr_shared".to_owned(),
+                crate::execution_mode::SessionExecutionSnapshot::from_mode(
+                    crate::execution_mode::ExecutionMode::FullAuto,
+                ),
             )
             .await
             .unwrap();

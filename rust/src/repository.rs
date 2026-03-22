@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use uuid::Uuid;
 
+use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot, workspace_execution_mode};
 use crate::image_artifacts::{ImageAnalysisArtifact, PendingImageBatch, PendingImageBatchEntry};
 
 const MAIN_THREAD_KEY: &str = "main-thread";
@@ -51,6 +52,12 @@ pub struct SessionBinding {
     pub schema_version: u32,
     #[serde(default)]
     pub current_codex_thread_id: Option<String>,
+    #[serde(default)]
+    pub current_execution_mode: Option<ExecutionMode>,
+    #[serde(default)]
+    pub current_approval_policy: Option<String>,
+    #[serde(default)]
+    pub current_sandbox_policy: Option<String>,
     pub workspace_cwd: Option<String>,
     pub bound_at: Option<String>,
     pub initialized_at: Option<String>,
@@ -136,6 +143,8 @@ pub struct TranscriptMirrorEntry {
 pub struct RecentCodexSessionEntry {
     pub session_id: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub execution_mode: Option<ExecutionMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -183,6 +192,12 @@ fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+fn apply_execution_snapshot(binding: &mut SessionBinding, snapshot: &SessionExecutionSnapshot) {
+    binding.current_execution_mode = snapshot.execution_mode;
+    binding.current_approval_policy = snapshot.approval_policy.clone();
+    binding.current_sandbox_policy = snapshot.sandbox_policy.clone();
+}
+
 fn workspace_session_history_schema_version() -> u32 {
     WORKSPACE_SESSION_HISTORY_SCHEMA_VERSION
 }
@@ -222,11 +237,18 @@ impl SessionBinding {
         self
     }
 
-    fn fresh(workspace_cwd: Option<String>, current_codex_thread_id: Option<String>) -> Self {
+    fn fresh(
+        workspace_cwd: Option<String>,
+        current_codex_thread_id: Option<String>,
+        execution: SessionExecutionSnapshot,
+    ) -> Self {
         let now = now_iso();
         Self {
             schema_version: 3,
             current_codex_thread_id,
+            current_execution_mode: execution.execution_mode,
+            current_approval_policy: execution.approval_policy,
+            current_sandbox_policy: execution.sandbox_policy,
             workspace_cwd,
             bound_at: Some(now.clone()),
             initialized_at: Some(now.clone()),
@@ -604,16 +626,22 @@ impl ThreadRepository {
         record: ThreadRecord,
         workspace_cwd: String,
         codex_thread_id: String,
+        execution: SessionExecutionSnapshot,
     ) -> Result<ThreadRecord> {
         let now = now_iso();
-        let mut binding = SessionBinding::fresh(Some(workspace_cwd), Some(codex_thread_id));
+        let mut binding =
+            SessionBinding::fresh(Some(workspace_cwd), Some(codex_thread_id), execution);
         binding.updated_at = now.clone();
         if let (Some(workspace_cwd), Some(session_id)) = (
             binding.workspace_cwd.as_deref(),
             binding.current_codex_thread_id.as_deref(),
         ) {
-            self.record_recent_workspace_session(workspace_cwd, session_id)
-                .await?;
+            self.record_recent_workspace_session(
+                workspace_cwd,
+                session_id,
+                binding.current_execution_mode,
+            )
+            .await?;
         }
         self.write_session_binding(&record, &binding).await?;
         self.update_metadata(ThreadRecord {
@@ -681,8 +709,12 @@ impl ThreadRepository {
             binding.workspace_cwd.as_deref(),
             binding.current_codex_thread_id.as_deref(),
         ) {
-            self.record_recent_workspace_session(workspace_cwd, session_id)
-                .await?;
+            self.record_recent_workspace_session(
+                workspace_cwd,
+                session_id,
+                binding.current_execution_mode,
+            )
+            .await?;
         }
         self.write_session_binding(&record, &binding).await?;
         self.update_metadata(ThreadRecord {
@@ -708,7 +740,9 @@ impl ThreadRepository {
         let mut binding = self
             .read_session_binding(&record)
             .await?
-            .unwrap_or_else(|| SessionBinding::fresh(None, None));
+            .unwrap_or_else(|| {
+                SessionBinding::fresh(None, None, SessionExecutionSnapshot::default())
+            });
         binding.session_broken = true;
         binding.session_broken_at = Some(now.clone());
         binding.session_broken_reason = Some(reason.clone());
@@ -925,7 +959,10 @@ impl ThreadRepository {
             binding.workspace_cwd.as_deref(),
             binding.tui_active_codex_thread_id.as_deref(),
         ) {
-            self.record_recent_workspace_session(workspace_cwd, session_id)
+            let mode = workspace_execution_mode(Path::new(workspace_cwd))
+                .await
+                .unwrap_or_default();
+            self.record_recent_workspace_session(workspace_cwd, session_id, Some(mode))
                 .await?;
         }
         self.write_session_binding(&record, &binding).await?;
@@ -1003,8 +1040,44 @@ impl ThreadRepository {
             .tui_active_codex_thread_id
             .clone()
             .context("tui_active_codex_thread_id is missing")?;
-        self.select_session_binding_session(record, session_id)
+        let workspace_cwd = binding.workspace_cwd.clone();
+        let updated = self
+            .select_session_binding_session(record, session_id)
+            .await?;
+        let Some(workspace_cwd) = workspace_cwd else {
+            return Ok(updated);
+        };
+        let mode = workspace_execution_mode(Path::new(&workspace_cwd))
             .await
+            .unwrap_or_default();
+        self.update_session_execution_snapshot(updated, &SessionExecutionSnapshot::from_mode(mode))
+            .await
+    }
+
+    pub async fn update_session_execution_snapshot(
+        &self,
+        record: ThreadRecord,
+        snapshot: &SessionExecutionSnapshot,
+    ) -> Result<ThreadRecord> {
+        let mut binding = self
+            .read_session_binding(&record)
+            .await?
+            .context("session binding is missing")?;
+        apply_execution_snapshot(&mut binding, snapshot);
+        binding.updated_at = now_iso();
+        if let (Some(workspace_cwd), Some(session_id)) = (
+            binding.workspace_cwd.as_deref(),
+            binding.current_codex_thread_id.as_deref(),
+        ) {
+            self.record_recent_workspace_session(
+                workspace_cwd,
+                session_id,
+                binding.current_execution_mode,
+            )
+            .await?;
+        }
+        self.write_session_binding(&record, &binding).await?;
+        Ok(record)
     }
 
     pub async fn update_metadata(&self, record: ThreadRecord) -> Result<ThreadRecord> {
@@ -1161,6 +1234,7 @@ impl ThreadRepository {
         &self,
         workspace_cwd: &str,
         session_id: &str,
+        execution_mode: Option<ExecutionMode>,
     ) -> Result<()> {
         let mut store = self.read_workspace_session_history_store().await?;
         let workspace_cwd = canonical_workspace_string(workspace_cwd);
@@ -1192,6 +1266,7 @@ impl ThreadRepository {
             RecentCodexSessionEntry {
                 session_id: session_id.to_owned(),
                 updated_at: now,
+                execution_mode,
             },
         );
         if entry.sessions.len() > 5 {
@@ -1242,6 +1317,7 @@ mod tests {
         TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
         TranscriptMirrorPhase, TranscriptMirrorRole,
     };
+    use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
     use crate::image_artifacts::ImageAnalysisArtifact;
     use std::path::PathBuf;
     use tokio::fs;
@@ -1249,6 +1325,10 @@ mod tests {
 
     fn temp_path() -> PathBuf {
         std::env::temp_dir().join(format!("threadbridge-repo-test-{}", Uuid::new_v4()))
+    }
+
+    fn full_auto_snapshot() -> SessionExecutionSnapshot {
+        SessionExecutionSnapshot::from_mode(ExecutionMode::FullAuto)
     }
 
     #[tokio::test]
@@ -1285,7 +1365,12 @@ mod tests {
         let repo = ThreadRepository::open(&root).await.unwrap();
         let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
         let updated = repo
-            .bind_workspace(record, "/tmp/workspace".to_owned(), "thr_123".to_owned())
+            .bind_workspace(
+                record,
+                "/tmp/workspace".to_owned(),
+                "thr_123".to_owned(),
+                full_auto_snapshot(),
+            )
             .await
             .unwrap();
 
@@ -1303,7 +1388,12 @@ mod tests {
         let repo = ThreadRepository::open(&root).await.unwrap();
         let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
         let record = repo
-            .bind_workspace(record, "/tmp/workspace".to_owned(), "thr_bot".to_owned())
+            .bind_workspace(
+                record,
+                "/tmp/workspace".to_owned(),
+                "thr_bot".to_owned(),
+                full_auto_snapshot(),
+            )
             .await
             .unwrap();
 
@@ -1354,6 +1444,7 @@ mod tests {
                 record,
                 workspace.display().to_string(),
                 "thr_initial".to_owned(),
+                full_auto_snapshot(),
             )
             .await
             .unwrap();
@@ -1389,7 +1480,12 @@ mod tests {
         let first = repo.create_thread(1, 7, "One".to_owned()).await.unwrap();
         let second = repo.create_thread(1, 8, "Two".to_owned()).await.unwrap();
         let _ = repo
-            .bind_workspace(first, workspace.display().to_string(), "thr_one".to_owned())
+            .bind_workspace(
+                first,
+                workspace.display().to_string(),
+                "thr_one".to_owned(),
+                full_auto_snapshot(),
+            )
             .await
             .unwrap();
         let _ = repo
@@ -1397,6 +1493,7 @@ mod tests {
                 second,
                 workspace.display().to_string(),
                 "thr_two".to_owned(),
+                full_auto_snapshot(),
             )
             .await
             .unwrap();
@@ -1414,7 +1511,12 @@ mod tests {
         let repo = ThreadRepository::open(&root).await.unwrap();
         let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
         let record = repo
-            .bind_workspace(record, "/tmp/workspace".to_owned(), "thr_bot".to_owned())
+            .bind_workspace(
+                record,
+                "/tmp/workspace".to_owned(),
+                "thr_bot".to_owned(),
+                full_auto_snapshot(),
+            )
             .await
             .unwrap();
 

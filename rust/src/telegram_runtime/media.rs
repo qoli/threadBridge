@@ -13,6 +13,7 @@ use super::final_reply::send_final_assistant_reply;
 use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
 use super::status_sync;
 use super::*;
+use crate::execution_mode::workspace_execution_mode;
 use crate::image_artifacts::PendingImageBatch;
 
 pub(crate) const CALLBACK_IMAGE_BATCH_ANALYZE: &str = "image_batch_analyze";
@@ -528,14 +529,21 @@ async fn execute_image_analysis_turn(
                 .to_string(),
         });
     }
+    let execution_mode = workspace_execution_mode(&workspace_path).await?;
     let result = state
         .codex
-        .run_locked_with_events(&codex_workspace, existing_thread_id, input, |event| {
-            let preview = preview.clone();
-            async move {
-                preview.lock().await.consume(&event).await;
-            }
-        })
+        .run_locked_with_events_and_mode(
+            &codex_workspace,
+            existing_thread_id,
+            Some(execution_mode),
+            input,
+            |event| {
+                let preview = preview.clone();
+                async move {
+                    preview.lock().await.consume(&event).await;
+                }
+            },
+        )
         .await;
     let result = match result {
         Ok(result) => result,
@@ -594,6 +602,10 @@ async fn execute_image_analysis_turn(
     let record = state
         .repository
         .mark_session_binding_verified(record)
+        .await?;
+    let record = state
+        .repository
+        .update_session_execution_snapshot(record, &result.execution)
         .await?;
     let preview_finalized = preview.lock().await.complete(&result.final_response).await;
     preview_heartbeat.stop().await;

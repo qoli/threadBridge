@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 use tokio::fs;
 
+use crate::execution_mode::ensure_workspace_execution_config;
 use crate::workspace_status::ensure_workspace_status_surface;
 
 pub const THREADBRIDGE_RUNTIME_DIR: &str = ".threadbridge";
@@ -355,6 +356,7 @@ pub async fn ensure_workspace_runtime(
     fs::create_dir_all(&tool_results_dir).await?;
     write_text_file(&runtime_root.join(".gitignore"), build_runtime_gitignore()).await?;
     ensure_workspace_status_surface(workspace_path).await?;
+    ensure_workspace_execution_config(workspace_path).await?;
 
     for (tool, filename) in [
         ("build_prompt_config.py", "build_prompt_config"),

@@ -933,6 +933,9 @@ mod tests {
                 record,
                 workspace.display().to_string(),
                 "thr_current".to_owned(),
+                crate::execution_mode::SessionExecutionSnapshot::from_mode(
+                    crate::execution_mode::ExecutionMode::FullAuto,
+                ),
             )
             .await
             .unwrap();

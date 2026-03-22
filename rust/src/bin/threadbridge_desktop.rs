@@ -441,13 +441,7 @@ mod macos_app {
             .title
             .clone()
             .unwrap_or_else(|| workspace.workspace_cwd.clone());
-        let heartbeat = match (workspace.app_server_status, workspace.handoff_readiness) {
-            ("running", "ready") => "ready",
-            ("running", "degraded") | ("running", "pending_adoption") => "degraded",
-            ("running", other) => other,
-            (app, _) => app,
-        };
-        format!("{title} · {heartbeat}")
+        format!("{title} · {}", workspace.workspace_execution_mode.as_str())
     }
 
     fn workspace_launch_ready(workspace: &ManagedWorkspaceView) -> bool {
@@ -697,7 +691,11 @@ mod macos_app {
     mod tests {
         use super::{
             apple_script_user_cancelled, parse_choose_folder_output, workspace_display_name,
+            workspace_tray_label,
         };
+        use threadbridge_rust::execution_mode::ExecutionMode;
+        use threadbridge_rust::management_api::ManagedWorkspaceView;
+        use threadbridge_rust::repository::RecentCodexSessionEntry;
 
         #[test]
         fn parse_choose_folder_output_trims_trailing_slash() {
@@ -725,6 +723,45 @@ mod macos_app {
             assert_eq!(
                 workspace_display_name(None, Some("Control Thread")),
                 "Control Thread"
+            );
+        }
+
+        #[test]
+        fn workspace_tray_label_uses_workspace_execution_mode() {
+            let workspace = ManagedWorkspaceView {
+                workspace_cwd: "/tmp/threadBridge/workspaces/Trackly".to_owned(),
+                title: Some("查看 TracklyReborn 專案結構".to_owned()),
+                thread_key: Some("thread-1".to_owned()),
+                workspace_execution_mode: ExecutionMode::Yolo,
+                current_execution_mode: Some(ExecutionMode::FullAuto),
+                current_approval_policy: Some("on-request".to_owned()),
+                current_sandbox_policy: Some("workspace-write".to_owned()),
+                mode_drift: true,
+                binding_status: "healthy",
+                run_status: "idle",
+                current_codex_thread_id: Some("thr_current".to_owned()),
+                tui_active_codex_thread_id: None,
+                tui_session_adoption_pending: false,
+                session_broken: false,
+                last_used_at: None,
+                conflict: false,
+                app_server_status: "running",
+                tui_proxy_status: "running",
+                handoff_readiness: "ready",
+                runtime_health_source: "owner",
+                heartbeat_last_checked_at: None,
+                heartbeat_last_error: None,
+                session_broken_reason: None,
+                recovery_hint: None,
+                hcodex_path: "/tmp/threadBridge/workspaces/Trackly/.threadbridge/bin/hcodex"
+                    .to_owned(),
+                hcodex_available: true,
+                recent_codex_sessions: Vec::<RecentCodexSessionEntry>::new(),
+            };
+
+            assert_eq!(
+                workspace_tray_label(&workspace),
+                "查看 TracklyReborn 專案結構 · yolo"
             );
         }
 

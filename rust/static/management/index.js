@@ -238,6 +238,8 @@ function renderWorkspaceCards(items) {
           <div class="entity-path"><code>${escapeHtml(item.workspace_cwd)}</code></div>
         </div>
         <div class="badge-row">
+          ${badge('mode', item.workspace_execution_mode || 'full_auto')}
+          ${badge('session-mode', item.current_execution_mode || 'unknown')}
           ${badge('binding', item.binding_status)}
           ${badge('run', item.run_status)}
           ${item.conflict ? badge('conflict', 'conflict') : ''}
@@ -250,6 +252,16 @@ function renderWorkspaceCards(items) {
       ${item.recovery_hint ? `<div class="hint">${escapeHtml(item.recovery_hint)}</div>` : ''}
 
       ${item.conflict ? '<div class="status-note">Workspace binding conflict detected. Tray launch stays disabled until only one active binding remains.</div>' : ''}
+      ${item.mode_drift ? `<div class="status-note">Current session mode differs from workspace mode. The next Telegram turn or hcodex resume will re-apply <code>${escapeHtml(item.workspace_execution_mode)}</code>.</div>` : ''}
+
+      <div class="toolbar">
+        <label class="muted" for="mode-${item.thread_key}">Execution Mode</label>
+        <select id="mode-${item.thread_key}" ${item.conflict ? 'disabled' : ''}>
+          <option value="full_auto" ${item.workspace_execution_mode === 'full_auto' ? 'selected' : ''}>full_auto</option>
+          <option value="yolo" ${item.workspace_execution_mode === 'yolo' ? 'selected' : ''}>yolo</option>
+        </select>
+        <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="updateExecutionMode('${item.thread_key}')">Save Mode</button>
+      </div>
 
       <div class="stack">
         <div class="meta-label">Recent Sessions</div>
@@ -257,6 +269,7 @@ function renderWorkspaceCards(items) {
           ${(item.recent_codex_sessions || []).map(session => `
             <span class="session-pill">
               <code>${escapeHtml(session.session_id)}</code>
+              <span class="muted">${escapeHtml(session.execution_mode || 'unknown')}</span>
               <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="launchResumeWithSession('${item.thread_key}', '${session.session_id}')">Resume</button>
             </span>
           `).join('') || '<span class="muted">No recent sessions to resume.</span>'}
@@ -282,6 +295,11 @@ function renderWorkspaceCards(items) {
         <summary>Advanced Workspace Details</summary>
         <div class="meta-grid">
           ${metaItem('thread_key', item.thread_key || 'none')}
+          ${metaItem('workspace_execution_mode', item.workspace_execution_mode || 'full_auto')}
+          ${metaItem('current_execution_mode', item.current_execution_mode || 'unknown')}
+          ${metaItem('current_approval_policy', item.current_approval_policy || 'unknown')}
+          ${metaItem('current_sandbox_policy', item.current_sandbox_policy || 'unknown')}
+          ${metaItem('mode_drift', item.mode_drift ? 'yes' : 'no')}
           ${metaItem('runtime_source', item.runtime_health_source || 'unknown')}
           ${metaItem('owner_checked_at', item.heartbeat_last_checked_at || 'n/a')}
           ${metaItem('owner_last_error', item.heartbeat_last_error || 'none')}
@@ -410,6 +428,27 @@ async function showLaunchConfig(threadKey) {
   const response = await fetch(`/api/workspaces/${threadKey}/launch-config`);
   const data = await response.json();
   openLaunchOutput(threadKey, data);
+}
+
+async function updateExecutionMode(threadKey) {
+  const select = document.getElementById(`mode-${threadKey}`);
+  const executionMode = select?.value;
+  if (!executionMode) {
+    alert('Pick an execution mode first');
+    return;
+  }
+  const response = await fetch(`/api/workspaces/${threadKey}/execution-mode`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ execution_mode: executionMode }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    alert(data.error || 'Execution mode update failed');
+    return;
+  }
+  openLaunchOutput(threadKey, data);
+  await refresh();
 }
 
 async function launchNew(threadKey) {

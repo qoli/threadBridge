@@ -21,6 +21,9 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::config::{RuntimeConfig, load_optional_telegram_config};
+use crate::execution_mode::{
+    ExecutionMode, workspace_execution_mode, write_workspace_execution_config,
+};
 use crate::local_control::LocalControlHandle;
 use crate::repository::{
     RecentCodexSessionEntry, ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry,
@@ -89,6 +92,23 @@ impl ManagementApiHandle {
 
     pub async fn archived_thread_views(&self) -> Result<Vec<ArchivedThreadView>> {
         self.state.archived_thread_views().await
+    }
+
+    pub async fn workspace_execution_mode(
+        &self,
+        thread_key: &str,
+    ) -> Result<WorkspaceExecutionModeView> {
+        self.state.workspace_execution_mode_view(thread_key).await
+    }
+
+    pub async fn update_workspace_execution_mode(
+        &self,
+        thread_key: &str,
+        execution_mode: ExecutionMode,
+    ) -> Result<WorkspaceExecutionModeView> {
+        self.state
+            .update_workspace_execution_mode(thread_key, execution_mode)
+            .await
     }
 
     pub async fn launch_workspace_new(&self, thread_key: &str) -> Result<LaunchWorkspaceResponse> {
@@ -193,6 +213,11 @@ pub struct ManagedWorkspaceView {
     pub workspace_cwd: String,
     pub title: Option<String>,
     pub thread_key: Option<String>,
+    pub workspace_execution_mode: ExecutionMode,
+    pub current_execution_mode: Option<ExecutionMode>,
+    pub current_approval_policy: Option<String>,
+    pub current_sandbox_policy: Option<String>,
+    pub mode_drift: bool,
     pub binding_status: &'static str,
     pub run_status: &'static str,
     pub current_codex_thread_id: Option<String>,
@@ -219,6 +244,10 @@ pub struct ThreadStateView {
     pub thread_key: String,
     pub title: Option<String>,
     pub workspace_cwd: Option<String>,
+    pub workspace_execution_mode: Option<ExecutionMode>,
+    pub current_execution_mode: Option<ExecutionMode>,
+    pub current_approval_policy: Option<String>,
+    pub current_sandbox_policy: Option<String>,
     pub lifecycle_status: &'static str,
     pub binding_status: &'static str,
     pub run_status: &'static str,
@@ -245,11 +274,27 @@ pub struct HcodexLaunchConfigView {
     pub thread_key: String,
     pub hcodex_path: String,
     pub hcodex_available: bool,
+    pub workspace_execution_mode: ExecutionMode,
+    pub current_execution_mode: Option<ExecutionMode>,
+    pub current_approval_policy: Option<String>,
+    pub current_sandbox_policy: Option<String>,
+    pub mode_drift: bool,
     pub current_codex_thread_id: Option<String>,
     pub recent_codex_sessions: Vec<RecentCodexSessionEntry>,
     pub launch_new_command: String,
     pub launch_current_command: Option<String>,
     pub launch_resume_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceExecutionModeView {
+    pub thread_key: String,
+    pub workspace_cwd: String,
+    pub workspace_execution_mode: ExecutionMode,
+    pub current_execution_mode: Option<ExecutionMode>,
+    pub current_approval_policy: Option<String>,
+    pub current_sandbox_policy: Option<String>,
+    pub mode_drift: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -284,6 +329,11 @@ struct PickAndAddWorkspaceResponse {
 #[derive(Debug, Deserialize)]
 struct LaunchResumeRequest {
     session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateWorkspaceExecutionModeRequest {
+    execution_mode: ExecutionMode,
 }
 
 #[derive(Debug, Deserialize)]
@@ -460,6 +510,10 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         .route(
             "/api/workspaces/:thread_key/launch-config",
             get(get_workspace_launch_config),
+        )
+        .route(
+            "/api/workspaces/:thread_key/execution-mode",
+            get(get_workspace_execution_mode).put(put_workspace_execution_mode),
         )
         .route(
             "/api/workspaces/:thread_key/reconnect",
@@ -651,6 +705,27 @@ async fn get_workspace_launch_config(
     AxumPath(thread_key): AxumPath<String>,
 ) -> Result<Json<HcodexLaunchConfigView>, ManagementApiError> {
     Ok(Json(state.workspace_launch_config(&thread_key).await?))
+}
+
+async fn get_workspace_execution_mode(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+) -> Result<Json<WorkspaceExecutionModeView>, ManagementApiError> {
+    Ok(Json(
+        state.workspace_execution_mode_view(&thread_key).await?,
+    ))
+}
+
+async fn put_workspace_execution_mode(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+    Json(payload): Json<UpdateWorkspaceExecutionModeRequest>,
+) -> Result<Json<WorkspaceExecutionModeView>, ManagementApiError> {
+    Ok(Json(
+        state
+            .update_workspace_execution_mode(&thread_key, payload.execution_mode)
+            .await?,
+    ))
 }
 
 async fn post_reconnect_codex(
@@ -1135,6 +1210,9 @@ impl ManagementApiState {
                 .entry(workspace_cwd.clone())
                 .or_insert_with(|| WorkspaceAggregateView { items: Vec::new() });
             let workspace_path = Path::new(&workspace_cwd);
+            let workspace_execution_mode = workspace_execution_mode(workspace_path)
+                .await
+                .unwrap_or_default();
             let hcodex_path = workspace_path
                 .join(".threadbridge")
                 .join("bin")
@@ -1167,6 +1245,11 @@ impl ManagementApiState {
                 workspace_cwd: workspace_cwd.clone(),
                 title: record.metadata.title.clone(),
                 thread_key: Some(record.metadata.thread_key.clone()),
+                workspace_execution_mode,
+                current_execution_mode: binding.current_execution_mode,
+                current_approval_policy: binding.current_approval_policy.clone(),
+                current_sandbox_policy: binding.current_sandbox_policy.clone(),
+                mode_drift: workspace_mode_drift(workspace_execution_mode, &binding),
                 binding_status: resolved_state.binding_status.as_str(),
                 run_status: resolved_state.run_status.as_str(),
                 current_codex_thread_id: binding.current_codex_thread_id.clone(),
@@ -1233,11 +1316,29 @@ impl ManagementApiState {
             let workspace_cwd = binding
                 .as_ref()
                 .and_then(|binding| binding.workspace_cwd.clone());
+            let workspace_execution_mode = match workspace_cwd.as_deref() {
+                Some(workspace_cwd) => Some(
+                    workspace_execution_mode(Path::new(workspace_cwd))
+                        .await
+                        .unwrap_or_default(),
+                ),
+                None => None,
+            };
             let resolved_state = resolve_thread_state(&record.metadata, binding.as_ref()).await?;
             views.push(ThreadStateView {
                 thread_key: record.metadata.thread_key,
                 title: record.metadata.title,
                 workspace_cwd,
+                workspace_execution_mode,
+                current_execution_mode: binding
+                    .as_ref()
+                    .and_then(|binding| binding.current_execution_mode),
+                current_approval_policy: binding
+                    .as_ref()
+                    .and_then(|binding| binding.current_approval_policy.clone()),
+                current_sandbox_policy: binding
+                    .as_ref()
+                    .and_then(|binding| binding.current_sandbox_policy.clone()),
                 lifecycle_status: resolved_state.lifecycle_status.as_str(),
                 binding_status: resolved_state.binding_status.as_str(),
                 run_status: resolved_state.run_status.as_str(),
@@ -1369,6 +1470,46 @@ impl ManagementApiState {
         })
     }
 
+    async fn workspace_execution_mode_view(
+        &self,
+        thread_key: &str,
+    ) -> Result<WorkspaceExecutionModeView> {
+        let record = self
+            .repository
+            .find_active_thread_by_key(thread_key)
+            .await?
+            .context("thread_key is not an active managed workspace")?;
+        let binding = self
+            .repository
+            .read_session_binding(&record)
+            .await?
+            .context("managed workspace is missing session binding")?;
+        let workspace_cwd = binding
+            .workspace_cwd
+            .clone()
+            .context("managed workspace is missing workspace_cwd")?;
+        let workspace_execution_mode = workspace_execution_mode(Path::new(&workspace_cwd)).await?;
+        Ok(WorkspaceExecutionModeView {
+            thread_key: record.metadata.thread_key,
+            workspace_cwd,
+            workspace_execution_mode,
+            current_execution_mode: binding.current_execution_mode,
+            current_approval_policy: binding.current_approval_policy.clone(),
+            current_sandbox_policy: binding.current_sandbox_policy.clone(),
+            mode_drift: workspace_mode_drift(workspace_execution_mode, &binding),
+        })
+    }
+
+    async fn update_workspace_execution_mode(
+        &self,
+        thread_key: &str,
+        execution_mode: ExecutionMode,
+    ) -> Result<WorkspaceExecutionModeView> {
+        let current = self.workspace_execution_mode_view(thread_key).await?;
+        write_workspace_execution_config(Path::new(&current.workspace_cwd), execution_mode).await?;
+        self.workspace_execution_mode_view(thread_key).await
+    }
+
     async fn workspace_launch_config(&self, thread_key: &str) -> Result<HcodexLaunchConfigView> {
         let record = self
             .repository
@@ -1388,6 +1529,7 @@ impl ManagementApiState {
             .join(".threadbridge")
             .join("bin")
             .join("hcodex");
+        let workspace_execution_mode = workspace_execution_mode(Path::new(&workspace_cwd)).await?;
         let recent_codex_sessions = self
             .repository
             .read_recent_workspace_sessions(&workspace_cwd)
@@ -1398,28 +1540,34 @@ impl ManagementApiState {
             thread_key: record.metadata.thread_key,
             hcodex_path: hcodex_path.display().to_string(),
             hcodex_available: hcodex_path.exists(),
+            workspace_execution_mode,
+            current_execution_mode: binding.current_execution_mode,
+            current_approval_policy: binding.current_approval_policy.clone(),
+            current_sandbox_policy: binding.current_sandbox_policy.clone(),
+            mode_drift: workspace_mode_drift(workspace_execution_mode, &binding),
             current_codex_thread_id: binding.current_codex_thread_id.clone(),
-            launch_new_command: format!(
-                "{} --thread-key {}",
-                shell_quote_path(&hcodex_path),
-                shell_quote(thread_key)
+            launch_new_command: hcodex_launch_command(
+                &hcodex_path,
+                thread_key,
+                workspace_execution_mode,
+                None,
             ),
             launch_current_command: binding.current_codex_thread_id.as_ref().map(|session_id| {
-                format!(
-                    "{} --thread-key {} resume {}",
-                    shell_quote_path(&hcodex_path),
-                    shell_quote(thread_key),
-                    shell_quote(session_id)
+                hcodex_launch_command(
+                    &hcodex_path,
+                    thread_key,
+                    workspace_execution_mode,
+                    Some(session_id),
                 )
             }),
             launch_resume_commands: recent_codex_sessions
                 .iter()
                 .map(|entry| {
-                    format!(
-                        "{} --thread-key {} resume {}",
-                        shell_quote_path(&hcodex_path),
-                        shell_quote(thread_key),
-                        shell_quote(&entry.session_id)
+                    hcodex_launch_command(
+                        &hcodex_path,
+                        thread_key,
+                        workspace_execution_mode,
+                        Some(&entry.session_id),
                     )
                 })
                 .collect(),
@@ -1560,11 +1708,11 @@ impl ManagementApiState {
         session_id: &str,
     ) -> Result<LaunchWorkspaceResponse> {
         let config = self.workspace_launch_config(thread_key).await?;
-        let command = format!(
-            "{} --thread-key {} resume {}",
-            shell_quote_path(Path::new(&config.hcodex_path)),
-            shell_quote(thread_key),
-            shell_quote(session_id),
+        let command = hcodex_launch_command(
+            Path::new(&config.hcodex_path),
+            thread_key,
+            config.workspace_execution_mode,
+            Some(session_id),
         );
         launch_hcodex_via_terminal(&command).await?;
         Ok(LaunchWorkspaceResponse {
@@ -1693,6 +1841,37 @@ fn shell_quote(value: &str) -> String {
 
 fn shell_quote_path(path: &Path) -> String {
     shell_quote(&path.display().to_string())
+}
+
+fn hcodex_launch_command(
+    hcodex_path: &Path,
+    thread_key: &str,
+    execution_mode: ExecutionMode,
+    session_id: Option<&str>,
+) -> String {
+    match session_id {
+        Some(session_id) => format!(
+            "{} --thread-key {} {} resume {}",
+            shell_quote_path(hcodex_path),
+            shell_quote(thread_key),
+            execution_mode.hcodex_flag(),
+            shell_quote(session_id)
+        ),
+        None => format!(
+            "{} --thread-key {} {}",
+            shell_quote_path(hcodex_path),
+            shell_quote(thread_key),
+            execution_mode.hcodex_flag()
+        ),
+    }
+}
+
+fn workspace_mode_drift(
+    workspace_execution_mode: ExecutionMode,
+    binding: &crate::repository::SessionBinding,
+) -> bool {
+    binding.current_codex_thread_id.is_some()
+        && binding.current_execution_mode != Some(workspace_execution_mode)
 }
 
 async fn launch_hcodex_via_terminal(command: &str) -> Result<()> {
@@ -2303,6 +2482,7 @@ impl IntoResponse for ManagementApiError {
 #[cfg(test)]
 mod tests {
     use super::{ThreadStateView, aggregate_handoff_status};
+    use crate::execution_mode::ExecutionMode;
 
     #[test]
     fn aggregate_handoff_status_treats_pending_adoption_as_degraded() {
@@ -2322,6 +2502,10 @@ mod tests {
             thread_key: "thread-1".to_owned(),
             title: Some("Workspace".to_owned()),
             workspace_cwd: Some("/tmp/workspace".to_owned()),
+            workspace_execution_mode: Some(ExecutionMode::FullAuto),
+            current_execution_mode: Some(ExecutionMode::FullAuto),
+            current_approval_policy: Some("on-request".to_owned()),
+            current_sandbox_policy: Some("workspace-write".to_owned()),
             lifecycle_status: "active",
             binding_status: "healthy",
             run_status: "idle",

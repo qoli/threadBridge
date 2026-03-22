@@ -16,6 +16,8 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, info, warn};
 
+use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
+
 const APP_SERVER_CLIENT_NAME: &str = "threadbridge";
 const APP_SERVER_CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const WORKSPACE_READY_PROMPT: &str = "Read and follow the workspace AGENTS.md, including the threadBridge appendix if present, then reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
@@ -64,12 +66,14 @@ pub struct CodexRunResult {
     pub selected_factory: String,
     pub thread_id: String,
     pub thread_id_changed: bool,
+    pub execution: SessionExecutionSnapshot,
 }
 
 #[derive(Debug, Clone)]
 pub struct CodexThreadBinding {
     pub thread_id: String,
     pub cwd: String,
+    pub execution: SessionExecutionSnapshot,
 }
 
 #[derive(Debug)]
@@ -410,22 +414,27 @@ impl CodexRunner {
         payload
     }
 
-    fn build_thread_start_params(&self, workspace: &Path) -> Value {
+    fn build_thread_start_params(&self, workspace: &Path, execution_mode: ExecutionMode) -> Value {
         json!({
             "model": self.model,
             "cwd": workspace.display().to_string(),
-            "approvalPolicy": "never",
-            "sandbox": "danger-full-access",
+            "approvalPolicy": execution_mode.approval_policy(),
+            "sandbox": execution_mode.sandbox_mode(),
             "experimentalRawEvents": false,
             "persistExtendedHistory": false,
         })
     }
 
-    fn build_thread_resume_params(thread_id: &str) -> Value {
-        json!({
+    fn build_thread_resume_params(thread_id: &str, execution_mode: Option<ExecutionMode>) -> Value {
+        let mut params = json!({
             "threadId": thread_id,
             "persistExtendedHistory": false,
-        })
+        });
+        if let Some(execution_mode) = execution_mode {
+            params["approvalPolicy"] = Value::String(execution_mode.approval_policy().to_owned());
+            params["sandbox"] = Value::String(execution_mode.sandbox_mode().to_owned());
+        }
+        params
     }
 
     fn build_thread_read_params(thread_id: &str) -> Value {
@@ -457,7 +466,11 @@ impl CodexRunner {
             .and_then(Value::as_str)
             .context("app-server thread missing cwd")?
             .to_owned();
-        Ok(CodexThreadBinding { thread_id, cwd })
+        Ok(CodexThreadBinding {
+            thread_id,
+            cwd,
+            execution: SessionExecutionSnapshot::from_thread_result(result),
+        })
     }
 
     fn ensure_workspace_cwd(
@@ -482,11 +495,20 @@ impl CodexRunner {
     }
 
     pub async fn start_thread(&self, workspace: &CodexWorkspace) -> Result<CodexThreadBinding> {
+        self.start_thread_with_mode(workspace, ExecutionMode::FullAuto)
+            .await
+    }
+
+    pub async fn start_thread_with_mode(
+        &self,
+        workspace: &CodexWorkspace,
+        execution_mode: ExecutionMode,
+    ) -> Result<CodexThreadBinding> {
         let mut client = AppServerClient::start(workspace).await?;
         let result = client
             .request_simple(
                 "thread/start",
-                self.build_thread_start_params(&workspace.working_directory),
+                self.build_thread_start_params(&workspace.working_directory, execution_mode),
             )
             .await?;
         let binding = Self::parse_binding(&result)?;
@@ -532,6 +554,7 @@ impl CodexRunner {
         &self,
         workspace: &CodexWorkspace,
         existing_thread_id: Option<&str>,
+        execution_mode: Option<ExecutionMode>,
         input: Vec<CodexInputItem>,
         mut on_event: F,
     ) -> Result<CodexRunResult>
@@ -543,7 +566,10 @@ impl CodexRunner {
         let (binding, selected_factory) = match existing_thread_id {
             Some(thread_id) => {
                 let result = client
-                    .request_simple("thread/resume", Self::build_thread_resume_params(thread_id))
+                    .request_simple(
+                        "thread/resume",
+                        Self::build_thread_resume_params(thread_id, execution_mode),
+                    )
                     .await?;
                 let binding = Self::parse_binding(&result)?;
                 if binding.thread_id != thread_id {
@@ -559,7 +585,10 @@ impl CodexRunner {
                 let result = client
                     .request_simple(
                         "thread/start",
-                        self.build_thread_start_params(&workspace.working_directory),
+                        self.build_thread_start_params(
+                            &workspace.working_directory,
+                            execution_mode.unwrap_or_default(),
+                        ),
                     )
                     .await?;
                 (Self::parse_binding(&result)?, "startThread")
@@ -580,6 +609,7 @@ impl CodexRunner {
             selected_factory: selected_factory.to_owned(),
             thread_id_changed: existing_thread_id.is_some_and(|id| id != binding.thread_id),
             thread_id: binding.thread_id,
+            execution: binding.execution,
         })
     }
 
@@ -664,7 +694,7 @@ impl CodexRunner {
         existing_thread_id: Option<&str>,
         input: Vec<CodexInputItem>,
     ) -> Result<CodexRunResult> {
-        self.run_with_events(workspace, existing_thread_id, input, |_| async {})
+        self.run_with_events(workspace, existing_thread_id, None, input, |_| async {})
             .await
     }
 
@@ -689,8 +719,30 @@ impl CodexRunner {
         F: FnMut(CodexThreadEvent) -> Fut,
         Fut: Future<Output = ()>,
     {
+        self.run_locked_with_events_and_mode(workspace, locked_thread_id, None, input, on_event)
+            .await
+    }
+
+    pub async fn run_locked_with_events_and_mode<F, Fut>(
+        &self,
+        workspace: &CodexWorkspace,
+        locked_thread_id: &str,
+        execution_mode: Option<ExecutionMode>,
+        input: Vec<CodexInputItem>,
+        on_event: F,
+    ) -> Result<CodexRunResult>
+    where
+        F: FnMut(CodexThreadEvent) -> Fut,
+        Fut: Future<Output = ()>,
+    {
         let result = self
-            .run_with_events(workspace, Some(locked_thread_id), input, on_event)
+            .run_with_events(
+                workspace,
+                Some(locked_thread_id),
+                execution_mode,
+                input,
+                on_event,
+            )
             .await?;
         self.ensure_locked_thread_id(locked_thread_id, result)
     }
@@ -738,9 +790,32 @@ impl CodexRunner {
         F: FnMut(CodexThreadEvent) -> Fut,
         Fut: Future<Output = ()>,
     {
-        self.run_locked_with_events(
+        self.run_locked_prompt_with_events_and_mode(
             workspace,
             locked_thread_id,
+            None,
+            prompt,
+            on_event,
+        )
+        .await
+    }
+
+    pub async fn run_locked_prompt_with_events_and_mode<F, Fut>(
+        &self,
+        workspace: &CodexWorkspace,
+        locked_thread_id: &str,
+        execution_mode: Option<ExecutionMode>,
+        prompt: &str,
+        on_event: F,
+    ) -> Result<CodexRunResult>
+    where
+        F: FnMut(CodexThreadEvent) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        self.run_locked_with_events_and_mode(
+            workspace,
+            locked_thread_id,
+            execution_mode,
             vec![CodexInputItem::Text {
                 text: prompt.to_owned(),
             }],
@@ -914,6 +989,7 @@ fn normalize_item(item: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{CodexInputItem, CodexRunner, CodexWorkspace, Value, json, normalize_item};
+    use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
     use std::path::PathBuf;
 
     fn workspace() -> CodexWorkspace {
@@ -951,13 +1027,23 @@ mod tests {
     }
 
     #[test]
-    fn thread_start_params_use_non_interactive_policy() {
+    fn thread_start_params_use_full_auto_policy() {
         let runner = CodexRunner::new(Some("gpt-test".to_owned()));
-        let params = runner.build_thread_start_params(&workspace().working_directory);
-        assert_eq!(params["approvalPolicy"], "never");
-        assert_eq!(params["sandbox"], "danger-full-access");
+        let params = runner
+            .build_thread_start_params(&workspace().working_directory, ExecutionMode::FullAuto);
+        assert_eq!(params["approvalPolicy"], "on-request");
+        assert_eq!(params["sandbox"], "workspace-write");
         assert_eq!(params["cwd"], "/tmp/workspace");
         assert_eq!(params["model"], "gpt-test");
+    }
+
+    #[test]
+    fn thread_start_params_use_yolo_policy() {
+        let runner = CodexRunner::new(None);
+        let params =
+            runner.build_thread_start_params(&workspace().working_directory, ExecutionMode::Yolo);
+        assert_eq!(params["approvalPolicy"], "never");
+        assert_eq!(params["sandbox"], "danger-full-access");
     }
 
     #[test]
@@ -990,6 +1076,7 @@ mod tests {
                 selected_factory: "resumeThread".to_owned(),
                 thread_id: "thread-999".to_owned(),
                 thread_id_changed: true,
+                execution: SessionExecutionSnapshot::from_mode(ExecutionMode::FullAuto),
             },
         );
         assert!(result.is_err());
@@ -1006,6 +1093,7 @@ mod tests {
         .unwrap();
         assert_eq!(binding.thread_id, "thr_123");
         assert_eq!(binding.cwd, "/tmp/workspace");
+        assert_eq!(binding.execution.execution_mode, None);
     }
 
     #[test]

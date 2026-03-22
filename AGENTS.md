@@ -49,6 +49,7 @@ From a maintainer perspective:
 - `/add_workspace <absolute-path>` creates or reuses the Telegram workspace thread, installs the runtime appendix and `.threadbridge/` surface into that real workspace, and starts a fresh Codex session for that workspace through app-server.
 - The local management API exposes equivalent create-bind, reconnect, archive/restore, launch, managed Codex, and runtime-owner reconcile flows for the desktop management UI.
 - `session-binding.json` stores the mapping between the Telegram thread, the real workspace path, and the current Codex `thread.id`.
+- `.threadbridge/state/workspace-config.json` stores the workspace-local execution mode that all fresh and resumed Codex sessions should converge to for that workspace.
 - Normal thread messages resume the saved Codex thread through app-server and run turns in the bound workspace.
 - Uploaded images are stored under `data/<thread-key>/state/`, accumulated into a pending batch, and analyzed by Codex in the same bound workspace context.
 - If Codex session continuity breaks or the returned `thread.cwd` no longer matches the stored workspace path, the binding is marked broken and requires `/repair_session` or `/new_session`.
@@ -69,6 +70,7 @@ Maintain these ownership boundaries:
 - Workspace bootstrap owns:
   - the managed block inside the real workspace `AGENTS.md`
   - `.threadbridge/bin/`
+  - `.threadbridge/state/workspace-config.json`
   - `.threadbridge/codex/source.txt`
   - `.threadbridge/codex/build-config.json`
   - `.threadbridge/codex/build-info.txt`
@@ -146,6 +148,7 @@ This managed block is appended by threadBridge to a real project workspace `AGEN
   - `./.threadbridge/bin/hcodex`
   - `./.threadbridge/bin/send_telegram_media`
 - threadBridge installs local shell/runtime sync files under:
+  - `./.threadbridge/state/workspace-config.json`
   - `./.threadbridge/state/app-server/current.json`
   - `./.threadbridge/state/shared-runtime/current.json`
   - `./.threadbridge/state/shared-runtime/events.jsonl`
@@ -158,6 +161,7 @@ This managed block is appended by threadBridge to a real project workspace `AGEN
 
 - Run `./.threadbridge/bin/hcodex` for the managed local TUI path in this workspace.
 - `hcodex` resolves the shared workspace daemon from `./.threadbridge/state/app-server/current.json` and launches `codex --remote ...`.
+- `hcodex` also reads `./.threadbridge/state/workspace-config.json` so local launch and resume use the workspace execution mode.
 - With no extra args, `hcodex` starts a fresh local TUI session for this workspace.
 - Use `hcodex resume <session-id>` when you explicitly want to continue an existing Codex session.
 
@@ -270,6 +274,7 @@ The request file must look like this:
 
 - threadBridge-owned runtime surface inside this workspace:
   - `.threadbridge/bin/`
+  - `.threadbridge/state/workspace-config.json`
   - `.threadbridge/state/app-server/`
   - `.threadbridge/state/shared-runtime/`
   - `.threadbridge/tool_requests/`

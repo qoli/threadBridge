@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use teloxide::prelude::*;
 use teloxide::types::{MessageId, ThreadId};
 
+use crate::execution_mode::workspace_execution_mode;
 use crate::repository::{LogDirection, SessionBinding, ThreadRecord};
 use crate::telegram_runtime::{
     AppState, ensure_bound_workspace_runtime, prepare_workspace_runtime_for_control,
@@ -170,11 +171,16 @@ impl LocalControlHandle {
         .await?;
         let codex_workspace =
             prepare_workspace_runtime_for_control(&self.state, workspace_path.clone()).await?;
-        let binding = self.state.codex.start_thread(&codex_workspace).await?;
+        let execution_mode = workspace_execution_mode(&workspace_path).await?;
+        let binding = self
+            .state
+            .codex
+            .start_thread_with_mode(&codex_workspace, execution_mode)
+            .await?;
         let updated = self
             .state
             .repository
-            .bind_workspace(record, binding.cwd, binding.thread_id)
+            .bind_workspace(record, binding.cwd, binding.thread_id, binding.execution)
             .await?;
         self.state
             .repository
