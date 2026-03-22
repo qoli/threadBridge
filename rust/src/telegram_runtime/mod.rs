@@ -419,37 +419,34 @@ pub(crate) fn thread_id_to_i32(thread_id: ThreadId) -> i32 {
 
 pub(crate) fn telegram_role_marker(role: TelegramTextRole) -> &'static str {
     match role {
-        TelegramTextRole::User => "›",
-        TelegramTextRole::Assistant => "⌘",
+        TelegramTextRole::User => "＞",
+        TelegramTextRole::Assistant => "※",
+    }
+}
+
+pub(crate) fn format_prefixed_text(marker: &str, text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        marker.to_owned()
+    } else {
+        format!("{marker} {trimmed}")
     }
 }
 
 pub(crate) fn format_role_text(role: TelegramTextRole, text: &str) -> String {
-    let marker = telegram_role_marker(role);
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        marker.to_owned()
-    } else {
-        format!("{marker}\n{trimmed}")
-    }
+    format_prefixed_text(telegram_role_marker(role), text)
 }
 
 pub(crate) fn telegram_system_marker(intent: TelegramSystemIntent) -> &'static str {
     match intent {
-        TelegramSystemIntent::Info => "ℹ",
+        TelegramSystemIntent::Info => "＋",
         TelegramSystemIntent::Question => "？",
-        TelegramSystemIntent::Warning => "⚠",
+        TelegramSystemIntent::Warning => "！",
     }
 }
 
 pub(crate) fn format_system_text(intent: TelegramSystemIntent, text: &str) -> String {
-    let marker = telegram_system_marker(intent);
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        marker.to_owned()
-    } else {
-        format!("{marker}\n{trimmed}")
-    }
+    format_prefixed_text(telegram_system_marker(intent), text)
 }
 
 pub(crate) async fn send_scoped_role_message(
@@ -851,11 +848,11 @@ mod tests {
     fn role_formatter_uses_symbol_headers() {
         assert_eq!(
             format_role_text(TelegramTextRole::User, "hello"),
-            "›\nhello"
+            "＞ hello"
         );
         assert_eq!(
             format_role_text(TelegramTextRole::Assistant, "hello"),
-            "⌘\nhello"
+            "※ hello"
         );
     }
 
@@ -863,15 +860,15 @@ mod tests {
     fn system_formatter_uses_intent_specific_headers() {
         assert_eq!(
             format_system_text(TelegramSystemIntent::Info, "ready"),
-            "ℹ\nready"
+            "＋ ready"
         );
         assert_eq!(
             format_system_text(TelegramSystemIntent::Question, "continue?"),
-            "？\ncontinue?"
+            "？ continue?"
         );
         assert_eq!(
             format_system_text(TelegramSystemIntent::Warning, "failed"),
-            "⚠\nfailed"
+            "！ failed"
         );
     }
 

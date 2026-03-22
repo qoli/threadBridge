@@ -187,18 +187,19 @@ fn preview_status(label: &str) -> String {
 }
 
 fn preview_heartbeat_marker(frame: usize) -> &'static str {
-    const FRAMES: [&str; 2] = ["●", "○"];
+    const FRAMES: [&str; 2] = ["○", "●"];
     FRAMES[frame % FRAMES.len()]
 }
 
 fn render_draft_html(text: &str) -> String {
-    let mut parts = text.splitn(2, '\n');
-    let marker = parts.next().unwrap_or("").trim();
-    let body = parts.next().unwrap_or("").trim();
+    let (marker, body) = text
+        .split_once(' ')
+        .map(|(marker, body)| (marker.trim(), body.trim()))
+        .unwrap_or((text.trim(), ""));
     if body.is_empty() {
         marker.to_owned()
     } else {
-        format!("{marker}\n{}", render_markdown_to_telegram_html(body))
+        format!("{marker} {}", render_markdown_to_telegram_html(body))
     }
 }
 
@@ -351,7 +352,7 @@ impl PreviewRenderer {
         let text = if body.is_empty() {
             marker.to_owned()
         } else {
-            format!("{marker}\n{body}")
+            format!("{marker} {body}")
         };
         truncate_preserving_layout(&text, self.max_chars)
     }
@@ -538,7 +539,7 @@ mod tests {
     fn preview_renderer_applies_heartbeat_to_draft_text() {
         let mut renderer = PreviewRenderer::new(3500, 800);
         renderer.consume(&CodexThreadEvent::TurnStarted);
-        assert_eq!(renderer.get_render_text(), "●\nReading context...");
+        assert_eq!(renderer.get_render_text(), "○ Reading context...");
 
         renderer.consume(&CodexThreadEvent::ItemUpdated {
             item: json!({
@@ -546,23 +547,23 @@ mod tests {
                 "text": "First draft paragraph"
             }),
         });
-        assert_eq!(renderer.get_render_text(), "●\nFirst draft paragraph");
+        assert_eq!(renderer.get_render_text(), "○ First draft paragraph");
 
         renderer.heartbeat();
-        assert_eq!(renderer.get_render_text(), "○\nFirst draft paragraph");
+        assert_eq!(renderer.get_render_text(), "● First draft paragraph");
     }
 
     #[test]
     fn preview_renderer_heartbeat_rotates_prefix_marker() {
         let mut renderer = PreviewRenderer::new(3500, 800);
         renderer.consume(&CodexThreadEvent::TurnStarted);
-        assert_eq!(renderer.get_render_text(), "●\nReading context...");
+        assert_eq!(renderer.get_render_text(), "○ Reading context...");
 
         renderer.heartbeat();
-        assert_eq!(renderer.get_render_text(), "○\nReading context...");
+        assert_eq!(renderer.get_render_text(), "● Reading context...");
 
         renderer.heartbeat();
-        assert_eq!(renderer.get_render_text(), "●\nReading context...");
+        assert_eq!(renderer.get_render_text(), "○ Reading context...");
     }
 
     #[test]
@@ -603,7 +604,7 @@ mod tests {
             text: "Command: cargo test".to_owned(),
         });
         assert!(changed);
-        assert_eq!(renderer.get_render_text(), "●\nCommand: cargo test");
+        assert_eq!(renderer.get_render_text(), "○ Command: cargo test");
     }
 
     #[test]
@@ -628,7 +629,7 @@ mod tests {
             phase: Some(TranscriptMirrorPhase::Tool),
             text: "Command: cargo test".to_owned(),
         }));
-        assert_eq!(renderer.get_render_text(), "●\nCommand: cargo test");
+        assert_eq!(renderer.get_render_text(), "○ Command: cargo test");
     }
 
     #[test]
@@ -640,7 +641,7 @@ mod tests {
         );
         assert_eq!(
             renderer.get_render_text(),
-            "●\n我先直接查看這個 repo 最近 2 個 commit，整理出摘要給你。"
+            "○ 我先直接查看這個 repo 最近 2 個 commit，整理出摘要給你。"
         );
         assert_eq!(renderer.get_final_response(), "");
     }
@@ -652,7 +653,7 @@ mod tests {
         assert!(renderer.complete_with_final_text("最近 2 個 commit 都在修 redraw。"));
         assert_eq!(
             renderer.get_render_text(),
-            "●\n最近 2 個 commit 都在修 redraw。"
+            "○ 最近 2 個 commit 都在修 redraw。"
         );
         assert_eq!(
             renderer.get_final_response(),

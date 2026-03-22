@@ -8,7 +8,8 @@ use tokio::fs;
 use tracing::{info, warn};
 
 use super::{
-    Bot, Requester, TelegramTextRole, ThreadRecord, format_role_text, telegram_role_marker,
+    Bot, Requester, TelegramTextRole, ThreadRecord, format_prefixed_text, format_role_text,
+    telegram_role_marker,
 };
 
 pub const INLINE_MESSAGE_CHAR_LIMIT: usize = 4096;
@@ -178,13 +179,7 @@ pub(crate) async fn send_final_assistant_reply(
 }
 
 pub(crate) fn wrap_rendered_html_with_role(role: TelegramTextRole, rendered_html: &str) -> String {
-    let marker = telegram_role_marker(role);
-    let trimmed = rendered_html.trim();
-    if trimmed.is_empty() {
-        marker.to_owned()
-    } else {
-        format!("{marker}\n{trimmed}")
-    }
+    format_prefixed_text(telegram_role_marker(role), rendered_html)
 }
 
 pub(crate) fn render_role_markdown_to_telegram_html(
@@ -716,7 +711,7 @@ mod tests {
     #[test]
     fn assistant_html_render_uses_command_header() {
         let html = render_role_markdown_to_telegram_html(TelegramTextRole::Assistant, "**Hello**");
-        assert_eq!(html, "⌘\n<b>Hello</b>");
+        assert_eq!(html, "※ <b>Hello</b>");
     }
 
     #[test]

@@ -744,11 +744,10 @@ async fn sync_local_transcript_mirrors_once(
                     )
                     .complete(&entry.text)
                     .await;
-                    send_scoped_role_message(
+                    super::final_reply::send_final_assistant_reply(
                         bot,
-                        ChatId(owner_record.metadata.chat_id),
+                        &owner_record,
                         Some(thread_id_from_i32(message_thread_id)),
-                        TelegramTextRole::Assistant,
                         &entry.text,
                     )
                     .await?;
@@ -992,7 +991,7 @@ mod tests {
 
     #[test]
     fn tui_adoption_prompt_uses_question_header_without_prefix() {
-        assert_eq!(tui_adoption_prompt_text(), "？\n後續對話是否以 TUI session");
+        assert_eq!(tui_adoption_prompt_text(), "？ 後續對話是否以 TUI session");
     }
 
     #[test]
