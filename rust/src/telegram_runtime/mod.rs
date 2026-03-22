@@ -419,8 +419,8 @@ pub(crate) fn thread_id_to_i32(thread_id: ThreadId) -> i32 {
 
 pub(crate) fn telegram_role_marker(role: TelegramTextRole) -> &'static str {
     match role {
-        TelegramTextRole::User => "＞",
-        TelegramTextRole::Assistant => "※",
+        TelegramTextRole::User => "□",
+        TelegramTextRole::Assistant => "■",
     }
 }
 
@@ -439,9 +439,9 @@ pub(crate) fn format_role_text(role: TelegramTextRole, text: &str) -> String {
 
 pub(crate) fn telegram_system_marker(intent: TelegramSystemIntent) -> &'static str {
     match intent {
-        TelegramSystemIntent::Info => "＋",
-        TelegramSystemIntent::Question => "？",
-        TelegramSystemIntent::Warning => "！",
+        TelegramSystemIntent::Info => "Info:",
+        TelegramSystemIntent::Question => "Question:",
+        TelegramSystemIntent::Warning => "Warning:",
     }
 }
 
@@ -846,13 +846,10 @@ mod tests {
 
     #[test]
     fn role_formatter_uses_symbol_headers() {
-        assert_eq!(
-            format_role_text(TelegramTextRole::User, "hello"),
-            "＞ hello"
-        );
+        assert_eq!(format_role_text(TelegramTextRole::User, "hello"), "□ hello");
         assert_eq!(
             format_role_text(TelegramTextRole::Assistant, "hello"),
-            "※ hello"
+            "■ hello"
         );
     }
 
@@ -860,15 +857,15 @@ mod tests {
     fn system_formatter_uses_intent_specific_headers() {
         assert_eq!(
             format_system_text(TelegramSystemIntent::Info, "ready"),
-            "＋ ready"
+            "Info: ready"
         );
         assert_eq!(
             format_system_text(TelegramSystemIntent::Question, "continue?"),
-            "？ continue?"
+            "Question: continue?"
         );
         assert_eq!(
             format_system_text(TelegramSystemIntent::Warning, "failed"),
-            "！ failed"
+            "Warning: failed"
         );
     }
 

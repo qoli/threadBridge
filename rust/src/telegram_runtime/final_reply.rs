@@ -711,7 +711,7 @@ mod tests {
     #[test]
     fn assistant_html_render_uses_command_header() {
         let html = render_role_markdown_to_telegram_html(TelegramTextRole::Assistant, "**Hello**");
-        assert_eq!(html, "※ <b>Hello</b>");
+        assert_eq!(html, "■ <b>Hello</b>");
     }
 
     #[test]

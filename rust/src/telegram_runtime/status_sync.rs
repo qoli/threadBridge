@@ -991,7 +991,10 @@ mod tests {
 
     #[test]
     fn tui_adoption_prompt_uses_question_header_without_prefix() {
-        assert_eq!(tui_adoption_prompt_text(), "？ 後續對話是否以 TUI session");
+        assert_eq!(
+            tui_adoption_prompt_text(),
+            "Question: 後續對話是否以 TUI session"
+        );
     }
 
     #[test]
