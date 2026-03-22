@@ -114,6 +114,6 @@
 
 ## 後續工作
 
-1. 把 `session-lifecycle`、`session-level-cli-telegram-sync`、`runtime-state-machine` 的狀態語義完全收斂。
+1. 把 `session-lifecycle`、`session-level-mirror-and-readiness`、`runtime-state-machine` 的狀態語義完全收斂。
 2. 把 `/repair_session` / reconnect control、shared runtime state、實際 runtime owner 的語義收斂成單一主模型。
 3. 清理仍描述舊 viewer/attach handoff 的歷史文檔。

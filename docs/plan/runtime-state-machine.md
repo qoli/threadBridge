@@ -110,7 +110,7 @@ source of truth：
 source of truth：
 
 - 不是 repository 的 long-term persistent artifact
-- 目前實作主要從 workspace shared status / CLI owner claim 推導
+- 目前實作主要從 workspace shared status / local session claim 推導
 - 後續仍應收斂成更清楚的 canonical runtime view，而不是讓各 surface 各自讀檔
 
 初版規則：

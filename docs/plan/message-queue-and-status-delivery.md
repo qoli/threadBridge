@@ -12,6 +12,8 @@
 - restore page message edit
 - media batch control message edit
 - workspace outbox deliver
+- preview draft 已接入 `sendMessageDraft + HTML parse mode`
+- preview / final / plain system text 已開始收斂到同一套 line1 符號、line2+ 內容的 Telegram 呈現
 
 目前尚未實作這份文檔想要的內容：
 
@@ -66,7 +68,7 @@
 
 - `threadBridge` 的 delivery lane 以 `thread_key` 為分區，而不是 per-chat 或 per-user。
 - content 與 status 不是同一種 payload，應該明確分開。
-- preview 仍然是 Telegram draft surface，不應和 final reply 混成同一套 parse/render 行為。
+- preview 仍然是 Telegram draft surface，但 renderer 已可與 final reply 共用。
 - v1 不引入 persistent outbound queue。
 
 ## Queue Partition
@@ -149,7 +151,7 @@ preview draft surface。
 ### Preview Draft
 
 - 使用 `sendMessageDraft`
-- 應重新評估是否直接共享 final reply 的 HTML render 路線
+- 已接入 final reply 共用的 HTML render 路線
 - draft-specific 差異主要保留在 heartbeat、節流、截斷與 update lifecycle
 - heartbeat 與狀態更新屬於 `draft`
 
@@ -245,8 +247,8 @@ preview draft surface。
 
 ## Parse / Preview 規則
 
-- preview 不應再預設永遠是 plain text draft
-- 既然 `sendMessageDraft` 支持 `parse_mode`，preview 應重新評估是否共享 final reply 的 HTML render policy
+- preview 已不再是 plain text draft
+- `sendMessageDraft` 已接入 `parse_mode=HTML`，並與 final reply 共用 HTML render policy
 - final reply 才走 Telegram HTML renderer
 - 所有文字 send / edit 路徑都關閉 link preview
 - restore page、media control 仍不應隱式套用 final reply 的 render policy

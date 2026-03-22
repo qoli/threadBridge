@@ -27,7 +27,7 @@ use crate::repository::{
 };
 use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus, WorkspaceRuntimeHeartbeat};
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
-use crate::workspace_status::{read_cli_owner_claim, read_workspace_aggregate_status};
+use crate::workspace_status::{read_local_session_claim, read_workspace_aggregate_status};
 
 const MANAGED_CODEX_SOURCE_FILE: &str = ".threadbridge/codex/source.txt";
 const MANAGED_CODEX_CACHE_BINARY: &str = ".threadbridge/codex/codex";
@@ -1148,7 +1148,7 @@ impl ManagementApiState {
                 .unwrap_or_else(|_| {
                     crate::workspace_status::default_workspace_status(workspace_path)
                 });
-            let has_live_cli = !workspace_status.live_cli_session_ids.is_empty();
+            let has_live_local = !workspace_status.live_local_session_ids.is_empty();
             let mut runtime_status =
                 read_workspace_runtime_health(workspace_path, runtime_owner.as_ref()).await;
             if binding.tui_session_adoption_pending && runtime_status.handoff_readiness == "ready" {
@@ -1177,7 +1177,7 @@ impl ManagementApiState {
                 title: record.metadata.title.clone(),
                 thread_key: Some(record.metadata.thread_key.clone()),
                 binding_status: if session_broken { "broken" } else { "healthy" },
-                run_status: if has_live_cli { "running" } else { "idle" },
+                run_status: if has_live_local { "running" } else { "idle" },
                 current_codex_thread_id: binding.current_codex_thread_id.clone(),
                 tui_active_codex_thread_id: binding.tui_active_codex_thread_id.clone(),
                 tui_session_adoption_pending: binding.tui_session_adoption_pending,
@@ -1230,7 +1230,7 @@ impl ManagementApiState {
                 .next()
                 .expect("workspace group is non-empty");
             let workspace_path = Path::new(&aggregate.workspace_cwd);
-            if read_cli_owner_claim(workspace_path)
+            if read_local_session_claim(workspace_path)
                 .await
                 .ok()
                 .flatten()
@@ -1261,7 +1261,7 @@ impl ManagementApiState {
                         .unwrap_or_else(|_| {
                             crate::workspace_status::default_workspace_status(workspace_path)
                         });
-                    if status.live_cli_session_ids.is_empty() {
+                    if status.live_local_session_ids.is_empty() {
                         "idle"
                     } else {
                         "running"

@@ -167,7 +167,7 @@ v1 不需要一開始就做很多模式，但至少可以先把語義切成：
 
 ## 與其他計劃的關係
 
-- [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md)
+- [session-level-mirror-and-readiness.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-mirror-and-readiness.md)
   - execution mode 會影響 `hcodex`、adoption、continuity 與 mirror 的語義
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
   - execution mode、launch profile、active session mode 之後應進入 view / action 模型

@@ -78,7 +78,7 @@ pub struct SessionBinding {
 pub enum SessionAttachmentState {
     #[default]
     None,
-    CliHandoff,
+    LocalHandoff,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,7 +104,7 @@ pub struct ThreadLogEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptMirrorOrigin {
-    Cli,
+    Local,
     Telegram,
     Tui,
 }

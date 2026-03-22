@@ -16,12 +16,12 @@ const STATUS_DIR: &str = ".threadbridge/state/shared-runtime";
 const CURRENT_FILE: &str = "current.json";
 const EVENTS_FILE: &str = "events.jsonl";
 const SESSIONS_DIR: &str = "sessions";
-const CLI_OWNER_FILE: &str = "cli-owner.json";
+const LOCAL_SESSION_FILE: &str = "local-session.json";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatusOwner {
-    Cli,
+    Local,
     Bot,
 }
 
@@ -62,8 +62,8 @@ pub struct SessionCurrentStatus {
 }
 
 impl SessionCurrentStatus {
-    pub fn is_live_cli_session(&self) -> bool {
-        self.owner == SessionStatusOwner::Cli && self.live
+    pub fn is_live_local_session(&self) -> bool {
+        self.owner == SessionStatusOwner::Local && self.live
     }
 }
 
@@ -71,7 +71,7 @@ impl SessionCurrentStatus {
 pub struct WorkspaceAggregateStatus {
     pub schema_version: u32,
     pub workspace_cwd: String,
-    pub live_cli_session_ids: Vec<String>,
+    pub live_local_session_ids: Vec<String>,
     #[serde(default)]
     pub active_shell_pids: Vec<u32>,
     pub updated_at: String,
@@ -88,7 +88,7 @@ pub struct WorkspaceStatusEventRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CliOwnerClaim {
+pub struct LocalSessionClaim {
     pub schema_version: u32,
     pub workspace_cwd: String,
     pub thread_key: String,
@@ -135,8 +135,8 @@ fn sessions_dir(workspace_path: &Path) -> PathBuf {
     status_dir(workspace_path).join(SESSIONS_DIR)
 }
 
-pub fn cli_owner_claim_path(workspace_path: &Path) -> PathBuf {
-    status_dir(workspace_path).join(CLI_OWNER_FILE)
+pub fn local_session_claim_path(workspace_path: &Path) -> PathBuf {
+    status_dir(workspace_path).join(LOCAL_SESSION_FILE)
 }
 
 pub fn current_status_path(workspace_path: &Path) -> PathBuf {
@@ -164,13 +164,13 @@ pub fn session_status_path(workspace_path: &Path, session_id: &str) -> PathBuf {
     sessions_dir(workspace_path).join(session_file_name(session_id))
 }
 
-pub fn default_cli_owner_claim(
+pub fn default_local_session_claim(
     workspace_path: &Path,
     thread_key: impl Into<String>,
     shell_pid: u32,
-) -> CliOwnerClaim {
+) -> LocalSessionClaim {
     let now = now_iso();
-    CliOwnerClaim {
+    LocalSessionClaim {
         schema_version: STATUS_SCHEMA_VERSION,
         workspace_cwd: canonical_workspace_string(workspace_path),
         thread_key: thread_key.into(),
@@ -188,7 +188,7 @@ pub fn default_workspace_status(workspace_path: &Path) -> WorkspaceAggregateStat
     WorkspaceAggregateStatus {
         schema_version: STATUS_SCHEMA_VERSION,
         workspace_cwd: canonical_workspace_string(workspace_path),
-        live_cli_session_ids: Vec::new(),
+        live_local_session_ids: Vec::new(),
         active_shell_pids: Vec::new(),
         updated_at: now_iso(),
     }
@@ -204,7 +204,7 @@ pub fn default_session_status(
         workspace_cwd: canonical_workspace_string(workspace_path),
         session_id: session_id.to_owned(),
         owner,
-        live: matches!(owner, SessionStatusOwner::Cli),
+        live: matches!(owner, SessionStatusOwner::Local),
         phase: WorkspaceStatusPhase::Idle,
         shell_pid: None,
         child_pid: None,
@@ -250,12 +250,15 @@ async fn write_session_status(workspace_path: &Path, status: &SessionCurrentStat
     .await
 }
 
-pub async fn write_cli_owner_claim(workspace_path: &Path, claim: &CliOwnerClaim) -> Result<()> {
-    atomic_write_json(&cli_owner_claim_path(workspace_path), claim).await
+pub async fn write_local_session_claim(
+    workspace_path: &Path,
+    claim: &LocalSessionClaim,
+) -> Result<()> {
+    atomic_write_json(&local_session_claim_path(workspace_path), claim).await
 }
 
-pub async fn remove_cli_owner_claim(workspace_path: &Path) -> Result<()> {
-    let path = cli_owner_claim_path(workspace_path);
+pub async fn remove_local_session_claim(workspace_path: &Path) -> Result<()> {
+    let path = local_session_claim_path(workspace_path);
     match fs::remove_file(&path).await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -311,7 +314,7 @@ async fn should_skip_duplicate_turn_completed_event(
     let Some(previous) = last_status_event(workspace_path).await? else {
         return Ok(false);
     };
-    if previous.event != "turn_completed" || previous.source != SessionStatusOwner::Cli {
+    if previous.event != "turn_completed" || previous.source != SessionStatusOwner::Local {
         return Ok(false);
     }
     Ok(
@@ -363,8 +366,8 @@ pub async fn read_session_status(
     }
 }
 
-pub async fn read_cli_owner_claim(workspace_path: &Path) -> Result<Option<CliOwnerClaim>> {
-    let path = cli_owner_claim_path(workspace_path);
+pub async fn read_local_session_claim(workspace_path: &Path) -> Result<Option<LocalSessionClaim>> {
+    let path = local_session_claim_path(workspace_path);
     match fs::read_to_string(&path).await {
         Ok(content) => Ok(Some(serde_json::from_str(&content)?)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -395,16 +398,16 @@ async fn refresh_workspace_aggregate_status(
     mut aggregate: WorkspaceAggregateStatus,
 ) -> Result<WorkspaceAggregateStatus> {
     let sessions = list_all_session_statuses(workspace_path).await?;
-    let mut live_cli_session_ids = sessions
+    let mut live_local_session_ids = sessions
         .iter()
-        .filter(|session| session.is_live_cli_session())
+        .filter(|session| session.is_live_local_session())
         .map(|session| session.session_id.clone())
         .collect::<Vec<_>>();
-    live_cli_session_ids.sort();
-    live_cli_session_ids.dedup();
+    live_local_session_ids.sort();
+    live_local_session_ids.dedup();
     aggregate.schema_version = STATUS_SCHEMA_VERSION;
     aggregate.workspace_cwd = canonical_workspace_string(workspace_path);
-    aggregate.live_cli_session_ids = live_cli_session_ids;
+    aggregate.live_local_session_ids = live_local_session_ids;
     aggregate.updated_at = now_iso();
     write_workspace_status(workspace_path, &aggregate).await?;
     Ok(aggregate)
@@ -425,10 +428,10 @@ fn summarize_prompt(prompt: &str) -> Option<String> {
     Some(summary)
 }
 
-pub async fn list_live_cli_sessions(workspace_path: &Path) -> Result<Vec<SessionCurrentStatus>> {
+pub async fn list_live_local_sessions(workspace_path: &Path) -> Result<Vec<SessionCurrentStatus>> {
     let aggregate = read_workspace_aggregate_status(workspace_path).await?;
     let mut sessions = Vec::new();
-    for session_id in aggregate.live_cli_session_ids {
+    for session_id in aggregate.live_local_session_ids {
         if let Some(session) = read_session_status(workspace_path, &session_id).await? {
             sessions.push(session);
         }
@@ -508,24 +511,24 @@ pub async fn record_tui_proxy_connected(
     session_id: &str,
 ) -> Result<SessionCurrentStatus> {
     ensure_workspace_status_surface(workspace_path).await?;
-    let mut owner_claim = read_cli_owner_claim(workspace_path)
+    let mut owner_claim = read_local_session_claim(workspace_path)
         .await?
         .filter(|claim| claim.thread_key == thread_key)
-        .unwrap_or_else(|| default_cli_owner_claim(workspace_path, thread_key.to_owned(), 0));
+        .unwrap_or_else(|| default_local_session_claim(workspace_path, thread_key.to_owned(), 0));
     owner_claim.thread_key = thread_key.to_owned();
     owner_claim.session_id = Some(session_id.to_owned());
     owner_claim.updated_at = now_iso();
-    write_cli_owner_claim(workspace_path, &owner_claim).await?;
+    write_local_session_claim(workspace_path, &owner_claim).await?;
 
     deactivate_other_tui_proxy_sessions(workspace_path, session_id).await?;
     let mut current = read_session_status(workspace_path, session_id)
         .await?
         .unwrap_or_else(|| {
-            default_session_status(workspace_path, session_id, SessionStatusOwner::Cli)
+            default_session_status(workspace_path, session_id, SessionStatusOwner::Local)
         });
     current.schema_version = STATUS_SCHEMA_VERSION;
     current.workspace_cwd = canonical_workspace_string(workspace_path);
-    current.owner = SessionStatusOwner::Cli;
+    current.owner = SessionStatusOwner::Local;
     current.live = true;
     current.phase = WorkspaceStatusPhase::ShellActive;
     current.shell_pid = Some(owner_claim.shell_pid);
@@ -550,11 +553,11 @@ pub async fn record_tui_proxy_prompt(
     let mut current = read_session_status(workspace_path, session_id)
         .await?
         .unwrap_or_else(|| {
-            default_session_status(workspace_path, session_id, SessionStatusOwner::Cli)
+            default_session_status(workspace_path, session_id, SessionStatusOwner::Local)
         });
     current.schema_version = STATUS_SCHEMA_VERSION;
     current.workspace_cwd = canonical_workspace_string(workspace_path);
-    current.owner = SessionStatusOwner::Cli;
+    current.owner = SessionStatusOwner::Local;
     current.live = true;
     current.phase = WorkspaceStatusPhase::TurnRunning;
     current.shell_pid = Some(0);
@@ -565,7 +568,7 @@ pub async fn record_tui_proxy_prompt(
     let record = WorkspaceStatusEventRecord {
         schema_version: STATUS_SCHEMA_VERSION,
         event: "user_prompt_submitted".to_owned(),
-        source: SessionStatusOwner::Cli,
+        source: SessionStatusOwner::Local,
         workspace_cwd: canonical_workspace_string(workspace_path),
         occurred_at: now_iso(),
         payload: json!({
@@ -594,7 +597,7 @@ pub async fn record_tui_proxy_process_event(
     let record = WorkspaceStatusEventRecord {
         schema_version: STATUS_SCHEMA_VERSION,
         event: "process_transcript".to_owned(),
-        source: SessionStatusOwner::Cli,
+        source: SessionStatusOwner::Local,
         workspace_cwd: canonical_workspace_string(workspace_path),
         occurred_at: now_iso(),
         payload: json!({
@@ -621,7 +624,7 @@ pub async fn record_tui_proxy_preview_text(
     let record = WorkspaceStatusEventRecord {
         schema_version: STATUS_SCHEMA_VERSION,
         event: "preview_text".to_owned(),
-        source: SessionStatusOwner::Cli,
+        source: SessionStatusOwner::Local,
         workspace_cwd: canonical_workspace_string(workspace_path),
         occurred_at: now_iso(),
         payload: json!({
@@ -644,11 +647,11 @@ pub async fn record_tui_proxy_completed(
     let mut current = read_session_status(workspace_path, session_id)
         .await?
         .unwrap_or_else(|| {
-            default_session_status(workspace_path, session_id, SessionStatusOwner::Cli)
+            default_session_status(workspace_path, session_id, SessionStatusOwner::Local)
         });
     current.schema_version = STATUS_SCHEMA_VERSION;
     current.workspace_cwd = canonical_workspace_string(workspace_path);
-    current.owner = SessionStatusOwner::Cli;
+    current.owner = SessionStatusOwner::Local;
     current.live = true;
     current.phase = WorkspaceStatusPhase::Idle;
     current.shell_pid = Some(0);
@@ -663,7 +666,7 @@ pub async fn record_tui_proxy_completed(
         let record = WorkspaceStatusEventRecord {
             schema_version: STATUS_SCHEMA_VERSION,
             event: "turn_completed".to_owned(),
-            source: SessionStatusOwner::Cli,
+            source: SessionStatusOwner::Local,
             workspace_cwd: canonical_workspace_string(workspace_path),
             occurred_at: now_iso(),
             payload: json!({
@@ -705,11 +708,12 @@ pub async fn record_hcodex_launcher_started(
     child_command: &str,
 ) -> Result<()> {
     ensure_workspace_status_surface(workspace_path).await?;
-    let mut owner_claim = default_cli_owner_claim(workspace_path, thread_key.to_owned(), shell_pid);
+    let mut owner_claim =
+        default_local_session_claim(workspace_path, thread_key.to_owned(), shell_pid);
     owner_claim.child_pid = Some(child_pid);
     owner_claim.child_command = Some(child_command.to_owned());
     owner_claim.updated_at = now_iso();
-    write_cli_owner_claim(workspace_path, &owner_claim).await?;
+    write_local_session_claim(workspace_path, &owner_claim).await?;
     Ok(())
 }
 
@@ -720,7 +724,7 @@ pub async fn record_hcodex_launcher_ended(
     child_pid: u32,
 ) -> Result<()> {
     ensure_workspace_status_surface(workspace_path).await?;
-    let Some(owner_claim) = read_cli_owner_claim(workspace_path).await? else {
+    let Some(owner_claim) = read_local_session_claim(workspace_path).await? else {
         return Ok(());
     };
     if owner_claim.thread_key != thread_key
@@ -730,7 +734,7 @@ pub async fn record_hcodex_launcher_ended(
         return Ok(());
     }
 
-    remove_cli_owner_claim(workspace_path).await?;
+    remove_local_session_claim(workspace_path).await?;
     if let Some(session_id) = owner_claim.session_id.as_deref()
         && let Some(mut current) = read_session_status(workspace_path, session_id).await?
     {
@@ -827,7 +831,7 @@ mod tests {
     use super::{
         SessionCurrentStatus, SessionStatusOwner, WorkspaceStatusCache, WorkspaceStatusPhase,
         busy_selected_session_status, current_status_path, ensure_workspace_status_surface,
-        events_path, list_live_cli_sessions, read_cli_owner_claim, read_session_status,
+        events_path, list_live_local_sessions, read_local_session_claim, read_session_status,
         read_workspace_aggregate_status, record_bot_status_event, record_hcodex_launcher_ended,
         record_hcodex_launcher_started, record_tui_proxy_completed, record_tui_proxy_connected,
         session_status_path,
@@ -883,14 +887,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bot_events_take_over_existing_cli_session_snapshot() {
+    async fn bot_events_take_over_existing_local_session_snapshot() {
         let workspace = temp_path();
         ensure_workspace_status_surface(&workspace).await.unwrap();
-        let cli_session = SessionCurrentStatus {
+        let local_session = SessionCurrentStatus {
             schema_version: 2,
             workspace_cwd: workspace.display().to_string(),
             session_id: "thr_cli".to_owned(),
-            owner: SessionStatusOwner::Cli,
+            owner: SessionStatusOwner::Local,
             live: false,
             phase: WorkspaceStatusPhase::Idle,
             shell_pid: Some(99),
@@ -904,7 +908,10 @@ mod tests {
         };
         fs::write(
             session_status_path(&workspace, "thr_cli"),
-            format!("{}\n", serde_json::to_string_pretty(&cli_session).unwrap()),
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&local_session).unwrap()
+            ),
         )
         .await
         .unwrap();
@@ -1000,14 +1007,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_cli_session_listing_reads_per_session_registry() {
+    async fn live_local_session_listing_reads_per_session_registry() {
         let workspace = temp_path();
         ensure_workspace_status_surface(&workspace).await.unwrap();
-        let cli_session = SessionCurrentStatus {
+        let local_session = SessionCurrentStatus {
             schema_version: 2,
             workspace_cwd: workspace.display().to_string(),
             session_id: "thr_cli".to_owned(),
-            owner: SessionStatusOwner::Cli,
+            owner: SessionStatusOwner::Local,
             live: true,
             phase: WorkspaceStatusPhase::ShellActive,
             shell_pid: Some(12),
@@ -1021,7 +1028,10 @@ mod tests {
         };
         fs::write(
             session_status_path(&workspace, "thr_cli"),
-            format!("{}\n", serde_json::to_string_pretty(&cli_session).unwrap()),
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&local_session).unwrap()
+            ),
         )
         .await
         .unwrap();
@@ -1030,7 +1040,7 @@ mod tests {
         super::refresh_workspace_aggregate_status(&workspace, aggregate)
             .await
             .unwrap();
-        let sessions = list_live_cli_sessions(&workspace).await.unwrap();
+        let sessions = list_live_local_sessions(&workspace).await.unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "thr_cli");
     }
@@ -1058,7 +1068,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let owner_claim = read_cli_owner_claim(&workspace).await.unwrap().unwrap();
+        let owner_claim = read_local_session_claim(&workspace).await.unwrap().unwrap();
         let aggregate = read_workspace_aggregate_status(&workspace).await.unwrap();
 
         assert!(!old_session.live);
@@ -1066,7 +1076,7 @@ mod tests {
         assert_eq!(new_session.shell_pid, Some(42));
         assert_eq!(new_session.child_pid, Some(77));
         assert_eq!(owner_claim.session_id.as_deref(), Some("thr_new"));
-        assert_eq!(aggregate.live_cli_session_ids, vec!["thr_new".to_owned()]);
+        assert_eq!(aggregate.live_local_session_ids, vec!["thr_new".to_owned()]);
     }
 
     #[tokio::test]
@@ -1084,7 +1094,7 @@ mod tests {
             .await
             .unwrap();
 
-        let owner_claim = read_cli_owner_claim(&workspace).await.unwrap();
+        let owner_claim = read_local_session_claim(&workspace).await.unwrap();
         let session = read_session_status(&workspace, "thr_new")
             .await
             .unwrap()

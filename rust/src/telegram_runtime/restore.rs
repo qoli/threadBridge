@@ -25,7 +25,10 @@ pub(crate) async fn render_restore_page(
     let archived = state.repository.list_archived_threads(chat_id).await?;
     if archived.is_empty() {
         return Ok((
-            "No archived threads are available.".to_owned(),
+            format_role_text(
+                TelegramTextRole::System,
+                "No archived threads are available.",
+            ),
             InlineKeyboardMarkup::default(),
         ));
     }
@@ -69,9 +72,12 @@ pub(crate) async fn render_restore_page(
         keyboard.push(pagination);
     }
     Ok((
-        format!(
-            "Archived threads:\n{}\n\nChoose one to restore.",
-            lines.join("\n")
+        format_role_text(
+            TelegramTextRole::System,
+            &format!(
+                "Archived threads:\n{}\n\nChoose one to restore.",
+                lines.join("\n")
+            ),
         ),
         InlineKeyboardMarkup::new(keyboard),
     ))

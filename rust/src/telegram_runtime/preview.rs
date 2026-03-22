@@ -11,6 +11,7 @@ use tracing::warn;
 
 use crate::repository::{TranscriptMirrorDelivery, TranscriptMirrorEntry};
 
+use super::final_reply::render_markdown_to_telegram_html;
 use super::{Bot, ChatId, CodexThreadEvent, Requester, Result, ThreadId, thread_id_to_i32};
 
 const TYPING_HEARTBEAT_SECONDS: u64 = 4;
@@ -120,6 +121,8 @@ pub(crate) struct SendMessageDraftRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) message_thread_id: Option<i32>,
     pub(crate) draft_id: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) parse_mode: Option<&'static str>,
     pub(crate) text: String,
 }
 
@@ -135,6 +138,7 @@ async fn send_message_draft(
     thread_id: Option<ThreadId>,
     draft_id: i32,
     text: &str,
+    parse_mode: Option<&'static str>,
 ) -> Result<()> {
     let mut url = bot.api_url();
     {
@@ -149,6 +153,7 @@ async fn send_message_draft(
         chat_id: chat_id.0,
         message_thread_id: thread_id.map(thread_id_to_i32),
         draft_id,
+        parse_mode,
         text: text.to_owned(),
     };
     let response = bot
@@ -184,6 +189,17 @@ fn preview_status(label: &str) -> String {
 fn preview_heartbeat_marker(frame: usize) -> &'static str {
     const FRAMES: [&str; 2] = ["●", "○"];
     FRAMES[frame % FRAMES.len()]
+}
+
+fn render_draft_html(text: &str) -> String {
+    let mut parts = text.splitn(2, '\n');
+    let marker = parts.next().unwrap_or("").trim();
+    let body = parts.next().unwrap_or("").trim();
+    if body.is_empty() {
+        marker.to_owned()
+    } else {
+        format!("{marker}\n{}", render_markdown_to_telegram_html(body))
+    }
 }
 
 pub(crate) struct PreviewRenderer {
@@ -326,15 +342,16 @@ impl PreviewRenderer {
     }
 
     fn render_text(&self) -> String {
+        let marker = preview_heartbeat_marker(self.status_frame);
         let body = if !self.draft_text.is_empty() {
             self.draft_text.as_str()
         } else {
             self.status.as_str()
         };
-        let text = if self.in_progress {
-            format!("{} {}", preview_heartbeat_marker(self.status_frame), body)
+        let text = if body.is_empty() {
+            marker.to_owned()
         } else {
-            body.to_owned()
+            format!("{marker}\n{body}")
         };
         truncate_preserving_layout(&text, self.max_chars)
     }
@@ -440,12 +457,14 @@ impl TurnPreviewController {
             }
         }
         let capped = truncate_preserving_layout(render_text, 4096);
+        let html_text = render_draft_html(&capped);
         match send_message_draft(
             &self.bot,
             self.chat_id,
             self.thread_id,
             self.draft_id,
-            &capped,
+            &html_text,
+            Some("HTML"),
         )
         .await
         {
@@ -455,12 +474,36 @@ impl TurnPreviewController {
             }
             Err(error) => {
                 warn!(
-                    event = "telegram.preview.draft.failed",
+                    event = "telegram.preview.draft.html_failed",
                     chat_id = self.chat_id.0,
                     draft_id = self.draft_id,
                     error = %error,
-                    "failed to send preview draft"
+                    "failed to send preview draft with html parse mode; retrying as plain text"
                 );
+                match send_message_draft(
+                    &self.bot,
+                    self.chat_id,
+                    self.thread_id,
+                    self.draft_id,
+                    &capped,
+                    None,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        self.last_sent_text = capped;
+                        self.last_update_at = Some(Instant::now());
+                    }
+                    Err(error) => {
+                        warn!(
+                            event = "telegram.preview.draft.failed",
+                            chat_id = self.chat_id.0,
+                            draft_id = self.draft_id,
+                            error = %error,
+                            "failed to send preview draft"
+                        );
+                    }
+                }
             }
         }
     }
@@ -495,7 +538,7 @@ mod tests {
     fn preview_renderer_applies_heartbeat_to_draft_text() {
         let mut renderer = PreviewRenderer::new(3500, 800);
         renderer.consume(&CodexThreadEvent::TurnStarted);
-        assert_eq!(renderer.get_render_text(), "● Reading context...");
+        assert_eq!(renderer.get_render_text(), "●\nReading context...");
 
         renderer.consume(&CodexThreadEvent::ItemUpdated {
             item: json!({
@@ -503,23 +546,23 @@ mod tests {
                 "text": "First draft paragraph"
             }),
         });
-        assert_eq!(renderer.get_render_text(), "● First draft paragraph");
+        assert_eq!(renderer.get_render_text(), "●\nFirst draft paragraph");
 
         renderer.heartbeat();
-        assert_eq!(renderer.get_render_text(), "○ First draft paragraph");
+        assert_eq!(renderer.get_render_text(), "○\nFirst draft paragraph");
     }
 
     #[test]
     fn preview_renderer_heartbeat_rotates_prefix_marker() {
         let mut renderer = PreviewRenderer::new(3500, 800);
         renderer.consume(&CodexThreadEvent::TurnStarted);
-        assert_eq!(renderer.get_render_text(), "● Reading context...");
+        assert_eq!(renderer.get_render_text(), "●\nReading context...");
 
         renderer.heartbeat();
-        assert_eq!(renderer.get_render_text(), "○ Reading context...");
+        assert_eq!(renderer.get_render_text(), "○\nReading context...");
 
         renderer.heartbeat();
-        assert_eq!(renderer.get_render_text(), "● Reading context...");
+        assert_eq!(renderer.get_render_text(), "●\nReading context...");
     }
 
     #[test]
@@ -528,12 +571,14 @@ mod tests {
             chat_id: ChatId(42).0,
             message_thread_id: Some(7),
             draft_id: 11,
+            parse_mode: Some("HTML"),
             text: "draft".to_owned(),
         };
         let without_thread = SendMessageDraftRequest {
             chat_id: ChatId(42).0,
             message_thread_id: None,
             draft_id: 11,
+            parse_mode: None,
             text: "draft".to_owned(),
         };
 
@@ -558,7 +603,7 @@ mod tests {
             text: "Command: cargo test".to_owned(),
         });
         assert!(changed);
-        assert_eq!(renderer.get_render_text(), "● Command: cargo test");
+        assert_eq!(renderer.get_render_text(), "●\nCommand: cargo test");
     }
 
     #[test]
@@ -583,7 +628,7 @@ mod tests {
             phase: Some(TranscriptMirrorPhase::Tool),
             text: "Command: cargo test".to_owned(),
         }));
-        assert_eq!(renderer.get_render_text(), "● Command: cargo test");
+        assert_eq!(renderer.get_render_text(), "●\nCommand: cargo test");
     }
 
     #[test]
@@ -595,19 +640,19 @@ mod tests {
         );
         assert_eq!(
             renderer.get_render_text(),
-            "● 我先直接查看這個 repo 最近 2 個 commit，整理出摘要給你。"
+            "●\n我先直接查看這個 repo 最近 2 個 commit，整理出摘要給你。"
         );
         assert_eq!(renderer.get_final_response(), "");
     }
 
     #[test]
-    fn preview_renderer_complete_replaces_draft_without_marker() {
+    fn preview_renderer_complete_replaces_draft_with_last_marker() {
         let mut renderer = PreviewRenderer::new(3500, 800);
         renderer.consume_preview_text("我先查一下这个仓库最近 2 个 commit。");
         assert!(renderer.complete_with_final_text("最近 2 個 commit 都在修 redraw。"));
         assert_eq!(
             renderer.get_render_text(),
-            "最近 2 個 commit 都在修 redraw。"
+            "●\n最近 2 個 commit 都在修 redraw。"
         );
         assert_eq!(
             renderer.get_final_response(),

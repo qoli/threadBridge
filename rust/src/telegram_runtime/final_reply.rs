@@ -7,7 +7,9 @@ use teloxide::types::{ChatId, InputFile, Message, ParseMode, ThreadId};
 use tokio::fs;
 use tracing::{info, warn};
 
-use super::{Bot, Requester, ThreadRecord};
+use super::{
+    Bot, Requester, TelegramTextRole, ThreadRecord, format_role_text, telegram_role_marker,
+};
 
 pub const INLINE_MESSAGE_CHAR_LIMIT: usize = 4096;
 const PREVIEW_CHAR_LIMIT: usize = 800;
@@ -83,7 +85,7 @@ pub(crate) async fn send_final_assistant_reply(
     let rendered_html = if trimmed.is_empty() {
         String::new()
     } else {
-        render_markdown_to_telegram_html(trimmed)
+        render_role_markdown_to_telegram_html(TelegramTextRole::Assistant, trimmed)
     };
     write_debug_reply_dump(raw_text, &rendered_html).await;
 
@@ -128,7 +130,7 @@ pub(crate) async fn send_final_assistant_reply(
                         bot,
                         ChatId(record.metadata.chat_id),
                         thread_id,
-                        raw_text.trim().to_owned(),
+                        format_role_text(TelegramTextRole::Assistant, raw_text.trim()),
                     )
                     .await?;
                 }
@@ -143,7 +145,13 @@ pub(crate) async fn send_final_assistant_reply(
                 reason = reason,
                 "sending final assistant reply as plain text"
             );
-            send_plain_text_message(bot, ChatId(record.metadata.chat_id), thread_id, text).await?;
+            send_plain_text_message(
+                bot,
+                ChatId(record.metadata.chat_id),
+                thread_id,
+                format_role_text(TelegramTextRole::Assistant, &text),
+            )
+            .await?;
         }
         TelegramReplyPlan::MarkdownAttachment {
             notice_text,
@@ -156,12 +164,35 @@ pub(crate) async fn send_final_assistant_reply(
                 message_thread_id = record.metadata.message_thread_id.unwrap_or_default(),
                 "sending final assistant reply as markdown attachment"
             );
-            send_plain_text_message(bot, ChatId(record.metadata.chat_id), thread_id, notice_text)
-                .await?;
+            send_plain_text_message(
+                bot,
+                ChatId(record.metadata.chat_id),
+                thread_id,
+                format_role_text(TelegramTextRole::Assistant, &notice_text),
+            )
+            .await?;
             send_markdown_attachment(bot, record, thread_id, markdown).await?;
         }
     }
     Ok(())
+}
+
+pub(crate) fn wrap_rendered_html_with_role(role: TelegramTextRole, rendered_html: &str) -> String {
+    let marker = telegram_role_marker(role);
+    let trimmed = rendered_html.trim();
+    if trimmed.is_empty() {
+        marker.to_owned()
+    } else {
+        format!("{marker}\n{trimmed}")
+    }
+}
+
+pub(crate) fn render_role_markdown_to_telegram_html(
+    role: TelegramTextRole,
+    markdown: &str,
+) -> String {
+    let rendered = render_markdown_to_telegram_html(markdown);
+    wrap_rendered_html_with_role(role, &rendered)
 }
 
 async fn send_html_message(
@@ -304,7 +335,7 @@ async fn write_debug_reply_dump(raw_markdown: &str, rendered_html: &str) {
     }
 }
 
-fn render_markdown_to_telegram_html(markdown: &str) -> String {
+pub(crate) fn render_markdown_to_telegram_html(markdown: &str) -> String {
     let parser = Parser::new_ext(markdown, Options::all());
     let mut renderer = TelegramHtmlRenderer::default();
 

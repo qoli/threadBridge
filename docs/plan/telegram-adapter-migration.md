@@ -155,7 +155,7 @@ core runtime 應負責：
 
 - [session-lifecycle.md](/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md)
   - 決定 core runtime 的 thread / binding 模型
-- [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md)
+- [session-level-mirror-and-readiness.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-mirror-and-readiness.md)
   - owner 收斂是把 Telegram 去 owner 化、退回 adapter 的前置條件
 - [codex-busy-input-gate.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md)
   - busy gate 應該是 core 語意，不是 Telegram-only 行為

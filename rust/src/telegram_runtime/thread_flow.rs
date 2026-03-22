@@ -111,7 +111,7 @@ async fn render_thread_info(state: &AppState, record: &ThreadRecord) -> Result<S
         current_codex_thread_id,
         tui_active_codex_thread_id,
         adoption_state,
-        status_sync::cli_marker_label(marker),
+        status_sync::topic_activity_marker_label(marker),
         current_phase,
         current_owner,
     ))

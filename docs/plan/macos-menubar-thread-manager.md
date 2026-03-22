@@ -292,7 +292,7 @@ web 管理面中的 v1 action 以既有 lifecycle/control 語義為主：
 - owner heartbeat
   - 回答 runtime health
 - workspace shared status / state file
-  - 回答 session / CLI activity 或 artifact observation
+  - 回答 session / local activity 或 artifact observation
 
 現在管理面同時暴露 `runtime_health_source`，其實反映的是目前仍處於過渡性多來源模型，而不是已經有完全收斂的單一 heartbeat authority。
 
@@ -357,7 +357,7 @@ desktop runtime 應對下列責任負責：
 
 比較合理的方向是：
 
-- `hcodex` 保持 workspace 內的正式受管 CLI 入口
+- `hcodex` 保持 workspace 內的正式受管本地入口
 - tray 負責替使用者找到目標 workspace，並啟動等價的受管路徑
 - web 管理面負責展示這個入口的可用性、最近 session 與 health 狀態
 - `hcodex` self-heal 收斂成 fallback，而不是長期 owner 模型
@@ -433,7 +433,7 @@ v1 明確限制：
   - 應提供這個管理面要顯示的 canonical 狀態軸
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
   - 應提供本地 query / control surface 的 view / action 命名
-- [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md)
+- [session-level-mirror-and-readiness.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-mirror-and-readiness.md)
   - 定義 shared daemon、受管 `hcodex`、TUI proxy、adoption 與 owner 現況
 - [telegram-webapp-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md)
   - observability 可共用同一份 thread state / event model，但不是這份文檔的主責
@@ -449,7 +449,7 @@ v1 明確限制：
 ## 建議的下一步
 
 1. 先把 [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md) 補成可支撐這份管理面的最小 view / action 草稿。
-2. 先把 [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md) 補上 desktop runtime owner 的最新責任邊界。
+2. 先把 [session-level-mirror-and-readiness.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-mirror-and-readiness.md) 補上 desktop runtime owner 的最新責任邊界。
 3. 先在 runtime 裡補齊 local query / control API 與 managed Codex update 能力。
 4. 在 API 穩定後，再持續收斂 tray-icon UI 與 workspace-first 瀏覽器管理頁。
 5. 若要正式重構 web 管理面，可評估以 HeroUI 作為前端組件庫基礎。

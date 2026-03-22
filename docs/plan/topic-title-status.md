@@ -60,7 +60,7 @@ title 現在承載的是非常少量的 runtime state：
 
 而不是：
 
-- 某個本地 CLI owner
+- 某個本地 live session
 - 某個 attach viewer 狀態
 
 ## 後續方向

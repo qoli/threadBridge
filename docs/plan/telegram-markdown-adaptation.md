@@ -13,6 +13,9 @@
 - 超過單則訊息限制時，會改走 notice + `reply.md` attachment
 - Markdown link 目前統一改寫成 `code` 樣式 label，而不是保留 Telegram link
 - 所有主要 bot 文字送信路徑目前都明確關閉 link preview
+- preview draft 已接入 `sendMessageDraft + HTML parse mode`
+- preview draft 與 final reply 現在共用同一套 Markdown -> Telegram HTML renderer
+- Telegram 文字顯示已開始收斂成 line1 符號、line2+ 內容的格式
 - 目前會將最後一組 final reply 的 raw markdown 與 intermediate html dump 到：
   - `/Volumes/Data/Github/threadBridge/tmp/final-reply-last.md`
   - `/Volumes/Data/Github/threadBridge/tmp/final-reply-last.html`
@@ -21,13 +24,10 @@
 
 - 不再做自動的 file-bullet 兩行重排與全角空格 continuation indent
   - 先前嘗試過，但對一般清單與 inline code 命中太寬，不夠安全
-- preview draft 仍然不是同一套 renderer
 - 非 final reply surface 仍未完全統一到同一個 rich-text 中間表示
 
 目前尚未完成的項目：
 
-- preview / draft 是否要共用 renderer
-- `sendMessageDraft` 是否應正式接入和 final message 共用的 HTML render 路線
 - 是否要建立更明確的中間表示，而不是目前 renderer 內部直接輸出 HTML
 - block quote / 更複雜 nested list / 更多 Telegram-specific layout 重建策略
 - 是否要把 debug dump、probe、preview exporter 收斂成正式診斷工具鏈
@@ -249,8 +249,9 @@
 
 目前新增確認的一個方向是：
 
-- `sendMessageDraft` 既然支持 `parse_mode`，preview draft 應重新評估是否直接和 final message 共用 HTML render 路線
-- 先前「draft 保持 plain text，只做 markdown 清洗」的想法不再是優先方向
+- preview draft 已正式接入 `parse_mode=HTML`
+- draft / final 已開始共用同一條 HTML render 路線
+- draft-specific 差異只保留在 heartbeat、節流、截斷與 update lifecycle
 
 ## Draft 與 Final 共用 HTML 的想法
 
@@ -262,7 +263,7 @@ draft 的重點比較像：
 - 讓 preview 與 final message 的格式語義不要差太遠
 - 減少「draft 很粗糙、final 才突然變整齊」的觀感落差
 
-既然 `sendMessageDraft` 也支持 `parse_mode`，比較合理的新方向可能不是：
+既然 `sendMessageDraft` 也支持 `parse_mode`，目前已採用的新方向不是：
 
 - 另外做一套 draft 專用的 plain-text markdown 清洗
 
@@ -335,7 +336,7 @@ draft 的重點比較像：
 
 ## 建議的下一步
 
-1. 決定 preview draft 是否也要接到同一套 renderer，或明確維持分離。
+1. 繼續把更多非 final reply surface 收斂到同一套 renderer / formatter。
 2. 重新評估是否真的需要一個顯式中間表示，而不是持續在 renderer 內部直接輸出 HTML。
 3. 針對真實 `data/` 樣本持續收斂 Telegram-specific 排版問題，特別是 nested list、長 bullet、block quote。
 4. 視需要把 probe / html preview / final dump 收斂成更正式的診斷面。

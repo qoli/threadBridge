@@ -15,8 +15,8 @@ use crate::repository::{
     TranscriptMirrorPhase, TranscriptMirrorRole,
 };
 use crate::workspace_status::{
-    CliOwnerClaim, SessionCurrentStatus, SessionStatusOwner, WorkspaceAggregateStatus,
-    WorkspaceStatusEventRecord, events_path, read_cli_owner_claim, read_session_status,
+    LocalSessionClaim, SessionCurrentStatus, SessionStatusOwner, WorkspaceAggregateStatus,
+    WorkspaceStatusEventRecord, events_path, read_local_session_claim, read_session_status,
     record_bot_status_event,
 };
 
@@ -36,7 +36,7 @@ pub struct StaleBusyReconciliationReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CliTopicMarker {
+pub(crate) enum TopicActivityMarker {
     None,
     Busy,
 }
@@ -74,35 +74,37 @@ fn truncate_topic_base(base: &str, suffix: &str) -> String {
     format!("{truncated}{suffix}")
 }
 
-pub(crate) fn topic_marker_for_snapshot(snapshot: Option<&SessionCurrentStatus>) -> CliTopicMarker {
+pub(crate) fn topic_marker_for_snapshot(
+    snapshot: Option<&SessionCurrentStatus>,
+) -> TopicActivityMarker {
     if snapshot.is_some_and(|snapshot| snapshot.phase.is_turn_busy()) {
-        CliTopicMarker::Busy
+        TopicActivityMarker::Busy
     } else {
-        CliTopicMarker::None
+        TopicActivityMarker::None
     }
 }
 
-fn workspace_cli_conflict(
+fn workspace_local_conflict(
     aggregate: Option<&WorkspaceAggregateStatus>,
-    owner_claim: Option<&CliOwnerClaim>,
+    owner_claim: Option<&LocalSessionClaim>,
 ) -> bool {
     let Some(aggregate) = aggregate else {
         return false;
     };
-    if aggregate.live_cli_session_ids.is_empty() {
+    if aggregate.live_local_session_ids.is_empty() {
         return false;
     }
     let Some(owner_claim) = owner_claim else {
         return true;
     };
-    if aggregate.live_cli_session_ids.len() > 1 {
+    if aggregate.live_local_session_ids.len() > 1 {
         return true;
     }
     let Some(expected_session_id) = owner_claim.session_id.as_deref() else {
         return false;
     };
     aggregate
-        .live_cli_session_ids
+        .live_local_session_ids
         .iter()
         .all(|item| item != expected_session_id)
 }
@@ -110,7 +112,7 @@ fn workspace_cli_conflict(
 pub(crate) fn render_topic_title(
     record: &ThreadRecord,
     workspace_path: Option<&Path>,
-    marker: CliTopicMarker,
+    marker: TopicActivityMarker,
 ) -> String {
     let base = record
         .metadata
@@ -124,8 +126,8 @@ pub(crate) fn render_topic_title(
 
     let mut suffix = String::new();
     match marker {
-        CliTopicMarker::Busy => suffix.push_str(" · busy"),
-        CliTopicMarker::None => {}
+        TopicActivityMarker::Busy => suffix.push_str(" · busy"),
+        TopicActivityMarker::None => {}
     }
     if record.metadata.session_broken {
         suffix.push_str(" · broken");
@@ -134,15 +136,15 @@ pub(crate) fn render_topic_title(
     truncate_topic_base(&base, &suffix)
 }
 
-pub(crate) fn cli_marker_label(marker: CliTopicMarker) -> &'static str {
+pub(crate) fn topic_activity_marker_label(marker: TopicActivityMarker) -> &'static str {
     match marker {
-        CliTopicMarker::None => "none",
-        CliTopicMarker::Busy => "busy",
+        TopicActivityMarker::None => "none",
+        TopicActivityMarker::Busy => "busy",
     }
 }
 
-pub(crate) fn tui_adoption_prompt_text() -> &'static str {
-    "詢問：後續對話是否以 TUI session"
+pub(crate) fn tui_adoption_prompt_text() -> String {
+    format_role_text(TelegramTextRole::System, "詢問：後續對話是否以 TUI session")
 }
 
 pub(crate) fn tui_adoption_prompt_markup(thread_key: &str) -> InlineKeyboardMarkup {
@@ -273,10 +275,10 @@ pub(crate) fn busy_text_message(
     image_saved: bool,
 ) -> &'static str {
     match snapshot.owner {
-        SessionStatusOwner::Cli if image_saved => {
+        SessionStatusOwner::Local if image_saved => {
             "Image saved. Analysis will stay pending until the shared TUI session finishes its current turn."
         }
-        SessionStatusOwner::Cli => {
+        SessionStatusOwner::Local => {
             "The shared TUI session is already running a turn. Wait for it to finish before sending a new Telegram request."
         }
         SessionStatusOwner::Bot => {
@@ -287,7 +289,7 @@ pub(crate) fn busy_text_message(
 
 pub(crate) fn busy_command_message(snapshot: &SessionCurrentStatus) -> &'static str {
     match snapshot.owner {
-        SessionStatusOwner::Cli => {
+        SessionStatusOwner::Local => {
             "The shared TUI session is already running a turn. Wait for it to finish before changing this thread's session state."
         }
         SessionStatusOwner::Bot => {
@@ -397,18 +399,18 @@ pub async fn spawn_workspace_status_watcher(bot: Bot, state: AppState) {
     tokio::spawn(async move {
         let mut applied_titles: HashMap<String, String> = HashMap::new();
         let mut workspace_event_offsets: HashMap<String, usize> = HashMap::new();
-        let mut pending_cli_user_prompts: HashSet<String> = HashSet::new();
+        let mut pending_local_user_prompts: HashSet<String> = HashSet::new();
         let mut mirror_previews: HashMap<String, TurnPreviewController> = HashMap::new();
         loop {
             if let Err(error) = sync_workspace_titles_once(&bot, &state, &mut applied_titles).await
             {
                 warn!(event = "workspace_status.sync.failed", error = %error);
             }
-            if let Err(error) = sync_cli_transcript_mirrors_once(
+            if let Err(error) = sync_local_transcript_mirrors_once(
                 &bot,
                 &state,
                 &mut workspace_event_offsets,
-                &mut pending_cli_user_prompts,
+                &mut pending_local_user_prompts,
                 &mut mirror_previews,
             )
             .await
@@ -515,10 +517,7 @@ async fn sync_tui_adoption_prompts_once(bot: &Bot, state: &AppState) -> Result<(
             continue;
         }
         let message = bot
-            .send_message(
-                ChatId(record.metadata.chat_id),
-                tui_adoption_prompt_text().to_owned(),
-            )
+            .send_message(ChatId(record.metadata.chat_id), tui_adoption_prompt_text())
             .message_thread_id(thread_id_from_i32(thread_id))
             .reply_markup(tui_adoption_prompt_markup(&record.metadata.thread_key))
             .await?;
@@ -530,11 +529,11 @@ async fn sync_tui_adoption_prompts_once(bot: &Bot, state: &AppState) -> Result<(
     Ok(())
 }
 
-async fn sync_cli_transcript_mirrors_once(
+async fn sync_local_transcript_mirrors_once(
     bot: &Bot,
     state: &AppState,
     workspace_event_offsets: &mut HashMap<String, usize>,
-    pending_cli_user_prompts: &mut HashSet<String>,
+    pending_local_user_prompts: &mut HashSet<String>,
     mirror_previews: &mut HashMap<String, TurnPreviewController>,
 ) -> Result<()> {
     let records = state.repository.list_active_threads().await?;
@@ -556,8 +555,8 @@ async fn sync_cli_transcript_mirrors_once(
 
     for (workspace_key, workspace_records) in by_workspace {
         let workspace_path = PathBuf::from(&workspace_key);
-        let Some(owner_claim) = read_cli_owner_claim(&workspace_path).await? else {
-            pending_cli_user_prompts.retain(|key| !key.starts_with(&workspace_key));
+        let Some(owner_claim) = read_local_session_claim(&workspace_path).await? else {
+            pending_local_user_prompts.retain(|key| !key.starts_with(&workspace_key));
             let Some(lines) = read_workspace_event_lines(&workspace_path).await? else {
                 continue;
             };
@@ -566,8 +565,8 @@ async fn sync_cli_transcript_mirrors_once(
         };
         let aggregate =
             crate::workspace_status::read_workspace_aggregate_status(&workspace_path).await?;
-        if workspace_cli_conflict(Some(&aggregate), Some(&owner_claim)) {
-            pending_cli_user_prompts.retain(|key| !key.starts_with(&workspace_key));
+        if workspace_local_conflict(Some(&aggregate), Some(&owner_claim)) {
+            pending_local_user_prompts.retain(|key| !key.starts_with(&workspace_key));
             let Some(lines) = read_workspace_event_lines(&workspace_path).await? else {
                 continue;
             };
@@ -579,7 +578,7 @@ async fn sync_cli_transcript_mirrors_once(
             .find(|record| record.metadata.thread_key == owner_claim.thread_key)
             .cloned()
         else {
-            pending_cli_user_prompts.retain(|key| !key.starts_with(&workspace_key));
+            pending_local_user_prompts.retain(|key| !key.starts_with(&workspace_key));
             let Some(lines) = read_workspace_event_lines(&workspace_path).await? else {
                 continue;
             };
@@ -618,7 +617,7 @@ async fn sync_cli_transcript_mirrors_once(
                         .and_then(|value| value.as_str())
                     else {
                         warn!(
-                            event = "workspace_mirror.cli_user_prompt_missing_session",
+                            event = "workspace_mirror.local_user_prompt_missing_session",
                             workspace = %workspace_key,
                             thread_key = %owner_record.metadata.thread_key,
                         );
@@ -632,18 +631,18 @@ async fn sync_cli_transcript_mirrors_once(
                         continue;
                     }
                     let Some(entry) =
-                        cli_mirror_entry_from_event(&event, owner_claim.session_id.as_deref())
+                        local_mirror_entry_from_event(&event, owner_claim.session_id.as_deref())
                     else {
                         warn!(
-                            event = "workspace_mirror.cli_user_prompt_missing_text",
+                            event = "workspace_mirror.local_user_prompt_missing_text",
                             workspace = %workspace_key,
                             thread_key = %owner_record.metadata.thread_key,
                             session_id = session_id,
                         );
                         continue;
                     };
-                    pending_cli_user_prompts
-                        .insert(cli_prompt_tracking_key(&workspace_key, &entry.session_id));
+                    pending_local_user_prompts
+                        .insert(local_prompt_tracking_key(&workspace_key, &entry.session_id));
                     ensure_mirror_preview(
                         mirror_previews,
                         bot,
@@ -660,11 +659,12 @@ async fn sync_cli_transcript_mirrors_once(
                         && entry.delivery == TranscriptMirrorDelivery::Final
                         && let Some(message_thread_id) = owner_record.metadata.message_thread_id
                     {
-                        send_scoped_message(
+                        send_scoped_role_message(
                             bot,
                             ChatId(owner_record.metadata.chat_id),
                             Some(thread_id_from_i32(message_thread_id)),
-                            format!("{}: {}", mirror_prefix_for_entry(&entry), entry.text),
+                            TelegramTextRole::User,
+                            &entry.text,
                         )
                         .await?;
                     }
@@ -710,11 +710,11 @@ async fn sync_cli_transcript_mirrors_once(
                             .session_id
                             .as_deref()
                             .is_none_or(|expected| expected == session_id)
-                            && !pending_cli_user_prompts
-                                .remove(&cli_prompt_tracking_key(&workspace_key, session_id))
+                            && !pending_local_user_prompts
+                                .remove(&local_prompt_tracking_key(&workspace_key, session_id))
                         {
                             warn!(
-                                event = "workspace_mirror.cli_user_prompt_missing",
+                                event = "workspace_mirror.local_user_prompt_missing",
                                 workspace = %workspace_key,
                                 thread_key = %owner_record.metadata.thread_key,
                                 session_id = session_id,
@@ -725,7 +725,7 @@ async fn sync_cli_transcript_mirrors_once(
                 _ => {}
             }
             if let Some(entry) =
-                cli_mirror_entry_from_event(&event, owner_claim.session_id.as_deref())
+                local_mirror_entry_from_event(&event, owner_claim.session_id.as_deref())
             {
                 let inserted = state
                     .repository
@@ -744,11 +744,12 @@ async fn sync_cli_transcript_mirrors_once(
                     )
                     .complete(&entry.text)
                     .await;
-                    send_scoped_message(
+                    send_scoped_role_message(
                         bot,
                         ChatId(owner_record.metadata.chat_id),
                         Some(thread_id_from_i32(message_thread_id)),
-                        format!("{}: {}", mirror_prefix_for_entry(&entry), entry.text),
+                        TelegramTextRole::Assistant,
+                        &entry.text,
                     )
                     .await?;
                 }
@@ -781,11 +782,11 @@ fn ensure_mirror_preview<'a>(
         })
 }
 
-fn cli_prompt_tracking_key(workspace_key: &str, session_id: &str) -> String {
+fn local_prompt_tracking_key(workspace_key: &str, session_id: &str) -> String {
     format!("{workspace_key}::{session_id}")
 }
 
-fn initial_workspace_event_offset(lines: &[String], owner_claim: &CliOwnerClaim) -> usize {
+fn initial_workspace_event_offset(lines: &[String], owner_claim: &LocalSessionClaim) -> usize {
     lines
         .iter()
         .position(|line| {
@@ -799,17 +800,7 @@ fn initial_workspace_event_offset(lines: &[String], owner_claim: &CliOwnerClaim)
 fn transcript_origin_from_event(event: &WorkspaceStatusEventRecord) -> TranscriptMirrorOrigin {
     match event.payload.get("client").and_then(Value::as_str) {
         Some("threadbridge-tui-proxy") => TranscriptMirrorOrigin::Tui,
-        _ => TranscriptMirrorOrigin::Cli,
-    }
-}
-
-fn mirror_prefix_for_entry(entry: &TranscriptMirrorEntry) -> &'static str {
-    match (&entry.origin, &entry.role) {
-        (TranscriptMirrorOrigin::Cli, TranscriptMirrorRole::User) => "CLI",
-        (TranscriptMirrorOrigin::Cli, TranscriptMirrorRole::Assistant) => "Codex",
-        (TranscriptMirrorOrigin::Tui, TranscriptMirrorRole::User) => "TUI",
-        (TranscriptMirrorOrigin::Tui, TranscriptMirrorRole::Assistant) => "TUI Codex",
-        _ => "Codex",
+        _ => TranscriptMirrorOrigin::Local,
     }
 }
 
@@ -823,7 +814,7 @@ async fn read_workspace_event_lines(workspace_path: &Path) -> Result<Option<Vec<
     Ok(Some(content.lines().map(str::to_owned).collect()))
 }
 
-fn cli_mirror_entry_from_event(
+fn local_mirror_entry_from_event(
     event: &WorkspaceStatusEventRecord,
     expected_session_id: Option<&str>,
 ) -> Option<TranscriptMirrorEntry> {
@@ -901,8 +892,8 @@ fn cli_mirror_entry_from_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        CliTopicMarker, STARTUP_STALE_BUSY_RECOVERED_LOG, cli_mirror_entry_from_event,
-        effective_busy_snapshot_for_binding, initial_workspace_event_offset,
+        STARTUP_STALE_BUSY_RECOVERED_LOG, TopicActivityMarker, effective_busy_snapshot_for_binding,
+        initial_workspace_event_offset, local_mirror_entry_from_event,
         reconcile_stale_bot_busy_sessions_for_repository, render_topic_title,
         topic_marker_for_snapshot,
     };
@@ -911,7 +902,7 @@ mod tests {
         TranscriptMirrorOrigin, TranscriptMirrorRole,
     };
     use crate::workspace_status::{
-        CliOwnerClaim, SessionCurrentStatus, SessionStatusOwner, WorkspaceStatusEventRecord,
+        LocalSessionClaim, SessionCurrentStatus, SessionStatusOwner, WorkspaceStatusEventRecord,
         WorkspaceStatusPhase, ensure_workspace_status_surface, read_session_status,
         record_bot_status_event, session_status_path,
     };
@@ -1005,7 +996,7 @@ mod tests {
         let title = render_topic_title(
             &record(Some(&long_title), false),
             Some(PathBuf::from("/tmp/workspace").as_path()),
-            CliTopicMarker::Busy,
+            TopicActivityMarker::Busy,
         );
         assert!(title.ends_with(" · busy"));
         assert!(title.chars().count() <= 128);
@@ -1038,11 +1029,11 @@ mod tests {
     }
 
     #[test]
-    fn cli_user_prompt_event_creates_cli_user_entry() {
+    fn local_user_prompt_event_creates_local_user_entry() {
         let event = WorkspaceStatusEventRecord {
             schema_version: 2,
             event: "user_prompt_submitted".to_owned(),
-            source: crate::workspace_status::SessionStatusOwner::Cli,
+            source: crate::workspace_status::SessionStatusOwner::Local,
             workspace_cwd: "/tmp/workspace".to_owned(),
             occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
             payload: json!({
@@ -1050,8 +1041,9 @@ mod tests {
                 "prompt": "inspect this repo"
             }),
         };
-        let entry = cli_mirror_entry_from_event(&event, Some("thr_cli")).expect("cli user entry");
-        assert_eq!(entry.origin, TranscriptMirrorOrigin::Cli);
+        let entry =
+            local_mirror_entry_from_event(&event, Some("thr_cli")).expect("local user entry");
+        assert_eq!(entry.origin, TranscriptMirrorOrigin::Local);
         assert_eq!(entry.role, TranscriptMirrorRole::User);
         assert_eq!(entry.text, "inspect this repo");
     }
@@ -1061,7 +1053,7 @@ mod tests {
         let event = WorkspaceStatusEventRecord {
             schema_version: 2,
             event: "user_prompt_submitted".to_owned(),
-            source: crate::workspace_status::SessionStatusOwner::Cli,
+            source: crate::workspace_status::SessionStatusOwner::Local,
             workspace_cwd: "/tmp/workspace".to_owned(),
             occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
             payload: json!({
@@ -1070,7 +1062,7 @@ mod tests {
                 "client": "threadbridge-tui-proxy"
             }),
         };
-        let entry = cli_mirror_entry_from_event(&event, Some("thr_tui")).expect("tui user entry");
+        let entry = local_mirror_entry_from_event(&event, Some("thr_tui")).expect("tui user entry");
         assert_eq!(entry.origin, TranscriptMirrorOrigin::Tui);
         assert_eq!(entry.role, TranscriptMirrorRole::User);
         assert_eq!(entry.text, "continue the tui session");
@@ -1078,7 +1070,7 @@ mod tests {
 
     #[test]
     fn initial_offset_starts_from_owner_claim_started_at() {
-        let owner_claim = CliOwnerClaim {
+        let owner_claim = LocalSessionClaim {
             schema_version: 2,
             workspace_cwd: "/tmp/workspace".to_owned(),
             thread_key: "thread-key".to_owned(),
@@ -1094,7 +1086,7 @@ mod tests {
             serde_json::to_string(&WorkspaceStatusEventRecord {
                 schema_version: 2,
                 event: "user_prompt_submitted".to_owned(),
-                source: crate::workspace_status::SessionStatusOwner::Cli,
+                source: crate::workspace_status::SessionStatusOwner::Local,
                 workspace_cwd: "/tmp/workspace".to_owned(),
                 occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
                 payload: json!({"session_id": "thr_old", "prompt": "old"}),
@@ -1103,7 +1095,7 @@ mod tests {
             serde_json::to_string(&WorkspaceStatusEventRecord {
                 schema_version: 2,
                 event: "user_prompt_submitted".to_owned(),
-                source: crate::workspace_status::SessionStatusOwner::Cli,
+                source: crate::workspace_status::SessionStatusOwner::Local,
                 workspace_cwd: "/tmp/workspace".to_owned(),
                 occurred_at: "2026-03-19T00:00:11.000Z".to_owned(),
                 payload: json!({"session_id": "thr_tui", "prompt": "new"}),
@@ -1115,26 +1107,26 @@ mod tests {
     }
 
     #[test]
-    fn cli_user_prompt_event_without_prompt_is_ignored() {
+    fn local_user_prompt_event_without_prompt_is_ignored() {
         let event = WorkspaceStatusEventRecord {
             schema_version: 2,
             event: "user_prompt_submitted".to_owned(),
-            source: crate::workspace_status::SessionStatusOwner::Cli,
+            source: crate::workspace_status::SessionStatusOwner::Local,
             workspace_cwd: "/tmp/workspace".to_owned(),
             occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
             payload: json!({
                 "session_id": "thr_cli"
             }),
         };
-        assert!(cli_mirror_entry_from_event(&event, Some("thr_cli")).is_none());
+        assert!(local_mirror_entry_from_event(&event, Some("thr_cli")).is_none());
     }
 
     #[test]
-    fn turn_completed_does_not_fallback_to_input_messages_for_cli_user_entry() {
+    fn turn_completed_does_not_fallback_to_input_messages_for_local_user_entry() {
         let event = WorkspaceStatusEventRecord {
             schema_version: 2,
             event: "turn_completed".to_owned(),
-            source: crate::workspace_status::SessionStatusOwner::Cli,
+            source: crate::workspace_status::SessionStatusOwner::Local,
             workspace_cwd: "/tmp/workspace".to_owned(),
             occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
             payload: json!({
@@ -1142,7 +1134,7 @@ mod tests {
                 "input-messages": ["hello from cli"]
             }),
         };
-        assert!(cli_mirror_entry_from_event(&event, Some("thr_cli")).is_none());
+        assert!(local_mirror_entry_from_event(&event, Some("thr_cli")).is_none());
     }
 
     #[tokio::test]
@@ -1182,14 +1174,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_reconciliation_does_not_recover_cli_busy_session() {
+    async fn startup_reconciliation_does_not_recover_local_busy_session() {
         let (repo, root, workspace, record) = setup_repo_and_workspace("workspace").await;
         ensure_workspace_status_surface(&workspace).await.unwrap();
-        let cli_session = SessionCurrentStatus {
+        let local_session = SessionCurrentStatus {
             schema_version: 2,
             workspace_cwd: workspace.display().to_string(),
             session_id: "thr_test".to_owned(),
-            owner: SessionStatusOwner::Cli,
+            owner: SessionStatusOwner::Local,
             live: true,
             phase: WorkspaceStatusPhase::TurnRunning,
             shell_pid: Some(42),
@@ -1203,7 +1195,10 @@ mod tests {
         };
         fs::write(
             session_status_path(&workspace, "thr_test"),
-            format!("{}\n", serde_json::to_string_pretty(&cli_session).unwrap()),
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&local_session).unwrap()
+            ),
         )
         .await
         .unwrap();
@@ -1219,7 +1214,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(session.owner, SessionStatusOwner::Cli);
+        assert_eq!(session.owner, SessionStatusOwner::Local);
         assert_eq!(session.phase, WorkspaceStatusPhase::TurnRunning);
 
         let log = fs::read_to_string(&record.log_path)
@@ -1308,7 +1303,7 @@ mod tests {
             schema_version: 2,
             workspace_cwd: workspace.display().to_string(),
             session_id: "thr_tui".to_owned(),
-            owner: SessionStatusOwner::Cli,
+            owner: SessionStatusOwner::Local,
             live: true,
             phase: WorkspaceStatusPhase::TurnRunning,
             shell_pid: Some(0),

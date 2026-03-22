@@ -125,7 +125,10 @@ async fn upsert_pending_image_batch_message(
     record: &ThreadRecord,
     batch: crate::image_artifacts::PendingImageBatch,
 ) -> Result<crate::image_artifacts::PendingImageBatch> {
-    let text = render_pending_image_batch(&batch);
+    let text = format_role_text(
+        TelegramTextRole::System,
+        &render_pending_image_batch(&batch),
+    );
     let markup = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
         "直接分析",
         format!("{CALLBACK_IMAGE_BATCH_ANALYZE}:{}", batch.batch_id),

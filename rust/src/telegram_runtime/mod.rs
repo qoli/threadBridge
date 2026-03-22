@@ -24,8 +24,8 @@ pub(crate) use crate::tool_results::{TelegramOutboxItem, parse_telegram_outbox};
 use crate::tui_proxy::TuiProxyManager;
 pub(crate) use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 pub(crate) use crate::workspace_status::{
-    WorkspaceStatusCache, busy_selected_session_status, read_cli_owner_claim, read_session_status,
-    read_workspace_status_with_cache, record_bot_status_event,
+    WorkspaceStatusCache, busy_selected_session_status, read_local_session_claim,
+    read_session_status, read_workspace_status_with_cache, record_bot_status_event,
 };
 
 pub mod final_reply;
@@ -52,8 +52,15 @@ pub enum Command {
     RestoreWorkspace,
     #[command(description = "Repair the current workspace's Codex session continuity")]
     RepairSession,
-    #[command(description = "Show this workspace's key, path, session, and CLI owner state")]
+    #[command(description = "Show this workspace's key, path, session, and local session state")]
     WorkspaceInfo,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TelegramTextRole {
+    User,
+    Assistant,
+    System,
 }
 
 #[derive(Clone)]
@@ -339,7 +346,10 @@ async fn run_callback_query(bot: &Bot, query: &CallbackQuery, state: &AppState) 
             bot.edit_message_text(
                 message.chat.id,
                 message.id,
-                "已採納 TUI session，後續 Telegram 對話將接續該 session。",
+                format_role_text(
+                    TelegramTextRole::System,
+                    "已採納 TUI session，後續 Telegram 對話將接續該 session。",
+                ),
             )
             .await?;
             let _ =
@@ -364,7 +374,10 @@ async fn run_callback_query(bot: &Bot, query: &CallbackQuery, state: &AppState) 
             bot.edit_message_text(
                 message.chat.id,
                 message.id,
-                "已保留原對話，TUI session 不會被採納為目前 Telegram session。",
+                format_role_text(
+                    TelegramTextRole::System,
+                    "已保留原對話，TUI session 不會被採納為目前 Telegram session。",
+                ),
             )
             .await?;
             let _ =
@@ -398,13 +411,32 @@ pub(crate) fn thread_id_to_i32(thread_id: ThreadId) -> i32 {
     thread_id.0.0
 }
 
-pub(crate) async fn send_scoped_message(
+pub(crate) fn telegram_role_marker(role: TelegramTextRole) -> &'static str {
+    match role {
+        TelegramTextRole::User => "👤",
+        TelegramTextRole::Assistant => "🤖",
+        TelegramTextRole::System => "❗️",
+    }
+}
+
+pub(crate) fn format_role_text(role: TelegramTextRole, text: &str) -> String {
+    let marker = telegram_role_marker(role);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        marker.to_owned()
+    } else {
+        format!("{marker}\n{trimmed}")
+    }
+}
+
+pub(crate) async fn send_scoped_role_message(
     bot: &Bot,
     chat_id: ChatId,
     thread_id: Option<ThreadId>,
+    role: TelegramTextRole,
     text: impl Into<String>,
 ) -> ResponseResult<Message> {
-    let text = text.into();
+    let text = format_role_text(role, &text.into());
     let request = bot
         .send_message(chat_id, text)
         .link_preview_options(disabled_link_preview_options());
@@ -412,6 +444,15 @@ pub(crate) async fn send_scoped_message(
         Some(thread_id) => request.message_thread_id(thread_id).await,
         None => request.await,
     }
+}
+
+pub(crate) async fn send_scoped_message(
+    bot: &Bot,
+    chat_id: ChatId,
+    thread_id: Option<ThreadId>,
+    text: impl Into<String>,
+) -> ResponseResult<Message> {
+    send_scoped_role_message(bot, chat_id, thread_id, TelegramTextRole::System, text).await
 }
 
 pub(crate) fn disabled_link_preview_options() -> LinkPreviewOptions {
@@ -527,7 +568,7 @@ async fn should_route_telegram_input_to_live_tui_session(
         return Ok(false);
     }
     let workspace_path = workspace_path_from_binding(binding)?;
-    let Some(owner_claim) = read_cli_owner_claim(&workspace_path).await? else {
+    let Some(owner_claim) = read_local_session_claim(&workspace_path).await? else {
         return Ok(false);
     };
     if owner_claim.thread_key != record.metadata.thread_key
@@ -537,7 +578,7 @@ async fn should_route_telegram_input_to_live_tui_session(
     }
     let snapshot = read_session_status(&workspace_path, tui_session_id).await?;
     Ok(snapshot.as_ref().is_some_and(|snapshot| {
-        snapshot.owner == crate::workspace_status::SessionStatusOwner::Cli && snapshot.live
+        snapshot.owner == crate::workspace_status::SessionStatusOwner::Local && snapshot.live
     }))
 }
 
@@ -826,7 +867,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(live_snapshot.owner, SessionStatusOwner::Cli);
+        assert_eq!(live_snapshot.owner, SessionStatusOwner::Local);
         assert_eq!(live_snapshot.phase, WorkspaceStatusPhase::ShellActive);
     }
 

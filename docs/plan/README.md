@@ -16,11 +16,12 @@
   - 已完成 v1
   - Bash wrapper、Codex hooks、notify、workspace shared status、topic title watcher、busy gate 都曾落地
   - 現在已退役，只保留作為舊模型參考
-- [session-level-cli-telegram-sync.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-cli-telegram-sync.md)
+- [session-level-mirror-and-readiness.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-mirror-and-readiness.md)
   - shared app-server daemon、`./.threadbridge/bin/hcodex`、TUI proxy、mirror、adoption、auto-adopt 已落地
   - desktop runtime 已成為正式 owner 啟動模型，headless 啟動路徑已退場
   - `hcodex` self-heal 已移除，缺少 desktop owner 時會明確失敗
   - workspace heartbeat / runtime health 已改成以 desktop owner heartbeat 為主 authority
+  - 舊 `CLI owner / handoff` 概念已退出現行模型，主語義改為 local/TUI mirror + idle/free readiness
   - process transcript 已正式區分 final / process，並補上 management transcript read API、web observability pane 與 Telegram rolling preview 摘要
   - 它同時也是 Telegram 退回通用 adapter 模式的前置條件
 
@@ -100,9 +101,9 @@
 - `codex-busy-input-gate`
   - 描述 turn 互斥與 busy gate
 - `codex-cli-telegram-status-sync-hooks`
-  - 把本地 CLI 狀態接到同一份 busy / title 模型
-- `session-level-cli-telegram-sync`
-  - 描述真正的同 session 雙窗口輸入 / 事件同步願景
+  - 把舊的本地 CLI 狀態接到同一份 busy / title 模型
+- `session-level-mirror-and-readiness`
+  - 描述 local/TUI mirror、adoption、與 idle/free readiness 的現行模型
 - `topic-title-status`
   - 描述 title 應承載哪些狀態
 - `runtime-state-machine`
