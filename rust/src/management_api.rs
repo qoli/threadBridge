@@ -28,8 +28,15 @@ use crate::local_control::LocalControlHandle;
 use crate::repository::{
     RecentCodexSessionEntry, ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry,
 };
-use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus, WorkspaceRuntimeHeartbeat};
-use crate::thread_state::resolve_thread_state;
+use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus};
+pub use crate::runtime_protocol::{
+    ArchivedThreadView, ManagedCodexBuildDefaultsView, ManagedCodexBuildInfoView, ManagedCodexView,
+    ManagedWorkspaceView, RuntimeHealthView, ThreadStateView,
+};
+use crate::runtime_protocol::{
+    build_archived_thread_views, build_runtime_health, build_thread_views, build_workspace_views,
+    workspace_mode_drift,
+};
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 
 const MANAGED_CODEX_SOURCE_FILE: &str = ".threadbridge/codex/source.txt";
@@ -160,112 +167,6 @@ pub struct SetupStateView {
     pub control_chat_ready: bool,
     pub control_chat_id: Option<i64>,
     pub native_workspace_picker_available: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RuntimeHealthView {
-    pub management_bind_addr: String,
-    pub broken_threads: usize,
-    pub running_workspaces: usize,
-    pub conflicted_workspaces: usize,
-    pub ready_workspaces: usize,
-    pub degraded_workspaces: usize,
-    pub unavailable_workspaces: usize,
-    pub app_server_status: &'static str,
-    pub tui_proxy_status: &'static str,
-    pub handoff_readiness: &'static str,
-    pub recovery_hint: Option<String>,
-    pub runtime_owner: RuntimeOwnerStatus,
-    pub managed_codex: ManagedCodexView,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ManagedCodexView {
-    pub source: &'static str,
-    pub source_file_path: String,
-    pub build_config_file_path: String,
-    pub build_info_file_path: String,
-    pub binary_path: String,
-    pub binary_ready: bool,
-    pub version: Option<String>,
-    pub build_defaults: ManagedCodexBuildDefaultsView,
-    pub build_info: Option<ManagedCodexBuildInfoView>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ManagedCodexBuildInfoView {
-    pub source_repo: Option<String>,
-    pub source_rs_dir: Option<String>,
-    pub build_profile: Option<String>,
-    pub git_rev: Option<String>,
-    pub binary: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ManagedCodexBuildDefaultsView {
-    pub source_repo: String,
-    pub source_rs_dir: String,
-    pub build_profile: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ManagedWorkspaceView {
-    pub workspace_cwd: String,
-    pub title: Option<String>,
-    pub thread_key: Option<String>,
-    pub workspace_execution_mode: ExecutionMode,
-    pub current_execution_mode: Option<ExecutionMode>,
-    pub current_approval_policy: Option<String>,
-    pub current_sandbox_policy: Option<String>,
-    pub mode_drift: bool,
-    pub binding_status: &'static str,
-    pub run_status: &'static str,
-    pub current_codex_thread_id: Option<String>,
-    pub tui_active_codex_thread_id: Option<String>,
-    pub tui_session_adoption_pending: bool,
-    pub session_broken: bool,
-    pub last_used_at: Option<String>,
-    pub conflict: bool,
-    pub app_server_status: &'static str,
-    pub tui_proxy_status: &'static str,
-    pub handoff_readiness: &'static str,
-    pub runtime_health_source: &'static str,
-    pub heartbeat_last_checked_at: Option<String>,
-    pub heartbeat_last_error: Option<String>,
-    pub session_broken_reason: Option<String>,
-    pub recovery_hint: Option<String>,
-    pub hcodex_path: String,
-    pub hcodex_available: bool,
-    pub recent_codex_sessions: Vec<RecentCodexSessionEntry>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ThreadStateView {
-    pub thread_key: String,
-    pub title: Option<String>,
-    pub workspace_cwd: Option<String>,
-    pub workspace_execution_mode: Option<ExecutionMode>,
-    pub current_execution_mode: Option<ExecutionMode>,
-    pub current_approval_policy: Option<String>,
-    pub current_sandbox_policy: Option<String>,
-    pub lifecycle_status: &'static str,
-    pub binding_status: &'static str,
-    pub run_status: &'static str,
-    pub current_codex_thread_id: Option<String>,
-    pub tui_active_codex_thread_id: Option<String>,
-    pub tui_session_adoption_pending: bool,
-    pub archived_at: Option<String>,
-    pub last_used_at: Option<String>,
-    pub last_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ArchivedThreadView {
-    pub thread_key: String,
-    pub title: Option<String>,
-    pub workspace_cwd: Option<String>,
-    pub archived_at: Option<String>,
-    pub previous_message_thread_ids: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -435,11 +336,6 @@ struct ManagedCodexBuildConfigFile {
     source_rs_dir: Option<String>,
     #[serde(default)]
     build_profile: Option<String>,
-}
-
-#[derive(Debug)]
-struct WorkspaceAggregateView {
-    items: Vec<ManagedWorkspaceView>,
 }
 
 fn default_transcript_limit() -> usize {
@@ -860,72 +756,16 @@ impl ManagementApiState {
 
     async fn runtime_health(&self) -> Result<RuntimeHealthView> {
         let workspaces = self.workspace_views().await?;
-        let app_server_status = aggregate_running_status(
-            workspaces
-                .iter()
-                .map(|workspace| workspace.app_server_status),
-        );
-        let tui_proxy_status = aggregate_running_status(
-            workspaces
-                .iter()
-                .map(|workspace| workspace.tui_proxy_status),
-        );
-        let handoff_readiness = aggregate_handoff_status(
-            workspaces
-                .iter()
-                .map(|workspace| workspace.handoff_readiness),
-        );
         let runtime_owner = match self.runtime_owner.read().await.clone() {
             Some(owner) => owner.status().await,
             None => RuntimeOwnerStatus::inactive(),
         };
-        let recovery_hint = runtime_recovery_hint(
-            &runtime_owner,
-            workspaces
-                .iter()
-                .map(|workspace| workspace.recovery_hint.as_deref()),
-            workspaces.iter().any(|workspace| workspace.conflict),
-        );
-        Ok(RuntimeHealthView {
-            management_bind_addr: self.runtime.management_bind_addr.to_string(),
-            broken_threads: workspaces
-                .iter()
-                .filter(|workspace| workspace.session_broken)
-                .count(),
-            running_workspaces: workspaces
-                .iter()
-                .filter(|workspace| workspace.run_status == "running")
-                .count(),
-            conflicted_workspaces: workspaces
-                .iter()
-                .filter(|workspace| workspace.conflict)
-                .count(),
-            ready_workspaces: workspaces
-                .iter()
-                .filter(|workspace| workspace.handoff_readiness == "ready")
-                .count(),
-            degraded_workspaces: workspaces
-                .iter()
-                .filter(|workspace| {
-                    matches!(workspace.handoff_readiness, "degraded" | "pending_adoption")
-                })
-                .count(),
-            unavailable_workspaces: workspaces
-                .iter()
-                .filter(|workspace| {
-                    !matches!(
-                        workspace.handoff_readiness,
-                        "ready" | "degraded" | "pending_adoption"
-                    )
-                })
-                .count(),
-            app_server_status,
-            tui_proxy_status,
-            handoff_readiness,
-            recovery_hint,
+        Ok(build_runtime_health(
+            self.runtime.management_bind_addr.to_string(),
+            &workspaces,
             runtime_owner,
-            managed_codex: self.managed_codex_view().await?,
-        })
+            self.managed_codex_view().await?,
+        ))
     }
 
     async fn managed_codex_view(&self) -> Result<ManagedCodexView> {
@@ -1196,171 +1036,12 @@ impl ManagementApiState {
     }
 
     async fn workspace_views(&self) -> Result<Vec<ManagedWorkspaceView>> {
-        let active_threads = self.repository.list_active_threads().await?;
         let runtime_owner = self.runtime_owner.read().await.clone();
-        let mut grouped: BTreeMap<String, WorkspaceAggregateView> = BTreeMap::new();
-        for record in active_threads {
-            let Some(binding) = self.repository.read_session_binding(&record).await? else {
-                continue;
-            };
-            let Some(workspace_cwd) = binding.workspace_cwd.clone() else {
-                continue;
-            };
-            let aggregate = grouped
-                .entry(workspace_cwd.clone())
-                .or_insert_with(|| WorkspaceAggregateView { items: Vec::new() });
-            let workspace_path = Path::new(&workspace_cwd);
-            let workspace_execution_mode = workspace_execution_mode(workspace_path)
-                .await
-                .unwrap_or_default();
-            let hcodex_path = workspace_path
-                .join(".threadbridge")
-                .join("bin")
-                .join("hcodex");
-            let mut runtime_status =
-                read_workspace_runtime_health(workspace_path, runtime_owner.as_ref()).await;
-            if binding.tui_session_adoption_pending && runtime_status.handoff_readiness == "ready" {
-                runtime_status.handoff_readiness = "pending_adoption";
-            }
-            let recent_sessions = self
-                .repository
-                .read_recent_workspace_sessions(&workspace_cwd)
-                .await
-                .unwrap_or_default();
-            let resolved_state = resolve_thread_state(&record.metadata, Some(&binding)).await?;
-            let session_broken = resolved_state.is_broken();
-            let session_broken_reason = binding
-                .session_broken_reason
-                .clone()
-                .or(record.metadata.session_broken_reason.clone());
-            let recovery_hint = workspace_recovery_hint(
-                false,
-                session_broken,
-                session_broken_reason.as_deref(),
-                &runtime_status,
-                binding.tui_session_adoption_pending,
-                binding.tui_active_codex_thread_id.as_deref(),
-            );
-            aggregate.items.push(ManagedWorkspaceView {
-                workspace_cwd: workspace_cwd.clone(),
-                title: record.metadata.title.clone(),
-                thread_key: Some(record.metadata.thread_key.clone()),
-                workspace_execution_mode,
-                current_execution_mode: binding.current_execution_mode,
-                current_approval_policy: binding.current_approval_policy.clone(),
-                current_sandbox_policy: binding.current_sandbox_policy.clone(),
-                mode_drift: workspace_mode_drift(workspace_execution_mode, &binding),
-                binding_status: resolved_state.binding_status.as_str(),
-                run_status: resolved_state.run_status.as_str(),
-                current_codex_thread_id: binding.current_codex_thread_id.clone(),
-                tui_active_codex_thread_id: binding.tui_active_codex_thread_id.clone(),
-                tui_session_adoption_pending: binding.tui_session_adoption_pending,
-                session_broken,
-                last_used_at: record.metadata.last_codex_turn_at.clone(),
-                conflict: false,
-                app_server_status: runtime_status.app_server_status,
-                tui_proxy_status: runtime_status.tui_proxy_status,
-                handoff_readiness: runtime_status.handoff_readiness,
-                runtime_health_source: runtime_status.source,
-                heartbeat_last_checked_at: runtime_status.last_checked_at,
-                heartbeat_last_error: runtime_status.last_error,
-                session_broken_reason,
-                recovery_hint,
-                hcodex_path: hcodex_path.display().to_string(),
-                hcodex_available: hcodex_path.exists(),
-                recent_codex_sessions: recent_sessions,
-            });
-        }
-
-        let mut views = Vec::new();
-        for aggregate in grouped.into_values() {
-            let conflict = aggregate.items.len() > 1;
-            if conflict {
-                for mut item in aggregate.items {
-                    item.conflict = true;
-                    item.recovery_hint = workspace_recovery_hint(
-                        true,
-                        item.session_broken,
-                        item.session_broken_reason.as_deref(),
-                        &WorkspaceRuntimeHealth {
-                            app_server_status: item.app_server_status,
-                            tui_proxy_status: item.tui_proxy_status,
-                            handoff_readiness: item.handoff_readiness,
-                            source: item.runtime_health_source,
-                            last_checked_at: item.heartbeat_last_checked_at.clone(),
-                            last_error: item.heartbeat_last_error.clone(),
-                        },
-                        item.tui_session_adoption_pending,
-                        item.tui_active_codex_thread_id.as_deref(),
-                    );
-                    views.push(item);
-                }
-                continue;
-            }
-            let item = aggregate
-                .items
-                .into_iter()
-                .next()
-                .expect("workspace group is non-empty");
-            views.push(item);
-        }
-        views.sort_by(|a, b| a.workspace_cwd.cmp(&b.workspace_cwd));
-        Ok(views)
+        build_workspace_views(&self.repository, runtime_owner.as_ref()).await
     }
 
     async fn thread_views(&self) -> Result<Vec<ThreadStateView>> {
-        let active_threads = self.repository.list_active_threads().await?;
-        let mut views = Vec::new();
-        for record in active_threads {
-            let binding = self.repository.read_session_binding(&record).await?;
-            let workspace_cwd = binding
-                .as_ref()
-                .and_then(|binding| binding.workspace_cwd.clone());
-            let workspace_execution_mode = match workspace_cwd.as_deref() {
-                Some(workspace_cwd) => Some(
-                    workspace_execution_mode(Path::new(workspace_cwd))
-                        .await
-                        .unwrap_or_default(),
-                ),
-                None => None,
-            };
-            let resolved_state = resolve_thread_state(&record.metadata, binding.as_ref()).await?;
-            views.push(ThreadStateView {
-                thread_key: record.metadata.thread_key,
-                title: record.metadata.title,
-                workspace_cwd,
-                workspace_execution_mode,
-                current_execution_mode: binding
-                    .as_ref()
-                    .and_then(|binding| binding.current_execution_mode),
-                current_approval_policy: binding
-                    .as_ref()
-                    .and_then(|binding| binding.current_approval_policy.clone()),
-                current_sandbox_policy: binding
-                    .as_ref()
-                    .and_then(|binding| binding.current_sandbox_policy.clone()),
-                lifecycle_status: resolved_state.lifecycle_status.as_str(),
-                binding_status: resolved_state.binding_status.as_str(),
-                run_status: resolved_state.run_status.as_str(),
-                current_codex_thread_id: binding
-                    .as_ref()
-                    .and_then(|binding| binding.current_codex_thread_id.clone()),
-                tui_active_codex_thread_id: binding
-                    .as_ref()
-                    .and_then(|binding| binding.tui_active_codex_thread_id.clone()),
-                tui_session_adoption_pending: binding
-                    .as_ref()
-                    .is_some_and(|binding| binding.tui_session_adoption_pending),
-                archived_at: record.metadata.archived_at,
-                last_used_at: record.metadata.last_codex_turn_at,
-                last_error: binding
-                    .as_ref()
-                    .and_then(|binding| binding.session_broken_reason.clone())
-                    .or(record.metadata.session_broken_reason),
-            });
-        }
-        views.sort_by(|a, b| a.thread_key.cmp(&b.thread_key));
-        Ok(views)
+        build_thread_views(&self.repository).await
     }
 
     async fn thread_transcript(
@@ -1383,19 +1064,7 @@ impl ManagementApiState {
     }
 
     async fn archived_thread_views(&self) -> Result<Vec<ArchivedThreadView>> {
-        let archived = self.repository.list_all_archived_threads().await?;
-        let mut views = Vec::new();
-        for record in archived {
-            let binding = self.repository.read_session_binding(&record).await?;
-            views.push(ArchivedThreadView {
-                thread_key: record.metadata.thread_key,
-                title: record.metadata.title,
-                workspace_cwd: binding.and_then(|binding| binding.workspace_cwd),
-                archived_at: record.metadata.archived_at,
-                previous_message_thread_ids: record.metadata.previous_message_thread_ids,
-            });
-        }
-        Ok(views)
+        build_archived_thread_views(&self.repository).await
     }
 
     async fn add_workspace(&self, workspace_cwd: &str) -> Result<AddWorkspaceResult> {
@@ -1866,14 +1535,6 @@ fn hcodex_launch_command(
     }
 }
 
-fn workspace_mode_drift(
-    workspace_execution_mode: ExecutionMode,
-    binding: &crate::repository::SessionBinding,
-) -> bool {
-    binding.current_codex_thread_id.is_some()
-        && binding.current_execution_mode != Some(workspace_execution_mode)
-}
-
 async fn launch_hcodex_via_terminal(command: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -1966,207 +1627,6 @@ async fn open_workspace_path(path: &Path) -> Result<()> {
 
 fn apple_script_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-#[derive(Debug, Clone)]
-struct WorkspaceRuntimeHealth {
-    app_server_status: &'static str,
-    tui_proxy_status: &'static str,
-    handoff_readiness: &'static str,
-    source: &'static str,
-    last_checked_at: Option<String>,
-    last_error: Option<String>,
-}
-
-async fn read_workspace_runtime_health(
-    workspace_path: &Path,
-    runtime_owner: Option<&DesktopRuntimeOwner>,
-) -> WorkspaceRuntimeHealth {
-    match runtime_owner {
-        Some(owner) => {
-            if let Some(heartbeat) = owner.workspace_heartbeat(workspace_path).await {
-                return WorkspaceRuntimeHealth::from_heartbeat(heartbeat);
-            }
-            WorkspaceRuntimeHealth {
-                app_server_status: "missing",
-                tui_proxy_status: "missing",
-                handoff_readiness: "unavailable",
-                source: "owner_pending",
-                last_checked_at: None,
-                last_error: Some(format!(
-                    "desktop runtime owner has not published a heartbeat for {} yet",
-                    workspace_path.display()
-                )),
-            }
-        }
-        None => WorkspaceRuntimeHealth {
-            app_server_status: "missing",
-            tui_proxy_status: "missing",
-            handoff_readiness: "unavailable",
-            source: "owner_required",
-            last_checked_at: None,
-            last_error: Some(
-                "desktop runtime owner is required for managed workspace runtime".to_owned(),
-            ),
-        },
-    }
-}
-
-impl WorkspaceRuntimeHealth {
-    fn from_heartbeat(heartbeat: WorkspaceRuntimeHeartbeat) -> Self {
-        Self {
-            app_server_status: heartbeat.app_server_status,
-            tui_proxy_status: heartbeat.tui_proxy_status,
-            handoff_readiness: heartbeat.handoff_readiness,
-            source: "owner_heartbeat",
-            last_checked_at: Some(heartbeat.last_checked_at),
-            last_error: heartbeat.last_error,
-        }
-    }
-}
-
-fn workspace_recovery_hint(
-    conflict: bool,
-    session_broken: bool,
-    session_broken_reason: Option<&str>,
-    runtime_status: &WorkspaceRuntimeHealth,
-    adoption_pending: bool,
-    tui_active_codex_thread_id: Option<&str>,
-) -> Option<String> {
-    if conflict {
-        return Some(
-            "Resolve the active workspace binding conflict first. Tray launch stays disabled until only one active binding remains."
-                .to_owned(),
-        );
-    }
-    if matches!(runtime_status.source, "owner_required" | "owner_pending") {
-        return Some(
-            "Desktop runtime owner is required for this workspace. Start threadbridge_desktop and run Repair Runtime or Reconcile Runtime Owner."
-                .to_owned(),
-        );
-    }
-    if runtime_status.app_server_status != "running" {
-        return Some(
-            "App-server is not ready. Run Repair Runtime for this workspace, or Reconcile Runtime Owner for all managed workspaces."
-                .to_owned(),
-        );
-    }
-    if runtime_status.tui_proxy_status != "running" {
-        return Some(
-            "TUI proxy is not ready. Run Repair Runtime for this workspace, or Reconcile Runtime Owner to rebuild proxy state."
-                .to_owned(),
-        );
-    }
-    if adoption_pending || runtime_status.handoff_readiness == "pending_adoption" {
-        return Some(
-            "A live TUI session is waiting for adoption. Adopt TUI from Active Threads, or reject it to keep the original binding."
-                .to_owned(),
-        );
-    }
-    let has_live_tui_session = tui_active_codex_thread_id
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty());
-    if session_broken && has_live_tui_session {
-        return Some(
-            "The saved Codex session is no longer the best recovery target, but this workspace has a live TUI session. Use Adopt TUI to promote that live session, or New Session to start fresh."
-                .to_owned(),
-        );
-    }
-    let unloaded_thread = session_broken_reason
-        .map(str::to_ascii_lowercase)
-        .is_some_and(|reason| {
-            reason.contains("thread/read failed") && reason.contains("thread not loaded")
-        });
-    if unloaded_thread {
-        return Some(
-            "The saved Codex session is no longer loaded by app-server. Use New Session to start a fresh session, or Adopt TUI if this workspace already has a live TUI session."
-                .to_owned(),
-        );
-    }
-    if session_broken {
-        return Some(
-            "Codex continuity is marked broken. Use Repair Session after the runtime surface is healthy."
-                .to_owned(),
-        );
-    }
-    if runtime_status.handoff_readiness == "degraded" {
-        return Some(
-            "Handoff is degraded. Reconcile Runtime Owner or Repair Runtime to restore app-server and proxy continuity."
-                .to_owned(),
-        );
-    }
-    runtime_status
-        .last_error
-        .as_ref()
-        .map(|error| format!("Inspect the latest runtime error before retrying: {error}"))
-}
-
-fn runtime_recovery_hint<'a>(
-    runtime_owner: &RuntimeOwnerStatus,
-    workspace_hints: impl Iterator<Item = Option<&'a str>>,
-    has_conflicts: bool,
-) -> Option<String> {
-    if has_conflicts {
-        return Some(
-            "At least one workspace has multiple active bindings. Resolve conflicts in Managed Workspaces before trusting tray launch actions."
-                .to_owned(),
-        );
-    }
-    if runtime_owner.state == "error" {
-        let suffix = runtime_owner
-            .last_error
-            .as_deref()
-            .map(|error| format!(" Last owner error: {error}"))
-            .unwrap_or_default();
-        return Some(format!(
-            "Desktop runtime owner is unhealthy. Run Reconcile Runtime Owner from this page.{suffix}"
-        ));
-    }
-    workspace_hints.flatten().next().map(|hint| hint.to_owned())
-}
-
-fn aggregate_running_status<'a>(statuses: impl Iterator<Item = &'a str>) -> &'static str {
-    let mut saw_any = false;
-    let mut has_non_running = false;
-    for status in statuses {
-        saw_any = true;
-        match status {
-            "running" => {}
-            _ => has_non_running = true,
-        }
-    }
-    if !saw_any {
-        return "missing";
-    }
-    if has_non_running {
-        return "unavailable";
-    }
-    "running"
-}
-
-fn aggregate_handoff_status<'a>(statuses: impl Iterator<Item = &'a str>) -> &'static str {
-    let mut saw_any = false;
-    let mut has_unavailable = false;
-    let mut has_degraded = false;
-    for status in statuses {
-        saw_any = true;
-        match status {
-            "ready" => {}
-            "pending_adoption" => has_degraded = true,
-            "degraded" => has_degraded = true,
-            _ => has_unavailable = true,
-        }
-    }
-    if !saw_any {
-        return "missing";
-    }
-    if has_unavailable {
-        return "unavailable";
-    }
-    if has_degraded {
-        return "degraded";
-    }
-    "ready"
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2476,50 +1936,5 @@ impl IntoResponse for ManagementApiError {
             "error": self.error.to_string(),
         });
         (self.status, Json(message)).into_response()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{ThreadStateView, aggregate_handoff_status};
-    use crate::execution_mode::ExecutionMode;
-
-    #[test]
-    fn aggregate_handoff_status_treats_pending_adoption_as_degraded() {
-        assert_eq!(
-            aggregate_handoff_status(["ready", "pending_adoption"].into_iter()),
-            "degraded"
-        );
-        assert_eq!(
-            aggregate_handoff_status(["pending_adoption"].into_iter()),
-            "degraded"
-        );
-    }
-
-    #[test]
-    fn thread_state_view_serializes_lifecycle_status() {
-        let view = ThreadStateView {
-            thread_key: "thread-1".to_owned(),
-            title: Some("Workspace".to_owned()),
-            workspace_cwd: Some("/tmp/workspace".to_owned()),
-            workspace_execution_mode: Some(ExecutionMode::FullAuto),
-            current_execution_mode: Some(ExecutionMode::FullAuto),
-            current_approval_policy: Some("on-request".to_owned()),
-            current_sandbox_policy: Some("workspace-write".to_owned()),
-            lifecycle_status: "active",
-            binding_status: "healthy",
-            run_status: "idle",
-            current_codex_thread_id: Some("thr_current".to_owned()),
-            tui_active_codex_thread_id: None,
-            tui_session_adoption_pending: false,
-            archived_at: None,
-            last_used_at: None,
-            last_error: None,
-        };
-
-        let value = serde_json::to_value(view).unwrap();
-        assert_eq!(value["lifecycle_status"], "active");
-        assert_eq!(value["binding_status"], "healthy");
-        assert_eq!(value["run_status"], "idle");
     }
 }

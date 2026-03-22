@@ -23,11 +23,13 @@
 - `threadbridge_desktop` 已開始直接依賴這些本地 view / action
 - transport-neutral 的正式 view / action 命名仍未完全收斂
 - local HTTP + SSE 已成為目前最務實的實驗載體
+- 已新增共享的 `runtime_protocol` view builder，開始把 `ThreadStateView` / `ManagedWorkspaceView` / `ArchivedThreadView` / `RuntimeHealthView` 從 `management_api` 的 transport 邏輯裡拆出來
 - runtime health 已開始改成 owner-canonical；`workspace_state` 不再是 primary readiness source
 - process transcript 已開始透過 `GET /api/threads/:thread_key/transcript` 對外暴露，且本地 web / Telegram preview 已開始共用同一份摘要來源
 - `ThreadStateView` 已開始對外暴露 canonical `lifecycle_status`
 - `binding_status` / `run_status` 已開始透過 shared resolver 收斂成同一套 wire semantics
 - `conflict` 已明確保留為 workspace-view 的獨立欄位，而不是 `binding_status` 的另一個值
+- 但 `GET /api/events` 目前仍只是 invalidation-style SSE；web UI 仍主要把它當成 refresh signal，而不是正式 typed event stream
 
 ## 問題
 

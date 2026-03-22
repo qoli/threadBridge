@@ -12,6 +12,7 @@ pub mod management_api;
 pub mod process_transcript;
 pub mod repository;
 pub mod runtime_owner;
+pub mod runtime_protocol;
 pub mod telegram_probe;
 pub mod telegram_runtime;
 pub mod thread_state;

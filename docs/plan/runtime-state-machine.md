@@ -11,13 +11,14 @@
 - shared thread-state resolver 已開始成為 `lifecycle_status` / `binding_status` / `run_status` 的共同判定來源
 - ordinary Telegram command / text / image gate 已開始改走 shared resolver，而不是各自直接讀 `Archived` / `session_broken`
 - management API 的 `ThreadStateView` 已開始直接暴露 canonical `lifecycle_status` / `binding_status` / `run_status`
+- management API 的 `ThreadStateView` / `ManagedWorkspaceView` / `ArchivedThreadView` / `RuntimeHealthView` 已開始透過共享的 protocol/view builder 收斂，而不是各自在 handler 內重組狀態
 - topic title 的 `busy` / `broken` suffix 已開始從 canonical state axes 派生
 - `binding_status=conflict`、`run_status=unbound` 這類過渡值已從 canonical state axes 中移除
 
 目前尚未完成的部分：
 
-- 把這份文檔變成唯一 source of truth
-- 讓其他 plan 和實際代碼全面引用同一套 canonical state axes
+- 讓更多 surface 在呈現 thread / workspace state 時完全只引用同一套 canonical axes
+- 把 `/api/events` 與 observability 層也收斂到同一套正式 protocol，而不是保留目前的 invalidation-style SSE
 
 ## 問題
 
