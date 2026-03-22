@@ -1,132 +1,250 @@
 # threadBridge
 
-Telegram bot that maps Telegram threads to Codex app-server threads bound to real local workspaces.
+`threadBridge` is a workspace-first Codex runtime with Telegram and a local desktop management surface.
 
-## What It Does
+Today, the supported product shape is:
 
-- Uses Telegram as the UI layer for thread-based interaction.
-- Stores bot-local thread metadata under `data/`.
-- Uses `/add_workspace <absolute-path>` from the control chat as the workspace-first thread creation flow.
-- Starts workspace-scoped shared Codex app-server daemons on loopback websocket and connects the bot over JSON-RPC.
-- Installs a managed runtime appendix and `.threadbridge/` wrapper surface into the bound workspace.
-- Exposes a managed `hcodex` launcher for the bound workspace through `codex --remote <ws-url>`.
-- Starts a local management API for setup, runtime health, active thread views, and workspace views on loopback HTTP.
-- Uses a macOS desktop runtime entrypoint with a tray menu that opens the local management UI in the system default browser and can add a workspace from a native folder picker.
+- a macOS desktop runtime owner started via `threadbridge_desktop`
+- a local management API and browser UI
+- a Telegram bot adapter for workspace threads
+- real bound workspaces with a managed `.threadbridge/` runtime surface
+- shared workspace `codex app-server` daemons plus a managed local `hcodex` entrypoint
+
+## Current Status
+
+The current codebase has already landed these major pieces:
+
+- desktop-first runtime ownership and reconcile flow
+- workspace-first binding model: one managed workspace thread per workspace
+- shared workspace app-server daemon plus local TUI proxy
+- Telegram text and image turns bound to the saved Codex session
+- local/browser management UI for setup, launch, reconnect, archive/restore, runtime repair, and transcript inspection
+- workspace-scoped execution modes: `full_auto` and `yolo`
+
+Still in progress at the plan level:
+
+- deeper runtime/adapter abstraction beyond Telegram
+- richer delivery queue and status-control semantics
+- Telegram Web App style observability beyond the current local management UI
+
+If docs and implementation differ, treat the code as authoritative. Plan maturity is tracked in [docs/plan/README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md).
+
+## Runtime Model
+
+The current runtime is organized like this:
+
+1. `threadbridge_desktop` is the formal runtime owner.
+2. The desktop process hosts the local management API, tray menu, and runtime-owner reconcile loop.
+3. Telegram is an adapter on top of that runtime, not the owner.
+4. Each managed workspace is a real local directory, not a mirrored copy under `data/`.
+5. Each workspace gets a managed `.threadbridge/` surface plus an appended runtime block in `AGENTS.md`.
+6. Codex continuity is stored in bot-local metadata under `data/<thread-key>/session-binding.json`.
+
+The supported startup path is desktop-first. Headless startup is no longer the intended operating model.
+
+## Workspace Execution Modes
+
+Execution mode is now a workspace-scoped runtime setting.
+
+- Default mode: `full_auto`
+- Optional mode: `yolo`
+- Workspace config path: `./.threadbridge/state/workspace-config.json`
+
+Current mode semantics are aligned to Codex:
+
+- `full_auto` => `approvalPolicy=on-request` + `sandbox=workspace-write`
+- `yolo` => `approvalPolicy=never` + `sandbox=danger-full-access`
+
+This setting is sticky per workspace:
+
+- fresh sessions start with the workspace mode
+- `hcodex` new-session and resume commands use the workspace mode
+- Telegram turns re-assert the workspace mode on resume
+- if the workspace mode changes, the next turn or resume converges the current session to that mode
 
 ## Requirements
 
+- macOS for the supported desktop runtime path
 - Rust toolchain
 - Python 3
 - `codex` CLI installed and authenticated on the machine
-- A Telegram bot token from BotFather
-- Telegram topics enabled if you want private-thread workflows
+- a Telegram bot token from BotFather
+- Telegram topics enabled if you want workspace-thread workflows in private chat
 
 ## Setup
 
 1. Copy `.env.example` to `.env.local`.
-2. Fill in your own Telegram token, authorized user IDs, and image-provider settings.
-3. Start the macOS desktop runtime:
+2. Fill in at least:
+   - `TELEGRAM_BOT_TOKEN`
+   - `AUTHORIZED_TELEGRAM_USER_IDS`
+3. Start the desktop runtime:
 
 ```bash
 export CARGO_HOME="$PWD/.cargo" CARGO_TARGET_DIR="$PWD/target"
 cargo run --bin threadbridge_desktop
 ```
 
-Or use the local helper script:
+The desktop runtime can also start without Telegram credentials. In that state, the tray and local management UI still work, and you can finish setup before polling is active.
+
+Default local management address:
+
+```text
+http://127.0.0.1:38420
+```
+
+Override it with `THREADBRIDGE_MANAGEMENT_BIND_ADDR`.
+
+## Local Helper Script
+
+For local development on macOS, you can use:
 
 ```bash
 scripts/local_threadbridge.sh build
-scripts/local_threadbridge.sh build --codex-source source
 scripts/local_threadbridge.sh start
-scripts/local_threadbridge.sh restart --codex-source brew
-scripts/local_threadbridge.sh restart --codex-source source
+scripts/local_threadbridge.sh restart
+scripts/local_threadbridge.sh status
+scripts/local_threadbridge.sh logs
 ```
 
-`--codex-source brew|source` controls which local `codex` binary `hcodex` should prefer. The choice is persisted in `.threadbridge/codex/source.txt` and is picked up the next time a workspace runtime is bootstrapped.
+The helper also manages which Codex binary the managed `hcodex` path should prefer:
 
-- `brew`: prefer the system `codex` on `PATH`, with the managed copy as fallback.
-- `source`: build `codex-cli` from the local Codex source tree and cache it under `.threadbridge/codex/codex`, then prefer that managed copy.
-- `scripts/local_threadbridge.sh` now manages the desktop runtime only.
+```bash
+scripts/local_threadbridge.sh build --codex-source brew
+scripts/local_threadbridge.sh build --codex-source source
+```
 
-## Behavior
+- `brew`: prefer the system `codex` on `PATH`
+- `source`: build `codex-cli` from a local Codex Rust workspace and cache it under `.threadbridge/codex/codex`
 
-- `threadBridge` now starts through the desktop runtime only; supported local startup is macOS-only.
-- Main private chat acts as the control console.
-- `threadbridge_desktop` also starts without Telegram credentials; it keeps the tray and local management UI available so Telegram setup and workspace management can still happen before polling is active.
-- In the desktop runtime, saving Telegram setup through the local management UI will trigger a background retry to start polling; a full process restart is no longer the only path.
-- Only Telegram user IDs listed in `AUTHORIZED_TELEGRAM_USER_IDS` can trigger the bot.
-- `/add_workspace <absolute-path>` creates a Telegram topic, installs the runtime appendix into the target workspace, and starts a fresh Codex session for it.
-- Normal workspace-thread messages resume the saved `current_codex_thread_id` instead of creating a new one.
-- `/new_session` starts a fresh Codex session for the already bound workspace.
-- `/repair_session` verifies that the saved Codex session still matches the stored workspace path.
-- Topic titles currently reflect `busy` and `broken` state.
-- `hcodex` is the managed local TUI path. It resolves the workspace daemon from `.threadbridge/state/app-server/current.json` and launches `codex --remote ...`.
-- `hcodex` no longer self-heals the shared runtime; if the workspace runtime is unavailable, start `threadbridge_desktop` and repair the workspace runtime from the management UI first.
-- The local management API defaults to `http://127.0.0.1:38420` and can be changed with `THREADBRIDGE_MANAGEMENT_BIND_ADDR`.
-- On macOS, the tray menu lists one submenu per managed workspace with `New Session` and `Continue Telegram Session`.
-- On macOS, tray `Add Workspace` opens a native folder picker, treats `workspace = thread`, creates and binds immediately when the workspace is new, and shows a desktop notification instead of auto-opening the browser.
-- The browser-based management UI now follows the same `workspace = thread` model. Its main surface is `Workspaces` and `Archived Workspaces`; first-run onboarding is intentionally not exposed until a usable flow exists.
-- The local management UI can open a managed workspace in Finder, repair a workspace runtime, refresh the managed Codex cache from the current `codex` on `PATH`, and build a managed source Codex binary from the local Codex Rust workspace.
-- The local management UI can also trigger a global desktop runtime owner reconcile across all non-conflicted managed workspaces.
-- In the local management UI, conflicted workspaces are shown but launch/resume controls stay disabled until the binding conflict is resolved, and archive/restore now require explicit confirmation.
-- The managed Codex source-build flow now exposes default source repo / Rust workspace / build profile values in the management API and lets the local UI override them per build.
-- Those managed Codex build defaults are now persisted under `.threadbridge/codex/build-config.json`, so the desktop runtime keeps using the same local source-build settings across restarts.
-- The desktop runtime owner now proactively ensures both the shared app-server daemon and the workspace TUI proxy for managed workspaces.
-- The management surface now shows TUI adoption-pending state per thread and workspace, so local handoff is visible without reading raw state files.
-- Workspace and aggregate runtime health now treat desktop owner heartbeat as the primary authority and surface handoff state as `pending_adoption`/degraded readiness instead of reporting a fully ready handoff while TUI adoption is still unresolved.
-- Aggregate runtime health now also exposes desktop runtime owner state, last successful reconcile timestamp, last error, and the last reconcile report through the local management API.
-- In the desktop runtime, saving Telegram setup no longer always implies a restart; the local UI now reports restart-required only when no active runtime owner can auto-retry polling.
-- The local management UI can now explicitly adopt or reject a pending TUI session handoff instead of waiting for Telegram callback controls or implicit auto-adopt.
-- Transcript mirror now distinguishes final transcript entries from process transcript entries, including plan/tool events from the shared runtime.
-- The local management UI now exposes a transcript pane per active workspace through `GET /api/threads/:thread_key/transcript`, and both Telegram-initiated turns and local/TUI mirror updates now feed Telegram rolling preview through the same normalized process transcript summaries instead of separate heuristics.
-- Telegram text delivery now uses a unified two-line role layout: `👤` for user text, `🤖` for assistant text, `❗️` for system/status text, and `●/○` for in-progress drafts. Drafts now go through the same HTML renderer path as final replies, with plain-text fallback if `sendMessageDraft` HTML delivery fails.
-- The local server now serves the management UI from a checked-in static asset instead of embedding the entire page as an inline Rust string.
+That preference is persisted in `.threadbridge/codex/source.txt`.
 
-## Runtime Layout
+## First Run Flow
 
-- `data/main-thread/` stores the control-console state.
-- `data/<thread-key>/` stores bot-local metadata, transcripts, session binding, and image-state artifacts.
-- The real workspace is not mirrored or symlinked under `data/`.
-- threadBridge installs the following runtime surface into a bound workspace:
-  - `AGENTS.md` managed block markers
-  - `.threadbridge/bin/build_prompt_config`
-  - `.threadbridge/bin/generate_image`
-  - `.threadbridge/bin/hcodex`
-  - `.threadbridge/bin/send_telegram_media`
-  - `.threadbridge/state/app-server/current.json`
-  - `.threadbridge/state/shared-runtime/current.json`
-  - `.threadbridge/state/shared-runtime/events.jsonl`
-  - `.threadbridge/tool_requests/`
-  - `.threadbridge/tool_results/`
+The intended user flow is:
 
-## Local TUI Path
+1. Start `threadbridge_desktop`.
+2. Open the local management UI or use the tray.
+3. Send `/start` to the bot in your private Telegram chat so the control chat exists.
+4. Add a workspace:
+   - from Telegram: `/add_workspace <absolute-path>`
+   - or from the local management UI / tray folder picker
+5. threadBridge binds that real workspace, installs `.threadbridge/`, and starts a fresh Codex session.
+6. Continue using either:
+   - the Telegram workspace thread
+   - or local `./.threadbridge/bin/hcodex`
 
-- After `/add_workspace`, run `./.threadbridge/bin/hcodex` inside that workspace.
-- With no extra args, `hcodex` starts a fresh local TUI session through the shared workspace daemon.
-- Use `hcodex resume <session-id>` when you explicitly want to continue an existing Codex session.
-- Raw `codex` launches that bypass `hcodex` are not part of the managed local path.
+## Telegram Commands
 
-## Commands
+The current workspace-thread flow uses these commands:
 
 - `/start`
-- `/add_workspace`
+- `/add_workspace <absolute-path>`
 - `/new_session`
+- `/repair_session`
 - `/workspace_info`
 - `/archive_workspace`
 - `/restore_workspace`
 - `/rename_workspace`
-- `/repair_session`
+
+Operationally:
+
+- the main private chat is the control console
+- each managed workspace gets its own Telegram topic/thread
+- normal messages in that workspace thread continue the saved Codex session
+
+## Local `hcodex`
+
+After a workspace is bound, use the managed local TUI path:
+
+```bash
+./.threadbridge/bin/hcodex
+```
+
+Resume a specific session with:
+
+```bash
+./.threadbridge/bin/hcodex resume <session-id>
+```
+
+Important current behavior:
+
+- `hcodex` depends on the desktop runtime owner
+- `hcodex` no longer self-heals missing workspace runtime state
+- `hcodex` launch and resume commands follow the workspace execution mode
+- raw `codex` launches that bypass `hcodex` are outside the managed path
+
+## Runtime Layout
+
+Bot-local state lives under `data/`:
+
+- `data/main-thread/` for the control console
+- `data/<thread-key>/` for metadata, transcripts, session binding, and image-state artifacts
+
+Workspace-local managed runtime surface:
+
+- `AGENTS.md` managed appendix block
+- `.threadbridge/bin/build_prompt_config`
+- `.threadbridge/bin/generate_image`
+- `.threadbridge/bin/hcodex`
+- `.threadbridge/bin/send_telegram_media`
+- `.threadbridge/state/workspace-config.json`
+- `.threadbridge/state/app-server/current.json`
+- `.threadbridge/state/shared-runtime/current.json`
+- `.threadbridge/state/shared-runtime/events.jsonl`
+- `.threadbridge/tool_requests/`
+- `.threadbridge/tool_results/`
+
+The real workspace is authoritative for project files. `data/` is threadBridge runtime state, not a projected copy of the repo.
+
+## Management Surface
+
+The local management API and browser UI currently provide:
+
+- Telegram setup and polling state
+- managed workspace list and archive list
+- runtime-owner health and reconcile controls
+- workspace launch controls for new, continue-current, and resume
+- runtime repair
+- Codex cache refresh and source-build controls
+- transcript inspection
+- workspace execution mode changes
+
+On macOS, the tray menu also exposes:
+
+- one submenu per managed workspace
+- `New Session`
+- `Continue Telegram Session`
+- `Add Workspace`
+- `Settings`
 
 ## Development
+
+Use the repo-local Cargo paths:
 
 ```bash
 export CARGO_HOME="$PWD/.cargo" CARGO_TARGET_DIR="$PWD/target"
 cargo check
 cargo test
+cargo fmt
+cargo clippy --all-targets --all-features
 ```
+
+Supported desktop runtime entrypoint:
+
+```bash
+cargo run --bin threadbridge_desktop
+```
+
+## Plans And Docs
+
+- plan index: [docs/plan/README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md)
+- maintainer guide: [AGENTS.md](/Volumes/Data/Github/threadBridge/AGENTS.md)
+- workspace runtime appendix source: [templates/AGENTS.md](/Volumes/Data/Github/threadBridge/templates/AGENTS.md)
+
+The plan directory contains a mix of landed work, partial work, and pure drafts. Do not assume every plan describes current behavior.
 
 ## Security
 
 - Keep secrets in `.env.local`.
-- Do not commit `data/`, logs, generated images, or provider payloads.
-- Use separate Telegram bot tokens for separate polling runtimes.
+- Do not commit `data/`, logs, generated images, or provider payloads unless they are intentional fixtures.
+- Bot-local state and workspace-local runtime artifacts may contain prompts, transcripts, image references, and provider metadata.
