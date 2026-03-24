@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex as StdMutex};
 use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+use teloxide::Bot;
 use teloxide::payloads::SendMessageSetters;
 use teloxide::requests::Requester;
 use teloxide::types::{MessageId, ThreadId};
-use teloxide::Bot;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::AbortHandle;
@@ -555,8 +555,7 @@ fn maybe_track_turn_mode_request(
     let mode = payload
         .get("params")
         .and_then(|params| params.get("collaborationMode"))
-        .and_then(Value::as_str)
-        .and_then(CollaborationMode::from_wire)
+        .and_then(CollaborationMode::from_wire_value)
         .unwrap_or(CollaborationMode::Default);
     tracked_turn_mode_by_request_id.insert(request_id, mode);
     Ok(())
@@ -597,13 +596,7 @@ async fn maybe_track_server_message(
     latest_completed_plan_text: &mut Option<String>,
     telegram_bridge: &Arc<Mutex<Option<TelegramInteractiveBridge>>>,
 ) -> Result<()> {
-    maybe_bridge_request_user_input(
-        repository,
-        thread_key,
-        message,
-        telegram_bridge,
-    )
-    .await?;
+    maybe_bridge_request_user_input(repository, thread_key, message, telegram_bridge).await?;
     maybe_bridge_resolved_request(message, telegram_bridge).await?;
 
     if let Some(session_id) = maybe_track_server_response(
@@ -722,12 +715,8 @@ async fn maybe_track_server_message(
                 if local_turn_modes.remove(&completed_turn_id) == Some(CollaborationMode::Plan)
                     && latest_completed_plan_text.is_some()
                 {
-                    maybe_send_plan_prompt_from_bridge(
-                        repository,
-                        thread_key,
-                        telegram_bridge,
-                    )
-                    .await?;
+                    maybe_send_plan_prompt_from_bridge(repository, thread_key, telegram_bridge)
+                        .await?;
                 }
             }
             latest_assistant_message.clear();
@@ -780,12 +769,12 @@ async fn maybe_bridge_request_user_input(
         .bot
         .send_message(teloxide::types::ChatId(record.metadata.chat_id), text)
         .message_thread_id(ThreadId(MessageId(telegram_thread_id)));
-    let sent = if let Some(markup) = request_user_input_markup(snapshot.request_id, &snapshot.question)
-    {
-        request.reply_markup(markup).await?
-    } else {
-        request.await?
-    };
+    let sent =
+        if let Some(markup) = request_user_input_markup(snapshot.request_id, &snapshot.question) {
+            request.reply_markup(markup).await?
+        } else {
+            request.await?
+        };
     bridge
         .registry
         .set_prompt_message_id(record.metadata.chat_id, telegram_thread_id, sent.id.0)
@@ -1005,10 +994,9 @@ fn maybe_extract_request_user_input(
     let Some(request_id) = payload.get("id").and_then(Value::as_i64) else {
         return Ok(None);
     };
-    let params: ToolRequestUserInputParams = serde_json::from_value(
-        payload.get("params").cloned().unwrap_or(Value::Null),
-    )
-    .context("invalid item/tool/requestUserInput params")?;
+    let params: ToolRequestUserInputParams =
+        serde_json::from_value(payload.get("params").cloned().unwrap_or(Value::Null))
+            .context("invalid item/tool/requestUserInput params")?;
     Ok(Some((request_id, params)))
 }
 

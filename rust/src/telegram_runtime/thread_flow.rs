@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use teloxide::payloads::setters::*;
-use tokio::sync::oneshot;
 use tokio::sync::Mutex;
+use tokio::sync::oneshot;
 use tracing::{error, info};
 
+use crate::codex::{COLLABORATION_MODE_UNAVAILABLE_PREFIX, CodexServerRequest};
 use crate::collaboration_mode::CollaborationMode;
-use crate::codex::CodexServerRequest;
 use crate::execution_mode::workspace_execution_mode;
 use crate::local_control::LocalControlHandle;
 use crate::process_transcript::process_entry_from_codex_event;
@@ -19,6 +19,12 @@ use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
 use super::restore;
 use super::status_sync;
 use super::*;
+
+fn is_nonfatal_collaboration_mode_error(error: &anyhow::Error) -> bool {
+    error
+        .to_string()
+        .starts_with(COLLABORATION_MODE_UNAVAILABLE_PREFIX)
+}
 
 async fn start_fresh_binding(
     state: &AppState,
@@ -937,7 +943,8 @@ async fn execute_text_turn(
                                 &snapshot,
                             )
                             .await?;
-                            let response = rx.await.context("request_user_input response dropped")?;
+                            let response =
+                                rx.await.context("request_user_input response dropped")?;
                             Ok(Some(response))
                         }
                     }
@@ -1018,6 +1025,11 @@ async fn execute_text_turn(
                 error = %error,
                 "codex turn failed for thread message"
             );
+            if is_nonfatal_collaboration_mode_error(&error) {
+                send_scoped_warning_message(bot, chat_id, Some(thread_id), error.to_string())
+                    .await?;
+                return Ok(());
+            }
             let record = state
                 .repository
                 .mark_session_binding_broken(record, error.to_string())
@@ -1056,7 +1068,9 @@ pub(crate) async fn launch_plan_implementation_turn(
     state: &AppState,
     message: &Message,
 ) -> Result<()> {
-    let thread_id = message.thread_id.context("thread message missing thread id")?;
+    let thread_id = message
+        .thread_id
+        .context("thread message missing thread id")?;
     let record = state
         .repository
         .get_thread(message.chat.id.0, thread_id_to_i32(thread_id))
@@ -1083,7 +1097,12 @@ pub(crate) async fn launch_plan_implementation_turn(
         .await?;
     state
         .repository
-        .append_log(&record, LogDirection::User, PLAN_IMPLEMENTATION_MESSAGE, None)
+        .append_log(
+            &record,
+            LogDirection::User,
+            PLAN_IMPLEMENTATION_MESSAGE,
+            None,
+        )
         .await?;
     let _ = state
         .repository

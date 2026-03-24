@@ -9,8 +9,8 @@ use tokio::net::TcpStream;
 use tracing::{error, info, warn};
 
 use crate::app_server_runtime::WorkspaceRuntimeManager;
-use crate::collaboration_mode::CollaborationMode;
 pub(crate) use crate::codex::{CodexInputItem, CodexRunner, CodexThreadEvent, CodexWorkspace};
+use crate::collaboration_mode::CollaborationMode;
 pub(crate) use crate::config::AppConfig;
 pub(crate) use crate::image_artifacts::{
     ImageAnalysisArtifact, ImageAnalysisImage, build_image_analysis_prompt,
@@ -330,10 +330,7 @@ async fn run_callback_query(bot: &Bot, query: &CallbackQuery, state: &AppState) 
                     bot.edit_message_text(
                         message.chat.id,
                         message.id,
-                        format_system_text(
-                            TelegramSystemIntent::Info,
-                            "Staying in Plan mode.",
-                        ),
+                        format_system_text(TelegramSystemIntent::Info, "Staying in Plan mode."),
                     )
                     .await?;
                 }
@@ -627,7 +624,9 @@ pub(crate) const CALLBACK_PLAN_IMPLEMENT: &str = "plan_implement";
 pub(crate) const PLAN_IMPLEMENTATION_TEXT: &str = "Implement this plan?";
 pub(crate) const PLAN_IMPLEMENTATION_MESSAGE: &str = "Implement the plan.";
 
-pub(crate) fn collaboration_mode_for_session(session: Option<&SessionBinding>) -> CollaborationMode {
+pub(crate) fn collaboration_mode_for_session(
+    session: Option<&SessionBinding>,
+) -> CollaborationMode {
     session
         .and_then(|binding| binding.current_collaboration_mode)
         .unwrap_or(CollaborationMode::Default)
@@ -694,17 +693,13 @@ pub(crate) fn request_user_input_markup(
         .map(|(option_index, option)| {
             vec![teloxide::types::InlineKeyboardButton::callback(
                 option.label.clone(),
-                format!(
-                    "{CALLBACK_REQUEST_USER_INPUT_OPTION}:{request_id}:{option_index}"
-                ),
+                format!("{CALLBACK_REQUEST_USER_INPUT_OPTION}:{request_id}:{option_index}"),
             )]
         })
         .collect::<Vec<_>>();
     buttons.push(vec![teloxide::types::InlineKeyboardButton::callback(
         "Other",
-        format!(
-            "{CALLBACK_REQUEST_USER_INPUT_OPTION}:{request_id}:other"
-        ),
+        format!("{CALLBACK_REQUEST_USER_INPUT_OPTION}:{request_id}:other"),
     )]);
     Some(teloxide::types::InlineKeyboardMarkup::new(buttons))
 }
@@ -720,50 +715,42 @@ pub(crate) async fn apply_interactive_advance(
         InteractiveAdvance::Updated(snapshot) => {
             upsert_request_user_input_prompt(bot, state, chat_id, thread_id, &snapshot).await?;
         }
-        InteractiveAdvance::Completed(completed) => {
-            match completed {
-                CompletedInteractiveRequest::Direct {
-                    prompt_message_id,
-                    response,
-                    responder,
-                } => {
-                    let _ = responder.send(response);
-                    if let Some(message_id) = prompt_message_id {
-                        bot.edit_message_text(
-                            chat_id,
-                            teloxide::types::MessageId(message_id),
-                            format_system_text(
-                                TelegramSystemIntent::Info,
-                                "Questions completed.",
-                            ),
-                        )
-                        .await?;
-                    }
-                }
-                CompletedInteractiveRequest::Tui {
-                    thread_key,
-                    request_id,
-                    prompt_message_id,
-                    response,
-                } => {
-                    state
-                        .tui_proxy
-                        .submit_request_user_input_response(&thread_key, request_id, &response)
-                        .await?;
-                    if let Some(message_id) = prompt_message_id {
+        InteractiveAdvance::Completed(completed) => match completed {
+            CompletedInteractiveRequest::Direct {
+                prompt_message_id,
+                response,
+                responder,
+            } => {
+                let _ = responder.send(response);
+                if let Some(message_id) = prompt_message_id {
                     bot.edit_message_text(
                         chat_id,
                         teloxide::types::MessageId(message_id),
-                        format_system_text(
-                            TelegramSystemIntent::Info,
-                            "Questions completed.",
-                        ),
+                        format_system_text(TelegramSystemIntent::Info, "Questions completed."),
                     )
                     .await?;
                 }
+            }
+            CompletedInteractiveRequest::Tui {
+                thread_key,
+                request_id,
+                prompt_message_id,
+                response,
+            } => {
+                state
+                    .tui_proxy
+                    .submit_request_user_input_response(&thread_key, request_id, &response)
+                    .await?;
+                if let Some(message_id) = prompt_message_id {
+                    bot.edit_message_text(
+                        chat_id,
+                        teloxide::types::MessageId(message_id),
+                        format_system_text(TelegramSystemIntent::Info, "Questions completed."),
+                    )
+                    .await?;
                 }
             }
-        }
+        },
     }
     Ok(())
 }
@@ -997,6 +984,30 @@ pub(crate) async fn maybe_route_telegram_input_to_tui_session(
         return Ok((record, session));
     };
 
+    let workspace_path = workspace_path_from_binding(binding)?;
+    let workspace = shared_codex_workspace(state, workspace_path).await?;
+    if let Err(error) = state
+        .codex
+        .reconnect_session(&workspace, &tui_session_id)
+        .await
+    {
+        let reason = format!(
+            "TUI session adoption verification failed for `{}`: {}",
+            tui_session_id, error
+        );
+        let updated = state.repository.clear_tui_adoption_state(record).await?;
+        state
+            .repository
+            .append_log(&updated, LogDirection::System, reason.clone(), None)
+            .await?;
+        let updated = state
+            .repository
+            .mark_session_binding_broken(updated, reason)
+            .await?;
+        let session = state.repository.read_session_binding(&updated).await?;
+        return Ok((updated, session));
+    }
+
     let updated = state.repository.adopt_tui_active_session(record).await?;
     let session = state.repository.read_session_binding(&updated).await?;
     state
@@ -1074,10 +1085,11 @@ mod tests {
         should_cleanup_topic_rename_service_message, topic_rename_service_message_thread_id,
         usable_bound_session_id,
     };
-    use crate::interactive::InteractiveRequestRegistry;
     use crate::app_server_runtime::WorkspaceRuntimeManager;
+    use crate::app_server_runtime::WorkspaceRuntimeState;
     use crate::codex::CodexRunner;
     use crate::config::{AppConfig, RuntimeConfig, TelegramConfig};
+    use crate::interactive::InteractiveRequestRegistry;
     use crate::repository::{SessionBinding, ThreadRepository};
     use crate::thread_state::{BindingStatus, LifecycleStatus, ResolvedThreadState, RunStatus};
     use crate::tui_proxy::TuiProxyManager;
@@ -1085,11 +1097,18 @@ mod tests {
         SessionStatusOwner, WorkspaceStatusCache, WorkspaceStatusPhase, read_session_status,
         record_hcodex_launcher_started, record_tui_proxy_connected,
     };
+    use anyhow::Context;
     use serde_json::json;
     use std::collections::HashSet;
     use std::path::PathBuf;
+    use std::time::Duration;
     use teloxide::types::Message;
     use teloxide::utils::command::BotCommands;
+    use tokio::fs;
+    use tokio::net::TcpListener;
+    use tokio::time::timeout;
+    use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
     use uuid::Uuid;
 
     fn temp_path() -> PathBuf {
@@ -1137,6 +1156,113 @@ mod tests {
 
     fn temp_workspace() -> PathBuf {
         std::env::temp_dir().join(format!("threadbridge-live-tui-{}", Uuid::new_v4()))
+    }
+
+    async fn start_mock_app_server(workspace: PathBuf) -> anyhow::Result<String> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn({
+                    let workspace = workspace.clone();
+                    async move {
+                        let Ok(mut ws) = accept_async(stream).await else {
+                            return;
+                        };
+                        while let Some(message) = futures_util::StreamExt::next(&mut ws).await {
+                            let Ok(message) = message else {
+                                break;
+                            };
+                            let WsMessage::Text(text) = message else {
+                                continue;
+                            };
+                            let Ok(payload) = serde_json::from_str::<serde_json::Value>(&text)
+                            else {
+                                continue;
+                            };
+                            let Some(id) = payload.get("id").and_then(serde_json::Value::as_i64)
+                            else {
+                                continue;
+                            };
+                            let method = payload
+                                .get("method")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default();
+                            let response = match method {
+                                "initialize" => json!({
+                                    "id": id,
+                                    "result": { "protocolVersion": "2" },
+                                }),
+                                "thread/read" => json!({
+                                    "id": id,
+                                    "result": {
+                                        "thread": {
+                                            "id": "thr_tui",
+                                            "cwd": workspace.display().to_string(),
+                                        },
+                                        "cwd": workspace.display().to_string(),
+                                        "model": "gpt-test",
+                                        "reasoningEffort": "medium",
+                                        "approvalPolicy": "on-request",
+                                        "sandbox": "workspace-write",
+                                    },
+                                }),
+                                _ => json!({
+                                    "id": id,
+                                    "error": {
+                                        "message": format!("unsupported method: {method}"),
+                                    },
+                                }),
+                            };
+                            let _ = futures_util::SinkExt::send(
+                                &mut ws,
+                                WsMessage::Text(response.to_string().into()),
+                            )
+                            .await;
+                        }
+                    }
+                });
+            }
+        });
+        Ok(format!("ws://127.0.0.1:{}", addr.port()))
+    }
+
+    async fn write_owner_managed_runtime_state(
+        workspace: &std::path::Path,
+        daemon_ws_url: &str,
+    ) -> anyhow::Result<()> {
+        let state_dir = workspace.join(".threadbridge/state/app-server");
+        fs::create_dir_all(&state_dir).await?;
+        let state = WorkspaceRuntimeState {
+            schema_version: 1,
+            workspace_cwd: workspace.display().to_string(),
+            daemon_ws_url: daemon_ws_url.to_owned(),
+            tui_proxy_base_ws_url: None,
+        };
+        fs::write(
+            state_dir.join("current.json"),
+            format!("{}\n", serde_json::to_string_pretty(&state)?),
+        )
+        .await?;
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if tokio::net::TcpStream::connect(
+                    daemon_ws_url.strip_prefix("ws://").unwrap_or_default(),
+                )
+                .await
+                .is_ok()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .context("timed out waiting for mock app-server to listen")?;
+        Ok(())
     }
 
     #[test]
@@ -1244,6 +1370,11 @@ mod tests {
     async fn telegram_input_auto_adopts_live_tui_session() {
         let root = temp_path();
         let workspace = temp_workspace();
+        fs::create_dir_all(&workspace).await.unwrap();
+        let daemon_ws_url = start_mock_app_server(workspace.clone()).await.unwrap();
+        write_owner_managed_runtime_state(&workspace, &daemon_ws_url)
+            .await
+            .unwrap();
         let repository = ThreadRepository::open(&root).await.unwrap();
         let record = repository
             .create_thread(1, 7, "Title".to_owned())
@@ -1302,7 +1433,7 @@ mod tests {
             interactive_requests: InteractiveRequestRegistry::new(),
             seed_template_path: root.join("seed.md"),
             workspace_status_cache: WorkspaceStatusCache::new(),
-            runtime_ownership_mode: RuntimeOwnershipMode::SelfManaged,
+            runtime_ownership_mode: RuntimeOwnershipMode::DesktopOwner,
         };
 
         let session: Option<SessionBinding> =
