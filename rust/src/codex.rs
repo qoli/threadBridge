@@ -539,7 +539,56 @@ impl CodexRunner {
         })
     }
 
+    fn build_collaboration_mode_payload(
+        mode: CollaborationMode,
+        model: String,
+        reasoning_effort: Option<String>,
+    ) -> Value {
+        json!({
+            "mode": mode.as_str(),
+            "settings": {
+                "model": model,
+                "reasoning_effort": reasoning_effort,
+                "developer_instructions": Value::Null,
+            },
+        })
+    }
+
+    fn resolve_collaboration_model(
+        &self,
+        binding: &CodexThreadBinding,
+        selected: Option<&Value>,
+        collaboration_mode: CollaborationMode,
+    ) -> Result<String> {
+        selected
+            .and_then(|value| value.get("model"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| binding.model.clone())
+            .or_else(|| self.model.clone())
+            .context("session model is unavailable")
+            .with_context(|| {
+                format!(
+                    "{COLLABORATION_MODE_UNAVAILABLE_PREFIX} missing session model for {}",
+                    collaboration_mode.as_str()
+                )
+            })
+    }
+
+    fn resolve_default_collaboration_mode_payload(
+        &self,
+        binding: &CodexThreadBinding,
+    ) -> Result<Value> {
+        let model = self.resolve_collaboration_model(binding, None, CollaborationMode::Default)?;
+        Ok(Self::build_collaboration_mode_payload(
+            CollaborationMode::Default,
+            model,
+            binding.reasoning_effort.clone(),
+        ))
+    }
+
     async fn resolve_collaboration_mode_payload(
+        &self,
         client: &mut AppServerClient,
         binding: &CodexThreadBinding,
         collaboration_mode: Option<CollaborationMode>,
@@ -550,6 +599,11 @@ impl CodexRunner {
         let Some(collaboration_mode) = collaboration_mode else {
             return Ok(None);
         };
+        if matches!(collaboration_mode, CollaborationMode::Default) {
+            return self
+                .resolve_default_collaboration_mode_payload(binding)
+                .map(Some);
+        }
         let masks = client
             .request_simple("collaborationMode/list", json!({}))
             .await
@@ -577,18 +631,8 @@ impl CodexRunner {
                     collaboration_mode.as_str()
                 )
             })?;
-        let model = selected
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .or_else(|| binding.model.clone())
-            .context("session model is unavailable")
-            .with_context(|| {
-                format!(
-                    "{COLLABORATION_MODE_UNAVAILABLE_PREFIX} missing session model for {}",
-                    collaboration_mode.as_str()
-                )
-            })?;
+        let model =
+            self.resolve_collaboration_model(binding, Some(selected), collaboration_mode)?;
         let reasoning_effort = selected
             .get("reasoning_effort")
             .and_then(|value| (!value.is_null()).then_some(value))
@@ -596,18 +640,15 @@ impl CodexRunner {
             .map(str::to_owned)
             .or_else(|| binding.reasoning_effort.clone());
 
-        Ok(Some(json!({
-            "mode": collaboration_mode.as_str(),
-            "settings": {
-                "model": model,
-                "reasoning_effort": reasoning_effort,
-                "developer_instructions": Value::Null,
-            },
-        })))
+        Ok(Some(Self::build_collaboration_mode_payload(
+            collaboration_mode,
+            model,
+            reasoning_effort,
+        )))
     }
 
     fn requires_collaboration_mode_payload(collaboration_mode: Option<CollaborationMode>) -> bool {
-        matches!(collaboration_mode, Some(CollaborationMode::Plan))
+        collaboration_mode.is_some()
     }
 
     fn ensure_workspace_cwd(
@@ -1103,8 +1144,9 @@ impl CodexRunner {
         H: FnMut(CodexServerRequest) -> Hf,
         Hf: Future<Output = Result<Option<ToolRequestUserInputResponse>>>,
     {
-        let collaboration_mode =
-            Self::resolve_collaboration_mode_payload(client, binding, collaboration_mode).await?;
+        let collaboration_mode = self
+            .resolve_collaboration_mode_payload(client, binding, collaboration_mode)
+            .await?;
         let request_id = client
             .send_request(
                 "turn/start",
@@ -1281,7 +1323,8 @@ fn normalize_item(item: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppServerClient, CodexInputItem, CodexRunner, CodexWorkspace, Value, json, normalize_item,
+        AppServerClient, CodexInputItem, CodexRunner, CodexThreadBinding, CodexWorkspace, Value,
+        json, normalize_item,
     };
     use crate::collaboration_mode::CollaborationMode;
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
@@ -1372,8 +1415,8 @@ mod tests {
     }
 
     #[test]
-    fn default_mode_does_not_require_collaboration_mode_payload() {
-        assert!(!CodexRunner::requires_collaboration_mode_payload(Some(
+    fn default_mode_requires_collaboration_mode_payload() {
+        assert!(CodexRunner::requires_collaboration_mode_payload(Some(
             CollaborationMode::Default,
         )));
         assert!(!CodexRunner::requires_collaboration_mode_payload(None));
@@ -1384,6 +1427,40 @@ mod tests {
         assert!(CodexRunner::requires_collaboration_mode_payload(Some(
             CollaborationMode::Plan,
         )));
+    }
+
+    #[test]
+    fn default_collaboration_payload_uses_binding_state() {
+        let runner = CodexRunner::new(Some("gpt-runner".to_owned()));
+        let payload = runner
+            .resolve_default_collaboration_mode_payload(&CodexThreadBinding {
+                thread_id: "thr_123".to_owned(),
+                cwd: "/tmp/workspace".to_owned(),
+                model: Some("gpt-session".to_owned()),
+                reasoning_effort: Some("high".to_owned()),
+                execution: SessionExecutionSnapshot::from_mode(ExecutionMode::FullAuto),
+            })
+            .unwrap();
+        assert_eq!(payload["mode"], "default");
+        assert_eq!(payload["settings"]["model"], "gpt-session");
+        assert_eq!(payload["settings"]["reasoning_effort"], "high");
+        assert!(payload["settings"]["developer_instructions"].is_null());
+    }
+
+    #[test]
+    fn default_collaboration_payload_falls_back_to_runner_model() {
+        let runner = CodexRunner::new(Some("gpt-runner".to_owned()));
+        let payload = runner
+            .resolve_default_collaboration_mode_payload(&CodexThreadBinding {
+                thread_id: "thr_123".to_owned(),
+                cwd: "/tmp/workspace".to_owned(),
+                model: None,
+                reasoning_effort: None,
+                execution: SessionExecutionSnapshot::from_mode(ExecutionMode::FullAuto),
+            })
+            .unwrap();
+        assert_eq!(payload["settings"]["model"], "gpt-runner");
+        assert!(payload["settings"]["reasoning_effort"].is_null());
     }
 
     #[test]
