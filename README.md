@@ -164,6 +164,10 @@ Current Telegram delivery behavior is:
 - final assistant replies try inline Telegram HTML first
 - if inline final HTML send fails, threadBridge retries as plain text
 - if the final reply is too long for inline delivery, threadBridge sends a short notice plus a Markdown attachment
+- final reply attachments now do upload-size preflight before Telegram send
+- workspace outbox file deliveries also do upload-size preflight
+- oversized outbox photos may fall back to Telegram document delivery
+- oversized documents or attachments fall back to a warning/notice path instead of relying on a raw Telegram upload failure
 
 This is the current implementation shape; broader delivery queue semantics are still tracked as plan work.
 
@@ -218,6 +222,7 @@ The local management API and browser UI currently provide:
 - Telegram setup and polling state
 - managed workspace list and archive list
 - runtime-owner health and reconcile controls
+- typed SSE change events for setup/runtime/thread/workspace/archive refresh
 - workspace launch controls for new, continue-current, and resume
 - runtime repair
 - Codex cache refresh and source-build controls

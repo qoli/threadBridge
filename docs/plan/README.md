@@ -30,7 +30,8 @@
 
 - [telegram-markdown-adaptation.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md)
   - final reply 的 Telegram HTML renderer、plain-text fallback、attachment fallback 已落地
-  - 但 attachment fallback 與 Telegram 文件大小上限的關係仍待收斂
+  - `reply.md` attachment 的 Telegram 文件大小 preflight 與 warning fallback 已開始落地
+  - 但更完整的 artifact / URL fallback 仍待收斂
 - [codex-busy-input-gate.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md)
   - v1 忙碌閘控已落地
   - Telegram 文字 turn / 圖片分析已改成 background 執行，後續輸入現在會命中 reject
@@ -53,7 +54,8 @@
   - `GET /api/threads` 已開始對外暴露 canonical `lifecycle_status`
   - runtime health 已改成 owner-canonical，`workspace_state` 僅保留 debug/observation 語義
   - `runtime_protocol` 共享 view builder 已開始把 `ThreadStateView` / `ManagedWorkspaceView` / `ArchivedThreadView` / `RuntimeHealthView` / `WorkingSession*View` 從 transport 層抽離
-  - process transcript event / mirror model 已接到 management API、web UI 與 Telegram rolling preview，但 protocol 仍未收斂成正式 transport-neutral 契約，`/api/events` 也仍是 invalidation-style SSE
+  - `GET /api/events` 已開始輸出 typed SSE event，而不是每輪都推整包 snapshot
+  - 但 web UI 目前仍主要把這些 event 當成 refresh signal，protocol 也仍未收斂成完整 transport-neutral 契約
 - [macos-menubar-thread-manager.md](/Volumes/Data/Github/threadBridge/docs/plan/macos-menubar-thread-manager.md)
   - `threadbridge_desktop`、macOS-first tray menu、workspace-first browser management UI 已開始落地
   - pick-and-add、adopt / reject TUI、runtime-owner reconcile、launch config 等 control 已進入 management API
@@ -80,18 +82,19 @@
   - canonical `lifecycle_status` / `binding_status` / `run_status` 已開始透過 shared resolver 進入代碼
   - ordinary Telegram gate、management API、topic title 已開始共用同一套 canonical state axes
   - management API 的 thread / workspace / runtime views 已開始透過共享 protocol/view builder 收斂到同一套 canonical state sources
+  - `/api/events` 已開始從 canonical view diff 輸出 typed SSE event
   - `binding_status=conflict`、`run_status=unbound` 這類過渡值已退出 canonical state axes
-  - 但它仍未成為所有 surface 的完整唯一 source of truth，尤其 typed event stream 與 observability 仍待收斂
+  - 但它仍未成為所有 surface 的完整唯一 source of truth，尤其 event payload coverage 與 observability 仍待收斂
 - [workspace-runtime-surface.md](/Volumes/Data/Github/threadBridge/docs/plan/workspace-runtime-surface.md)
   - `.threadbridge/`、managed appendix、`hcodex`、tool request/result lane 已形成實際 workspace runtime surface
   - 但按 project type / workspace profile 選擇啟用 tools 的模型仍未收斂
+- [message-queue-and-status-delivery.md](/Volumes/Data/Github/threadBridge/docs/plan/message-queue-and-status-delivery.md)
+  - Telegram outbound delivery 主規格已從純草稿進入部分落地
+  - workspace outbox `surface`、最小檔案大小 preflight、photo -> document fallback、以及 oversized attachment/document warning path 已開始落地
+  - 但 outbound queue、完整 control lifecycle、artifact 類型與集中化 config 仍未收斂
 
 ## 純草稿
 
-- [message-queue-and-status-delivery.md](/Volumes/Data/Github/threadBridge/docs/plan/message-queue-and-status-delivery.md)
-  - Telegram outbound delivery 主規格草稿
-  - 也承接 busy / running 狀態訊息上的互動 control surface 規格
-  - 以及文件 / 媒體超過 Telegram 上限時的 delivery fallback 規格
 - [telegram-webapp-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md)
   - Telegram Web App 觀測面草稿
   - 本地 session-first observability API 與 workspace-card Sessions pane 已落地，但 Telegram Web App 本身仍未開始

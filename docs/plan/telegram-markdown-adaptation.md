@@ -11,6 +11,8 @@
 - 內部使用 `pulldown-cmark` 解析 Markdown，並輸出 Telegram `HTML parse mode`
 - HTML 發送失敗時，會自動 fallback 到純文字
 - 超過單則訊息限制時，會改走 notice + `reply.md` attachment
+- `reply.md` attachment 已開始在送出前做 Telegram 文件大小 preflight
+- 若 `reply.md` attachment 超過 Telegram 文件上限，目前已會回到明確 warning notice，而不是只留下底層 upload failure
 - Markdown link 目前統一改寫成 `code` 樣式 label，而不是保留 Telegram link
 - 所有主要 bot 文字送信路徑目前都明確關閉 link preview
 - preview draft 已接入 `sendMessageDraft + HTML parse mode`
@@ -31,8 +33,8 @@
 - 是否要建立更明確的中間表示，而不是目前 renderer 內部直接輸出 HTML
 - block quote / 更複雜 nested list / 更多 Telegram-specific layout 重建策略
 - 是否要把 debug dump、probe、preview exporter 收斂成正式診斷工具鏈
-- attachment fallback 是否也要納入 Telegram 文件大小上限檢查
 - diff artifact 是否應例外地以 URL 形式呈現，而不是和普通 Markdown link 一起被降級
+- 若 attachment fallback 遇到 Telegram 文件大小上限，是否應進一步走 artifact URL 或其他更穩定的內容載體
 
 ## 問題
 
@@ -196,12 +198,13 @@
 - parse mode 採用 `HTML`，不是 `MarkdownV2`
 - final reply 優先穩定送出，再談完整表現力
 - fallback 與 attachment 路徑都已經存在
+- oversized `reply.md` attachment 已不再直接撞到底層 upload failure
 - path / local file references 與普通 URL 不再嘗試保留 Telegram link 呈現
 
 但目前仍缺一個明確規格：
 
-- 若 `reply.md` attachment 本身超過 Telegram 文件大小上限，final reply 應如何降級
 - 若使用者真正需要的是查看 diff，Telegram 是否應優先送出 diff URL，而不是正文或 attachment
+- 若 attachment 已回退成 warning notice，下一層 artifact / URL fallback 是否應由 delivery 層而不是 renderer 決定
 
 ## Diff URL 想法
 

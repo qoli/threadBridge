@@ -2,7 +2,7 @@
 
 ## 目前進度
 
-這份文檔目前仍是草稿，但已不只是命名建議；其中一部分 view / action 已經掛進本地 management API 和 desktop runtime。
+這份文檔目前仍是草稿，但已不只是命名建議；其中一部分 view / action / event 已經掛進本地 management API 和 desktop runtime。
 
 目前代碼狀態：
 
@@ -31,7 +31,15 @@
 - `ThreadStateView` 已開始對外暴露 canonical `lifecycle_status`
 - `binding_status` / `run_status` 已開始透過 shared resolver 收斂成同一套 wire semantics
 - `conflict` 已明確保留為 workspace-view 的獨立欄位，而不是 `binding_status` 的另一個值
-- 但 `GET /api/events` 目前仍只是 invalidation-style SSE；web UI 仍主要把它當成 refresh signal，而不是正式 typed event stream
+- `GET /api/events` 已開始輸出 typed SSE event，而不是每輪都推整包 snapshot
+- 目前已落地的 event kind 包括：
+  - `setup_changed`
+  - `runtime_health_changed`
+  - `thread_state_changed`
+  - `workspace_state_changed`
+  - `archived_thread_changed`
+  - `error`
+- web UI 目前仍主要把這些 event 當成 refresh trigger，而不是完整的 incremental state applier
 
 目前新增記錄的近期方向是：
 
@@ -361,9 +369,27 @@ v1 至少保留：
 - `thread_state_changed`
 - `workspace_state_changed`
 - `runtime_health_changed`
-- `managed_codex_changed`
-- `assistant_final`
+- `setup_changed`
+- `archived_thread_changed`
 - `error`
+
+目前已落地的 wire shape 是：
+
+- `kind`
+- `op`
+- `key`
+- `current`
+- `message`
+
+其中：
+
+- `op`
+  - `upsert`
+  - `remove`
+- `current`
+  - 在 `upsert` 時承載目前的 view payload
+- `message`
+  - 目前主要用在 `error`
 
 如果引入 desktop capability bridge，之後也需要考慮：
 
@@ -375,6 +401,8 @@ v1 至少保留：
 目前新增確認的缺口是：
 
 - mirror / observability 已開始承接更完整的 Codex 過程文本，event model 應收斂成等價的 process transcript 事件，而不是各 adapter 自己拼 `plan_text` / `tool_text`
+- `managed_codex_changed` 這類更細的 owner / build event 尚未獨立落地
+- event stream 雖然已 typed 化，但 web 管理面仍未直接套用增量 payload
 
 ## Query / Control / Stream 分離
 
@@ -436,5 +464,5 @@ v1 至少保留：
 ## 建議的下一步
 
 1. 先把上面的 view / action 名稱同步到本地 management API。
-2. 讓 tray/web 管理面先只依賴這份 protocol，不直接讀 repository 檔案。
-3. 之後再決定是否需要第二種 transport，例如 WebSocket。
+2. 讓 tray/web 管理面逐步直接消費 typed event payload，而不是只把它們當 refresh signal。
+3. 之後再補 `managed_codex_changed`、更細的 process transcript event，並決定是否需要第二種 transport，例如 WebSocket。

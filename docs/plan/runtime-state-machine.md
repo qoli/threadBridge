@@ -12,6 +12,7 @@
 - ordinary Telegram command / text / image gate 已開始改走 shared resolver，而不是各自直接讀 `Archived` / `session_broken`
 - management API 的 `ThreadStateView` 已開始直接暴露 canonical `lifecycle_status` / `binding_status` / `run_status`
 - management API 的 `ThreadStateView` / `ManagedWorkspaceView` / `ArchivedThreadView` / `RuntimeHealthView` 已開始透過共享的 protocol/view builder 收斂，而不是各自在 handler 內重組狀態
+- `/api/events` 已開始從 canonical view diff 輸出 typed SSE event，而不是每輪都推整包 snapshot
 - topic title 的 `broken` suffix 已開始從 canonical binding state 派生；`busy` 已退出 title 語義
 - `binding_status=conflict`、`run_status=unbound` 這類過渡值已從 canonical state axes 中移除
 
@@ -20,7 +21,7 @@
 - 讓更多 surface 在呈現 thread / workspace state 時完全只引用同一套 canonical axes
 - 把 canonical view 的欄位命名完全收斂到現行模型，例如 `current_codex_thread_id`
 - 把狀態轉移 authority 再集中，避免 archive / restore / control action 仍分散在多個入口各自更新 metadata/binding
-- 把 `/api/events` 與 observability 層也收斂到同一套正式 protocol，而不是保留目前的 invalidation-style SSE
+- 讓 `/api/events` 的 typed payload coverage 與 observability 層再進一步收斂，而不只停在目前的 change-event + refresh trigger 模型
 
 ## 問題
 

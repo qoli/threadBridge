@@ -113,6 +113,9 @@ The request file must look like this:
   1. Write `./.threadbridge/tool_requests/send_telegram_media.request.json`.
   2. Keep all referenced files inside the current workspace.
   3. Prefer concise captions and user-facing filenames that already exist on disk.
+- Each item may include an optional `surface` field. The default is `content`.
+- Telegram delivery does upload-size preflight before sending queued files.
+- Oversized `photo` items may fall back to `document`; oversized files may fall back to a warning instead of a Telegram upload.
 - After a successful run, inspect `./.threadbridge/tool_results/send_telegram_media.result.json`.
 - The bot runtime will deliver queued items from the workspace outbox after the Codex turn completes.
 
@@ -123,7 +126,8 @@ The request file must look like this:
   "items": [
     {
       "type": "text",
-      "text": "Short user-facing message."
+      "text": "Short user-facing message.",
+      "surface": "content"
     },
     {
       "type": "photo",
