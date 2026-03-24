@@ -16,7 +16,11 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, info, warn};
 
+use crate::collaboration_mode::CollaborationMode;
 use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
+use crate::interactive::{
+    ServerRequestResolvedNotification, ToolRequestUserInputParams, ToolRequestUserInputResponse,
+};
 
 const APP_SERVER_CLIENT_NAME: &str = "threadbridge";
 const APP_SERVER_CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -119,7 +123,21 @@ enum RpcMessage {
     Request {
         id: i64,
         method: String,
+        params: Option<Value>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum CodexServerRequest {
+    RequestUserInput {
+        request_id: i64,
+        params: ToolRequestUserInputParams,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum CodexServerNotification {
+    ServerRequestResolved(ServerRequestResolvedNotification),
 }
 
 fn log_item_event(lifecycle: &str, item: &Value) {
@@ -304,6 +322,18 @@ impl AppServerClient {
         .await
     }
 
+    async fn send_server_request_response<T: Serialize>(
+        &mut self,
+        request_id: i64,
+        result: &T,
+    ) -> Result<()> {
+        self.send_payload(json!({
+            "id": request_id,
+            "result": serde_json::to_value(result)?,
+        }))
+        .await
+    }
+
     async fn read_message(&mut self) -> Result<RpcMessage> {
         loop {
             let mut line = String::new();
@@ -353,7 +383,11 @@ impl AppServerClient {
                     .context("app-server message missing method")?
                     .to_owned();
                 if let Some(id) = raw.get("id").and_then(Value::as_i64) {
-                    return Ok(RpcMessage::Request { id, method });
+                    return Ok(RpcMessage::Request {
+                        id,
+                        method,
+                        params: raw.get("params").cloned(),
+                    });
                 }
                 let params = raw.get("params").cloned();
                 return Ok(RpcMessage::Notification { method, params });
@@ -451,11 +485,19 @@ impl CodexRunner {
         })
     }
 
-    fn build_turn_start_params(thread_id: &str, input: &[CodexInputItem]) -> Value {
-        json!({
+    fn build_turn_start_params(
+        thread_id: &str,
+        input: &[CodexInputItem],
+        collaboration_mode: Option<CollaborationMode>,
+    ) -> Value {
+        let mut params = json!({
             "threadId": thread_id,
             "input": Self::normalize_input(input),
-        })
+        });
+        if let Some(collaboration_mode) = collaboration_mode {
+            params["collaborationMode"] = Value::String(collaboration_mode.as_str().to_owned());
+        }
+        params
     }
 
     fn parse_binding(result: &Value) -> Result<CodexThreadBinding> {
@@ -527,7 +569,9 @@ impl CodexRunner {
                 vec![CodexInputItem::Text {
                     text: WORKSPACE_READY_PROMPT.to_owned(),
                 }],
+                None,
                 |_| async {},
+                |_| async { Ok(None) },
             )
             .await?;
         self.ensure_ready_response(&ready.final_response, "workspace initialization")?;
@@ -563,11 +607,43 @@ impl CodexRunner {
         existing_thread_id: Option<&str>,
         execution_mode: Option<ExecutionMode>,
         input: Vec<CodexInputItem>,
-        mut on_event: F,
+        on_event: F,
     ) -> Result<CodexRunResult>
     where
         F: FnMut(CodexThreadEvent) -> Fut,
         Fut: Future<Output = ()>,
+    {
+        self.run_with_events_and_server_requests(
+            workspace,
+            existing_thread_id,
+            execution_mode,
+            None,
+            input,
+            on_event,
+            |request| async move {
+                match request {
+                    CodexServerRequest::RequestUserInput { .. } => Ok(None),
+                }
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn run_with_events_and_server_requests<F, Fut, H, Hf>(
+        &self,
+        workspace: &CodexWorkspace,
+        existing_thread_id: Option<&str>,
+        execution_mode: Option<ExecutionMode>,
+        collaboration_mode: Option<CollaborationMode>,
+        input: Vec<CodexInputItem>,
+        mut on_event: F,
+        on_server_request: H,
+    ) -> Result<CodexRunResult>
+    where
+        F: FnMut(CodexThreadEvent) -> Fut,
+        Fut: Future<Output = ()>,
+        H: FnMut(CodexServerRequest) -> Hf,
+        Hf: Future<Output = Result<Option<ToolRequestUserInputResponse>>>,
     {
         let mut client = AppServerClient::start(workspace).await?;
         let (binding, selected_factory) = match existing_thread_id {
@@ -608,7 +684,14 @@ impl CodexRunner {
         })
         .await;
         let turn_result = self
-            .run_turn_on_client(&mut client, &binding, input, on_event)
+            .run_turn_on_client(
+                &mut client,
+                &binding,
+                input,
+                collaboration_mode,
+                on_event,
+                on_server_request,
+            )
             .await?;
 
         Ok(CodexRunResult {
@@ -852,6 +935,38 @@ impl CodexRunner {
         .await
     }
 
+    pub(crate) async fn run_locked_prompt_with_events_mode_and_requests<F, Fut, H, Hf>(
+        &self,
+        workspace: &CodexWorkspace,
+        locked_thread_id: &str,
+        execution_mode: Option<ExecutionMode>,
+        collaboration_mode: Option<CollaborationMode>,
+        prompt: &str,
+        on_event: F,
+        on_server_request: H,
+    ) -> Result<CodexRunResult>
+    where
+        F: FnMut(CodexThreadEvent) -> Fut,
+        Fut: Future<Output = ()>,
+        H: FnMut(CodexServerRequest) -> Hf,
+        Hf: Future<Output = Result<Option<ToolRequestUserInputResponse>>>,
+    {
+        let result = self
+            .run_with_events_and_server_requests(
+                workspace,
+                Some(locked_thread_id),
+                execution_mode,
+                collaboration_mode,
+                vec![CodexInputItem::Text {
+                    text: prompt.to_owned(),
+                }],
+                on_event,
+                on_server_request,
+            )
+            .await?;
+        self.ensure_locked_thread_id(locked_thread_id, result)
+    }
+
     pub async fn generate_thread_title_from_session(
         &self,
         workspace: &CodexWorkspace,
@@ -885,21 +1000,25 @@ impl CodexRunner {
         Ok(result)
     }
 
-    async fn run_turn_on_client<F, Fut>(
+    async fn run_turn_on_client<F, Fut, H, Hf>(
         &self,
         client: &mut AppServerClient,
         binding: &CodexThreadBinding,
         input: Vec<CodexInputItem>,
+        collaboration_mode: Option<CollaborationMode>,
         mut on_event: F,
+        mut on_server_request: H,
     ) -> Result<TurnRunResult>
     where
         F: FnMut(CodexThreadEvent) -> Fut,
         Fut: Future<Output = ()>,
+        H: FnMut(CodexServerRequest) -> Hf,
+        Hf: Future<Output = Result<Option<ToolRequestUserInputResponse>>>,
     {
         let request_id = client
             .send_request(
                 "turn/start",
-                Self::build_turn_start_params(&binding.thread_id, &input),
+                Self::build_turn_start_params(&binding.thread_id, &input, collaboration_mode),
             )
             .await?;
 
@@ -923,6 +1042,19 @@ impl CodexRunner {
                     bail!("turn/start failed: {message} ({details})");
                 }
                 RpcMessage::Notification { method, params } => {
+                    if let Some(notification) =
+                        Self::map_server_notification(&method, params.clone().unwrap_or(Value::Null))
+                    {
+                        match notification {
+                            CodexServerNotification::ServerRequestResolved(resolved) => {
+                                debug!(
+                                    event = "codex.app_server.request.resolved",
+                                    thread_id = %resolved.thread_id,
+                                    request_id = %resolved.request_id,
+                                );
+                            }
+                        }
+                    }
                     if let Some(event) = Self::map_notification(
                         &method,
                         params.unwrap_or(Value::Null),
@@ -973,8 +1105,30 @@ impl CodexRunner {
                         on_event(event).await;
                     }
                 }
-                RpcMessage::Request { id, method } => {
-                    client.reject_server_request(id, &method).await?;
+                RpcMessage::Request { id, method, params } => {
+                    match method.as_str() {
+                        "item/tool/requestUserInput" => {
+                            let params: ToolRequestUserInputParams =
+                                serde_json::from_value(params.unwrap_or(Value::Null)).with_context(
+                                    || "invalid item/tool/requestUserInput params".to_owned(),
+                                )?;
+                            if let Some(response) = on_server_request(
+                                CodexServerRequest::RequestUserInput {
+                                    request_id: id,
+                                    params,
+                                },
+                            )
+                            .await?
+                            {
+                                client.send_server_request_response(id, &response).await?;
+                            } else {
+                                client.reject_server_request(id, &method).await?;
+                            }
+                        }
+                        _ => {
+                            client.reject_server_request(id, &method).await?;
+                        }
+                    }
                 }
                 RpcMessage::Response { .. } | RpcMessage::Error { .. } => {}
             }
@@ -984,6 +1138,18 @@ impl CodexRunner {
             final_response,
             final_plan_text,
         })
+    }
+
+    fn map_server_notification(
+        method: &str,
+        params: Value,
+    ) -> Option<CodexServerNotification> {
+        match method {
+            "serverRequest/resolved" => serde_json::from_value(params)
+                .ok()
+                .map(CodexServerNotification::ServerRequestResolved),
+            _ => None,
+        }
     }
 
     fn ensure_ready_response(&self, response: &str, context: &str) -> Result<()> {

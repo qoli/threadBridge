@@ -88,6 +88,12 @@ server notification 例子：
 }
 ```
 
+補充：
+
+- app-server 也可能在 turn 中主動送出 JSON-RPC server request，而不是只有 notification。
+- `threadBridge` 現在已開始正式消費 `item/tool/requestUserInput`，並在 Telegram / TUI proxy 路徑上回送對應 JSON-RPC response。
+- `serverRequest/resolved` 會被視為 pending interactive request 的 authoritative cleanup 邊界。
+
 ## `threadBridge` 目前實際使用的 request
 
 `threadBridge` 目前只依賴這一小部分：
@@ -169,6 +175,9 @@ server notification 例子：
 
 - `turn/start` 的 JSON-RPC response 只代表 request 被接受
 - 真正的 turn 過程與結果，靠 notification 串流回來
+- `threadBridge` 現在也會在需要時帶 `collaborationMode`
+  - direct Telegram thread 會使用 sticky thread-local mode
+  - local TUI proxy 也會追蹤 `turn/start.collaborationMode`
 
 ## 對 `threadBridge` 重要的 notification
 
@@ -185,6 +194,11 @@ server notification 例子：
 - `item/mcpToolCall/progress`
 - `item/reasoning/summaryTextDelta`
 - `item/reasoning/textDelta`
+- `serverRequest/resolved`
+
+對 `threadBridge` 目前已開始消費的重要 server request：
+
+- `item/tool/requestUserInput`
 
 `threadBridge` 現在直接消費的主要 methods 包括：
 
@@ -195,6 +209,7 @@ server notification 例子：
 - `item/completed`
 - `item/agentMessage/delta`
 - `item/plan/delta`
+- `serverRequest/resolved`
 - `error`
 
 也就是說，`threadBridge` 已經直接消費 `item/plan/delta`，並把它接進 plan mirror / process transcript / Telegram preview 路徑。

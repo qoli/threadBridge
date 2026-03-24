@@ -24,15 +24,15 @@
   - workspace heartbeat / runtime health 已改成以 desktop owner heartbeat 為主 authority
   - 舊 `CLI owner / handoff` 概念已退出現行模型，主語義改為 local/TUI mirror + idle/free readiness
   - process transcript 已正式區分 final / process，並補上 management transcript read API、session summary / records API、web observability pane，以及 Telegram rolling preview 摘要
-  - 已補記一個 mirror 缺口：`codex plan` 消息流 mirror 仍未完整接上；目前更接近 `threadBridge` consumer / adapter 缺口，而不是 upstream source 缺口
-  - 它同時也是 Telegram 退回通用 adapter 模式的前置條件
+  - `codex plan` mirror、plan-only final reply fallback、Telegram preview process transcript 已落地
+  - Telegram `Questions` / `Implement this plan` 也已開始接到同一條 app-server / TUI proxy adapter 路徑
 
 ## 部分落地
 
 - [codex-plan-mirror.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-plan-mirror.md)
   - `codex plan` mirror 子規格
   - upstream `item/plan/delta` / finalized `plan` item 已確認存在
-  - `threadBridge` 已有部分 finalized plan process transcript，但 live plan delta mirror 與 plan-only final reply fallback 尚未完成
+  - `threadBridge` 已消費 live `item/plan/delta`，並補上 plan-only final reply fallback
 - [telegram-markdown-adaptation.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-markdown-adaptation.md)
   - final reply 的 Telegram HTML renderer、plain-text fallback、attachment fallback 已落地
   - `reply.md` attachment 的 Telegram 文件大小 preflight 與 warning fallback 已開始落地

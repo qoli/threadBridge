@@ -9,11 +9,16 @@ use tokio::net::TcpStream;
 use tracing::{error, info, warn};
 
 use crate::app_server_runtime::WorkspaceRuntimeManager;
+use crate::collaboration_mode::CollaborationMode;
 pub(crate) use crate::codex::{CodexInputItem, CodexRunner, CodexThreadEvent, CodexWorkspace};
 pub(crate) use crate::config::AppConfig;
 pub(crate) use crate::image_artifacts::{
     ImageAnalysisArtifact, ImageAnalysisImage, build_image_analysis_prompt,
     render_pending_image_batch,
+};
+use crate::interactive::{
+    CompletedInteractiveRequest, InteractiveAdvance, InteractivePromptSnapshot,
+    InteractiveRequestRegistry, ToolRequestUserInputQuestion,
 };
 pub(crate) use crate::repository::{
     AppendPendingImageInput, LogDirection, SessionBinding, ThreadRecord, ThreadRepository,
@@ -57,6 +62,10 @@ pub enum Command {
     RepairSession,
     #[command(description = "Show this workspace's key, path, session, and local session state")]
     WorkspaceInfo,
+    #[command(description = "Set this workspace thread to Plan collaboration mode")]
+    PlanMode,
+    #[command(description = "Set this workspace thread to Default collaboration mode")]
+    DefaultMode,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +88,7 @@ pub struct AppState {
     pub(crate) codex: CodexRunner,
     pub(crate) app_server_runtime: WorkspaceRuntimeManager,
     pub(crate) tui_proxy: TuiProxyManager,
+    pub(crate) interactive_requests: InteractiveRequestRegistry,
     pub(crate) seed_template_path: PathBuf,
     pub(crate) workspace_status_cache: WorkspaceStatusCache,
     pub(crate) runtime_ownership_mode: RuntimeOwnershipMode,
@@ -126,10 +136,18 @@ impl AppState {
                 .join("templates")
                 .join("AGENTS.md"),
         )?;
+        let interactive_requests = InteractiveRequestRegistry::new();
+        tui_proxy
+            .configure_telegram_bridge(
+                config.telegram.telegram_token.clone(),
+                interactive_requests.clone(),
+            )
+            .await;
         Ok(Self {
             codex: CodexRunner::new(config.runtime.codex_model.clone()),
             app_server_runtime,
             tui_proxy,
+            interactive_requests,
             repository,
             seed_template_path,
             workspace_status_cache: WorkspaceStatusCache::new(),
@@ -293,6 +311,92 @@ async fn run_callback_query(bot: &Bot, query: &CallbackQuery, state: &AppState) 
     let parts: Vec<&str> = data.split(':').collect();
     let action = parts.first().copied().unwrap_or_default();
     match action {
+        CALLBACK_PLAN_IMPLEMENT => {
+            let choice = parts.get(1).copied().unwrap_or_default();
+            match choice {
+                "yes" => {
+                    thread_flow::launch_plan_implementation_turn(bot, state, message).await?;
+                    bot.edit_message_text(
+                        message.chat.id,
+                        message.id,
+                        format_system_text(
+                            TelegramSystemIntent::Info,
+                            "Implementing the plan in Default mode.",
+                        ),
+                    )
+                    .await?;
+                }
+                "no" => {
+                    bot.edit_message_text(
+                        message.chat.id,
+                        message.id,
+                        format_system_text(
+                            TelegramSystemIntent::Info,
+                            "Staying in Plan mode.",
+                        ),
+                    )
+                    .await?;
+                }
+                _ => {}
+            }
+            bot.answer_callback_query(query.id.clone()).await?;
+        }
+        CALLBACK_REQUEST_USER_INPUT_OPTION => {
+            let Some(thread_id) = message.thread_id else {
+                bot.answer_callback_query(query.id.clone())
+                    .text("This button only works inside a thread.")
+                    .show_alert(true)
+                    .await?;
+                return Ok(());
+            };
+            let request_id = parts
+                .get(1)
+                .and_then(|value| value.parse::<i64>().ok())
+                .context("invalid request_user_input request id")?;
+            let choice = parts.get(2).copied().unwrap_or_default();
+            let Some(snapshot) = state
+                .interactive_requests
+                .prompt_for(message.chat.id.0, thread_id_to_i32(thread_id))
+                .await
+            else {
+                bot.answer_callback_query(query.id.clone())
+                    .text("Question is no longer pending.")
+                    .show_alert(true)
+                    .await?;
+                return Ok(());
+            };
+            let other_index = snapshot
+                .question
+                .options
+                .as_ref()
+                .map(|options| options.len())
+                .unwrap_or_default();
+            let option_index = if choice == "other" {
+                other_index
+            } else {
+                choice
+                    .parse::<usize>()
+                    .context("invalid request_user_input option index")?
+            };
+            let Some(advance) = state
+                .interactive_requests
+                .choose_option(
+                    message.chat.id.0,
+                    thread_id_to_i32(thread_id),
+                    request_id,
+                    option_index,
+                )
+                .await?
+            else {
+                bot.answer_callback_query(query.id.clone())
+                    .text("Question is no longer pending.")
+                    .show_alert(true)
+                    .await?;
+                return Ok(());
+            };
+            apply_interactive_advance(bot, state, message.chat.id, thread_id, advance).await?;
+            bot.answer_callback_query(query.id.clone()).await?;
+        }
         media::CALLBACK_IMAGE_BATCH_ANALYZE => {
             let batch_id = parts.get(1).copied().unwrap_or_default();
             let Some(thread_id) = message.thread_id else {
@@ -516,6 +620,176 @@ pub(crate) async fn send_scoped_warning_message(
         text,
     )
     .await
+}
+
+pub(crate) const CALLBACK_REQUEST_USER_INPUT_OPTION: &str = "request_user_input_option";
+pub(crate) const CALLBACK_PLAN_IMPLEMENT: &str = "plan_implement";
+pub(crate) const PLAN_IMPLEMENTATION_TEXT: &str = "Implement this plan?";
+pub(crate) const PLAN_IMPLEMENTATION_MESSAGE: &str = "Implement the plan.";
+
+pub(crate) fn collaboration_mode_for_session(session: Option<&SessionBinding>) -> CollaborationMode {
+    session
+        .and_then(|binding| binding.current_collaboration_mode)
+        .unwrap_or(CollaborationMode::Default)
+}
+
+pub(crate) fn render_request_user_input_prompt(snapshot: &InteractivePromptSnapshot) -> String {
+    let question = &snapshot.question;
+    let mut lines = vec![format_system_text(
+        TelegramSystemIntent::Question,
+        &format!("{}: {}", question.header, question.question),
+    )];
+    if question.is_secret {
+        lines.push("Secret input is not supported in Telegram v1.".to_owned());
+    } else if snapshot.awaiting_freeform_text || question.options.is_none() || question.is_other {
+        lines.push("Reply with your next text message in this thread.".to_owned());
+    } else if let Some(options) = question.options.as_ref() {
+        for option in options {
+            lines.push(format!("- {}: {}", option.label, option.description));
+        }
+        lines.push("- Other: reply with your own text".to_owned());
+    }
+    lines.join("\n")
+}
+
+pub(crate) async fn upsert_request_user_input_prompt(
+    bot: &Bot,
+    state: &AppState,
+    chat_id: ChatId,
+    thread_id: ThreadId,
+    snapshot: &InteractivePromptSnapshot,
+) -> Result<()> {
+    let text = render_request_user_input_prompt(snapshot);
+    let markup = request_user_input_markup(snapshot.request_id, &snapshot.question);
+    if let Some(message_id) = snapshot.prompt_message_id {
+        let request = bot.edit_message_text(chat_id, teloxide::types::MessageId(message_id), text);
+        if let Some(markup) = markup {
+            request.reply_markup(markup).await?;
+        } else {
+            request.await?;
+        }
+        return Ok(());
+    }
+    let request = bot.send_message(chat_id, text).message_thread_id(thread_id);
+    let sent = if let Some(markup) = markup {
+        request.reply_markup(markup).await?
+    } else {
+        request.await?
+    };
+    state
+        .interactive_requests
+        .set_prompt_message_id(chat_id.0, thread_id_to_i32(thread_id), sent.id.0)
+        .await;
+    Ok(())
+}
+
+pub(crate) fn request_user_input_markup(
+    request_id: i64,
+    question: &ToolRequestUserInputQuestion,
+) -> Option<teloxide::types::InlineKeyboardMarkup> {
+    let options = question.options.as_ref()?;
+    let mut buttons = options
+        .iter()
+        .enumerate()
+        .map(|(option_index, option)| {
+            vec![teloxide::types::InlineKeyboardButton::callback(
+                option.label.clone(),
+                format!(
+                    "{CALLBACK_REQUEST_USER_INPUT_OPTION}:{request_id}:{option_index}"
+                ),
+            )]
+        })
+        .collect::<Vec<_>>();
+    buttons.push(vec![teloxide::types::InlineKeyboardButton::callback(
+        "Other",
+        format!(
+            "{CALLBACK_REQUEST_USER_INPUT_OPTION}:{request_id}:other"
+        ),
+    )]);
+    Some(teloxide::types::InlineKeyboardMarkup::new(buttons))
+}
+
+pub(crate) async fn apply_interactive_advance(
+    bot: &Bot,
+    state: &AppState,
+    chat_id: ChatId,
+    thread_id: ThreadId,
+    advance: InteractiveAdvance,
+) -> Result<()> {
+    match advance {
+        InteractiveAdvance::Updated(snapshot) => {
+            upsert_request_user_input_prompt(bot, state, chat_id, thread_id, &snapshot).await?;
+        }
+        InteractiveAdvance::Completed(completed) => {
+            match completed {
+                CompletedInteractiveRequest::Direct {
+                    prompt_message_id,
+                    response,
+                    responder,
+                } => {
+                    let _ = responder.send(response);
+                    if let Some(message_id) = prompt_message_id {
+                        bot.edit_message_text(
+                            chat_id,
+                            teloxide::types::MessageId(message_id),
+                            format_system_text(
+                                TelegramSystemIntent::Info,
+                                "Questions completed.",
+                            ),
+                        )
+                        .await?;
+                    }
+                }
+                CompletedInteractiveRequest::Tui {
+                    thread_key,
+                    request_id,
+                    prompt_message_id,
+                    response,
+                } => {
+                    state
+                        .tui_proxy
+                        .submit_request_user_input_response(&thread_key, request_id, &response)
+                        .await?;
+                    if let Some(message_id) = prompt_message_id {
+                    bot.edit_message_text(
+                        chat_id,
+                        teloxide::types::MessageId(message_id),
+                        format_system_text(
+                            TelegramSystemIntent::Info,
+                            "Questions completed.",
+                        ),
+                    )
+                    .await?;
+                }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn send_plan_implementation_prompt(
+    bot: &Bot,
+    chat_id: ChatId,
+    thread_id: ThreadId,
+) -> Result<()> {
+    bot.send_message(
+        chat_id,
+        format_system_text(TelegramSystemIntent::Question, PLAN_IMPLEMENTATION_TEXT),
+    )
+    .message_thread_id(thread_id)
+    .reply_markup(teloxide::types::InlineKeyboardMarkup::new(vec![
+        vec![teloxide::types::InlineKeyboardButton::callback(
+            "Yes, implement this plan",
+            format!("{CALLBACK_PLAN_IMPLEMENT}:yes"),
+        )],
+        vec![teloxide::types::InlineKeyboardButton::callback(
+            "No, stay in Plan mode",
+            format!("{CALLBACK_PLAN_IMPLEMENT}:no"),
+        )],
+    ]))
+    .await?;
+    Ok(())
 }
 
 pub(crate) fn disabled_link_preview_options() -> LinkPreviewOptions {
@@ -800,6 +1074,7 @@ mod tests {
         should_cleanup_topic_rename_service_message, topic_rename_service_message_thread_id,
         usable_bound_session_id,
     };
+    use crate::interactive::InteractiveRequestRegistry;
     use crate::app_server_runtime::WorkspaceRuntimeManager;
     use crate::codex::CodexRunner;
     use crate::config::{AppConfig, RuntimeConfig, TelegramConfig};
@@ -1024,6 +1299,7 @@ mod tests {
             codex: CodexRunner::new(None),
             app_server_runtime: WorkspaceRuntimeManager::new(),
             tui_proxy: TuiProxyManager::new(repository.clone()),
+            interactive_requests: InteractiveRequestRegistry::new(),
             seed_template_path: root.join("seed.md"),
             workspace_status_cache: WorkspaceStatusCache::new(),
             runtime_ownership_mode: RuntimeOwnershipMode::SelfManaged,

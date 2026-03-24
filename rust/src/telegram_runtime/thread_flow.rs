@@ -3,9 +3,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use teloxide::payloads::setters::*;
+use tokio::sync::oneshot;
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
+use crate::collaboration_mode::CollaborationMode;
+use crate::codex::CodexServerRequest;
 use crate::execution_mode::workspace_execution_mode;
 use crate::local_control::LocalControlHandle;
 use crate::process_transcript::process_entry_from_codex_event;
@@ -61,6 +64,11 @@ async fn render_thread_info(state: &AppState, record: &ThreadRecord) -> Result<S
         .and_then(|binding| binding.current_execution_mode)
         .map(|mode| mode.as_str().to_owned())
         .unwrap_or_else(|| "none".to_owned());
+    let current_collaboration_mode = session
+        .as_ref()
+        .and_then(|binding| binding.current_collaboration_mode)
+        .map(|mode| mode.as_str().to_owned())
+        .unwrap_or_else(|| "default".to_owned());
     let current_snapshot = match (
         workspace_path.as_ref(),
         current_bound_session_id(session.as_ref()),
@@ -108,13 +116,14 @@ async fn render_thread_info(state: &AppState, record: &ThreadRecord) -> Result<S
         .unwrap_or_else(|| "none".to_owned());
 
     Ok(format!(
-        "thread_key: `{}`\nworkspace: `{}`\nworkspace_execution_mode: `{}`\ncurrent_execution_mode: `{}`\ncurrent_codex_thread_id: `{}`\ntui_active_codex_thread_id: `{}`\nadoption_state: `{}`\nlifecycle_status: `{}`\nbinding_status: `{}`\nrun_status: `{}`\ntitle_suffix: `{}`\ncurrent_phase: `{}`\ncurrent_owner: `{}`\ngate_session_id: `{}`\ngate_phase: `{}`\ngate_owner: `{}`",
+        "thread_key: `{}`\nworkspace: `{}`\nworkspace_execution_mode: `{}`\ncurrent_execution_mode: `{}`\ncurrent_collaboration_mode: `{}`\ncurrent_codex_thread_id: `{}`\ntui_active_codex_thread_id: `{}`\nadoption_state: `{}`\nlifecycle_status: `{}`\nbinding_status: `{}`\nrun_status: `{}`\ntitle_suffix: `{}`\ncurrent_phase: `{}`\ncurrent_owner: `{}`\ngate_session_id: `{}`\ngate_phase: `{}`\ngate_owner: `{}`",
         record.metadata.thread_key,
         workspace,
         workspace_execution_mode
             .map(|mode| mode.as_str().to_owned())
             .unwrap_or_else(|| "none".to_owned()),
         current_execution_mode,
+        current_collaboration_mode,
         current_codex_thread_id,
         tui_active_codex_thread_id,
         adoption_state,
@@ -608,6 +617,42 @@ pub(crate) async fn run_command(
                 .reply_markup(markup)
                 .await?;
         }
+        Command::PlanMode | Command::DefaultMode => {
+            if is_control_chat(msg) {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    None,
+                    "Use this command inside a workspace thread.",
+                )
+                .await?;
+                return Ok(());
+            }
+            let thread_id = msg.thread_id.context("thread message missing thread id")?;
+            let record = state
+                .repository
+                .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
+                .await?;
+            let mode = match command {
+                Command::PlanMode => CollaborationMode::Plan,
+                Command::DefaultMode => CollaborationMode::Default,
+                _ => unreachable!(),
+            };
+            let record = state
+                .repository
+                .update_session_collaboration_mode(record, mode)
+                .await?;
+            send_scoped_message(
+                bot,
+                msg.chat.id,
+                Some(thread_id),
+                format!("Collaboration mode is now `{}`.", mode.as_str()),
+            )
+            .await?;
+            let _ =
+                status_sync::refresh_thread_topic_title(bot, state, &record, "collaboration_mode")
+                    .await;
+        }
     }
     Ok(())
 }
@@ -634,6 +679,14 @@ pub(crate) async fn run_text_message(
         .repository
         .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
         .await?;
+    if let Some(advance) = state
+        .interactive_requests
+        .submit_text(msg.chat.id.0, thread_id_to_i32(thread_id), text.to_owned())
+        .await?
+    {
+        apply_interactive_advance(bot, state, msg.chat.id, thread_id, advance).await?;
+        return Ok(());
+    }
     let session = state.repository.read_session_binding(&record).await?;
     let (record, session) =
         maybe_route_telegram_input_to_tui_session(state, record, session).await?;
@@ -748,6 +801,7 @@ pub(crate) async fn run_text_message(
         workspace_path,
         existing_thread_id.to_owned(),
         text.to_owned(),
+        collaboration_mode_for_session(session.as_ref()),
     );
 
     Ok(())
@@ -762,6 +816,7 @@ fn spawn_text_turn(
     workspace_path: PathBuf,
     existing_thread_id: String,
     text: String,
+    collaboration_mode: CollaborationMode,
 ) {
     tokio::spawn(async move {
         if let Err(error) = execute_text_turn(
@@ -773,6 +828,7 @@ fn spawn_text_turn(
             workspace_path,
             &existing_thread_id,
             &text,
+            collaboration_mode,
         )
         .await
         {
@@ -803,6 +859,7 @@ async fn execute_text_turn(
     workspace_path: PathBuf,
     existing_thread_id: &str,
     text: &str,
+    collaboration_mode: CollaborationMode,
 ) -> Result<()> {
     let typing = TypingHeartbeat::start(bot.clone(), chat_id, Some(thread_id));
     let codex_workspace = shared_codex_workspace(state, workspace_path.clone()).await?;
@@ -819,13 +876,17 @@ async fn execute_text_turn(
     let mirror_repository = state.repository.clone();
     let mirror_session_id = existing_thread_id.to_owned();
     let execution_mode = workspace_execution_mode(&workspace_path).await?;
+    let interactive_bot = bot.clone();
+    let interactive_state = state.clone();
+    let interactive_thread_key = record.metadata.thread_key.clone();
 
     let result = state
         .codex
-        .run_locked_prompt_with_events_and_mode(
+        .run_locked_prompt_with_events_mode_and_requests(
             &codex_workspace,
             existing_thread_id,
             Some(execution_mode),
+            Some(collaboration_mode),
             text,
             |event| {
                 let preview = preview.clone();
@@ -843,6 +904,42 @@ async fn execute_text_turn(
                         let _ = mirror_repository
                             .append_transcript_mirror(&mirror_record, &entry)
                             .await;
+                    }
+                }
+            },
+            move |request| {
+                let interactive_bot = interactive_bot.clone();
+                let interactive_state = interactive_state.clone();
+                let interactive_thread_key = interactive_thread_key.clone();
+                async move {
+                    match request {
+                        CodexServerRequest::RequestUserInput { request_id, params } => {
+                            if params.questions.iter().any(|question| question.is_secret) {
+                                return Ok(None);
+                            }
+                            let (tx, rx) = oneshot::channel();
+                            let snapshot = interactive_state
+                                .interactive_requests
+                                .register_direct(
+                                    chat_id.0,
+                                    thread_id_to_i32(thread_id),
+                                    interactive_thread_key,
+                                    request_id,
+                                    params,
+                                    tx,
+                                )
+                                .await?;
+                            upsert_request_user_input_prompt(
+                                &interactive_bot,
+                                &interactive_state,
+                                chat_id,
+                                thread_id,
+                                &snapshot,
+                            )
+                            .await?;
+                            let response = rx.await.context("request_user_input response dropped")?;
+                            Ok(Some(response))
+                        }
                     }
                 }
             },
@@ -898,6 +995,9 @@ async fn execute_text_turn(
                     send_final_assistant_reply(bot, &record, Some(thread_id), final_text).await?;
                 }
             }
+            if collaboration_mode == CollaborationMode::Plan && result.final_plan_text.is_some() {
+                send_plan_implementation_prompt(bot, chat_id, thread_id).await?;
+            }
             dispatch_workspace_telegram_outbox(bot, state, &record, thread_id).await?;
         }
         Err(error) => {
@@ -948,6 +1048,77 @@ async fn execute_text_turn(
         }
     }
 
+    Ok(())
+}
+
+pub(crate) async fn launch_plan_implementation_turn(
+    bot: &Bot,
+    state: &AppState,
+    message: &Message,
+) -> Result<()> {
+    let thread_id = message.thread_id.context("thread message missing thread id")?;
+    let record = state
+        .repository
+        .get_thread(message.chat.id.0, thread_id_to_i32(thread_id))
+        .await?;
+    let session = state.repository.read_session_binding(&record).await?;
+    let (record, session) =
+        maybe_route_telegram_input_to_tui_session(state, record, session).await?;
+    let (resolved_state, blocking_snapshot) =
+        resolve_busy_gate_state(state, &record, session.as_ref()).await?;
+    if resolved_state.is_archived() {
+        anyhow::bail!("workspace is archived");
+    }
+    let Some(existing_thread_id) = usable_bound_session_id(resolved_state, session.as_ref()) else {
+        anyhow::bail!("workspace is missing a usable session");
+    };
+    if let Some(busy) = blocking_snapshot.as_ref() {
+        anyhow::bail!("{}", status_sync::busy_text_message(busy, false));
+    }
+    let workspace_path =
+        ensure_bound_workspace_runtime(state, session.as_ref().context("missing binding")?).await?;
+    let record = state
+        .repository
+        .update_session_collaboration_mode(record, CollaborationMode::Default)
+        .await?;
+    state
+        .repository
+        .append_log(&record, LogDirection::User, PLAN_IMPLEMENTATION_MESSAGE, None)
+        .await?;
+    let _ = state
+        .repository
+        .append_transcript_mirror(
+            &record,
+            &TranscriptMirrorEntry {
+                timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                session_id: existing_thread_id.to_owned(),
+                origin: TranscriptMirrorOrigin::Telegram,
+                role: TranscriptMirrorRole::User,
+                delivery: TranscriptMirrorDelivery::Final,
+                phase: None,
+                text: PLAN_IMPLEMENTATION_MESSAGE.to_owned(),
+            },
+        )
+        .await?;
+    record_bot_status_event(
+        &workspace_path,
+        "bot_turn_started",
+        Some(existing_thread_id),
+        None,
+        Some(PLAN_IMPLEMENTATION_MESSAGE),
+    )
+    .await?;
+    spawn_text_turn(
+        bot.clone(),
+        state.clone(),
+        record,
+        message.chat.id,
+        thread_id,
+        workspace_path,
+        existing_thread_id.to_owned(),
+        PLAN_IMPLEMENTATION_MESSAGE.to_owned(),
+        CollaborationMode::Default,
+    );
     Ok(())
 }
 

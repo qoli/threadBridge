@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 use uuid::Uuid;
 
+use crate::collaboration_mode::CollaborationMode;
 use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot, workspace_execution_mode};
 use crate::image_artifacts::{ImageAnalysisArtifact, PendingImageBatch, PendingImageBatchEntry};
 use crate::thread_transition::{
@@ -61,6 +62,8 @@ pub struct SessionBinding {
     pub schema_version: u32,
     #[serde(default)]
     pub current_codex_thread_id: Option<String>,
+    #[serde(default)]
+    pub current_collaboration_mode: Option<CollaborationMode>,
     #[serde(default)]
     pub current_execution_mode: Option<ExecutionMode>,
     #[serde(default)]
@@ -242,6 +245,9 @@ impl SessionBinding {
                 .take()
                 .or(self.legacy_codex_thread_id.take());
         }
+        if self.current_collaboration_mode.is_none() {
+            self.current_collaboration_mode = Some(CollaborationMode::Default);
+        }
         self.legacy_codex_thread_id = None;
         self.legacy_selected_session_id = None;
         self
@@ -254,8 +260,9 @@ impl SessionBinding {
     ) -> Self {
         let now = now_iso();
         Self {
-            schema_version: 3,
+            schema_version: 4,
             current_codex_thread_id,
+            current_collaboration_mode: Some(CollaborationMode::Default),
             current_execution_mode: execution.execution_mode,
             current_approval_policy: execution.approval_policy,
             current_sandbox_policy: execution.sandbox_policy,
@@ -1149,6 +1156,21 @@ impl ThreadRepository {
             )
             .await?;
         }
+        self.write_session_binding(&record, &binding).await?;
+        Ok(record)
+    }
+
+    pub async fn update_session_collaboration_mode(
+        &self,
+        record: ThreadRecord,
+        mode: CollaborationMode,
+    ) -> Result<ThreadRecord> {
+        let mut binding = self
+            .read_session_binding(&record)
+            .await?
+            .context("session binding is missing")?;
+        binding.current_collaboration_mode = Some(mode);
+        binding.updated_at = now_iso();
         self.write_session_binding(&record, &binding).await?;
         Ok(record)
     }

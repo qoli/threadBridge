@@ -6,8 +6,12 @@ use std::sync::{Arc, Mutex as StdMutex};
 use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+use teloxide::payloads::SendMessageSetters;
+use teloxide::requests::Requester;
+use teloxide::types::{MessageId, ThreadId};
+use teloxide::Bot;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::AbortHandle;
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::connect_async;
@@ -16,12 +20,19 @@ use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tracing::{debug, info, warn};
 
 use crate::app_server_runtime::{WorkspaceRuntimeState, write_workspace_runtime_state_file};
+use crate::collaboration_mode::CollaborationMode;
+use crate::interactive::{
+    InteractiveRequestRegistry, ServerRequestResolvedNotification, ToolRequestUserInputParams,
+};
 use crate::process_transcript::{
     process_entry_from_codex_event, process_entry_from_workspace_message, workspace_item_diagnostic,
 };
 use crate::repository::ThreadRepository;
 use crate::repository::TranscriptMirrorOrigin;
-use crate::telegram_runtime::final_reply::compose_visible_final_reply;
+use crate::telegram_runtime::{
+    final_reply::compose_visible_final_reply, render_request_user_input_prompt,
+    request_user_input_markup, send_plan_implementation_prompt,
+};
 use crate::workspace_status::{
     record_tui_proxy_completed, record_tui_proxy_connected, record_tui_proxy_disconnected,
     record_tui_proxy_preview_text, record_tui_proxy_process_event, record_tui_proxy_prompt,
@@ -40,6 +51,8 @@ enum TrackedRequestMethod {
 pub struct TuiProxyManager {
     repository: ThreadRepository,
     inner: Arc<Mutex<HashMap<String, WorkspaceTuiProxy>>>,
+    daemon_request_channels: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<WsMessage>>>>,
+    telegram_bridge: Arc<Mutex<Option<TelegramInteractiveBridge>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,12 +63,57 @@ struct WorkspaceTuiProxy {
     abort_handle: AbortHandle,
 }
 
+#[derive(Debug, Clone)]
+struct TelegramInteractiveBridge {
+    bot: Bot,
+    registry: InteractiveRequestRegistry,
+}
+
 impl TuiProxyManager {
     pub fn new(repository: ThreadRepository) -> Self {
         Self {
             repository,
             inner: Arc::new(Mutex::new(HashMap::new())),
+            daemon_request_channels: Arc::new(Mutex::new(HashMap::new())),
+            telegram_bridge: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub async fn configure_telegram_bridge(
+        &self,
+        bot_token: String,
+        registry: InteractiveRequestRegistry,
+    ) {
+        self.telegram_bridge
+            .lock()
+            .await
+            .replace(TelegramInteractiveBridge {
+                bot: Bot::new(bot_token),
+                registry,
+            });
+    }
+
+    pub async fn submit_request_user_input_response<T: serde::Serialize>(
+        &self,
+        thread_key: &str,
+        request_id: i64,
+        response: &T,
+    ) -> Result<()> {
+        let payload = serde_json::to_string(&json!({
+            "id": request_id,
+            "result": serde_json::to_value(response)?,
+        }))?;
+        let channel = self
+            .daemon_request_channels
+            .lock()
+            .await
+            .get(thread_key)
+            .cloned()
+            .context("no live TUI proxy channel for thread")?;
+        channel
+            .send(WsMessage::Text(payload))
+            .map_err(|_| anyhow!("failed to forward response into live TUI proxy"))?;
+        Ok(())
     }
 
     pub async fn ensure_workspace_proxy(
@@ -113,6 +171,8 @@ impl TuiProxyManager {
         let proxy_base_ws_url = format!("ws://127.0.0.1:{}", local_addr.port());
         let daemon_ws_url = daemon_ws_url.to_owned();
         let repository = self.repository.clone();
+        let daemon_request_channels = self.daemon_request_channels.clone();
+        let telegram_bridge = self.telegram_bridge.clone();
         let workspace_for_task = workspace_path.clone();
         let daemon_ws_url_for_task = daemon_ws_url.clone();
 
@@ -120,6 +180,8 @@ impl TuiProxyManager {
             if let Err(error) = run_proxy_listener(
                 listener,
                 repository,
+                daemon_request_channels,
+                telegram_bridge,
                 workspace_for_task,
                 daemon_ws_url_for_task,
             )
@@ -172,12 +234,16 @@ fn should_reuse_existing_proxy(
 async fn run_proxy_listener(
     listener: TcpListener,
     repository: ThreadRepository,
+    daemon_request_channels: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<WsMessage>>>>,
+    telegram_bridge: Arc<Mutex<Option<TelegramInteractiveBridge>>>,
     workspace_path: PathBuf,
     daemon_ws_url: String,
 ) -> Result<()> {
     loop {
         let (stream, remote_addr) = listener.accept().await?;
         let repository = repository.clone();
+        let daemon_request_channels = daemon_request_channels.clone();
+        let telegram_bridge = telegram_bridge.clone();
         let workspace_path = workspace_path.clone();
         let daemon_ws_url = daemon_ws_url.clone();
         tokio::spawn(async move {
@@ -185,6 +251,8 @@ async fn run_proxy_listener(
                 stream,
                 remote_addr,
                 repository,
+                daemon_request_channels,
+                telegram_bridge,
                 workspace_path,
                 daemon_ws_url,
             )
@@ -200,6 +268,8 @@ async fn handle_proxy_connection(
     stream: TcpStream,
     remote_addr: SocketAddr,
     repository: ThreadRepository,
+    daemon_request_channels: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<WsMessage>>>>,
+    telegram_bridge: Arc<Mutex<Option<TelegramInteractiveBridge>>>,
     workspace_path: PathBuf,
     daemon_ws_url: String,
 ) -> Result<()> {
@@ -227,9 +297,16 @@ async fn handle_proxy_connection(
         .await
         .with_context(|| format!("failed to connect TUI proxy to daemon at {daemon_ws_url}"))?;
     let mut client_ws = client_ws;
+    let (injected_tx, mut injected_rx) = mpsc::unbounded_channel();
+    daemon_request_channels
+        .lock()
+        .await
+        .insert(thread_key.clone(), injected_tx);
     let mut tracked_request_method_by_id: HashMap<i64, TrackedRequestMethod> = HashMap::new();
+    let mut tracked_turn_mode_by_request_id: HashMap<i64, CollaborationMode> = HashMap::new();
     let mut current_session_id: Option<String> = None;
     let mut local_turn_ids: HashSet<String> = HashSet::new();
+    let mut local_turn_modes: HashMap<String, CollaborationMode> = HashMap::new();
     let mut latest_assistant_message = String::new();
     let mut latest_preview_segment = String::new();
     let mut latest_plan_by_id: HashMap<String, String> = HashMap::new();
@@ -251,6 +328,7 @@ async fn handle_proxy_connection(
                 };
                 let client_message = client_message.context("failed to read TUI client websocket message")?;
                 maybe_track_client_turn_start(&workspace_path, current_session_id.as_deref(), &client_message).await?;
+                maybe_track_turn_mode_request(&client_message, &mut tracked_turn_mode_by_request_id)?;
                 if let Some((request_id, method)) = track_client_request(&client_message)? {
                     tracked_request_method_by_id.insert(request_id, method);
                 }
@@ -274,12 +352,15 @@ async fn handle_proxy_connection(
                     &workspace_path,
                     &daemon_message,
                     &mut tracked_request_method_by_id,
+                    &mut tracked_turn_mode_by_request_id,
                     &mut current_session_id,
                     &mut local_turn_ids,
+                    &mut local_turn_modes,
                     &mut latest_assistant_message,
                     &mut latest_preview_segment,
                     &mut latest_plan_by_id,
                     &mut latest_completed_plan_text,
+                    &telegram_bridge,
                 ).await?;
                 if matches!(daemon_message, WsMessage::Close(_)) {
                     let _ = client_ws.send(daemon_message).await;
@@ -290,9 +371,19 @@ async fn handle_proxy_connection(
                     .await
                     .context("failed to forward daemon websocket message to TUI client")?;
             }
+            injected_message = injected_rx.recv() => {
+                let Some(injected_message) = injected_message else {
+                    break;
+                };
+                daemon_ws
+                    .send(injected_message)
+                    .await
+                    .context("failed to forward injected message to daemon")?;
+            }
         }
     }
 
+    daemon_request_channels.lock().await.remove(&thread_key);
     record_tui_proxy_disconnected(&workspace_path, &thread_key, current_session_id.as_deref())
         .await?;
     debug!(
@@ -346,7 +437,9 @@ async fn maybe_track_server_response(
     thread_key: &str,
     message: &WsMessage,
     tracked_request_method_by_id: &mut HashMap<i64, TrackedRequestMethod>,
+    tracked_turn_mode_by_request_id: &mut HashMap<i64, CollaborationMode>,
     local_turn_ids: &mut HashSet<String>,
+    local_turn_modes: &mut HashMap<String, CollaborationMode>,
 ) -> Result<Option<String>> {
     let text = match message {
         WsMessage::Text(text) => text.as_str(),
@@ -379,6 +472,9 @@ async fn maybe_track_server_response(
             .and_then(Value::as_str)
         {
             local_turn_ids.insert(turn_id.to_owned());
+            if let Some(mode) = tracked_turn_mode_by_request_id.remove(&response_id) {
+                local_turn_modes.insert(turn_id.to_owned(), mode);
+            }
         }
         return Ok(None);
     }
@@ -435,6 +531,37 @@ async fn maybe_track_client_turn_start(
     Ok(())
 }
 
+fn maybe_track_turn_mode_request(
+    message: &WsMessage,
+    tracked_turn_mode_by_request_id: &mut HashMap<i64, CollaborationMode>,
+) -> Result<()> {
+    let text = match message {
+        WsMessage::Text(text) => text.as_str(),
+        WsMessage::Binary(bytes) => {
+            std::str::from_utf8(bytes).context("invalid utf8 client frame")?
+        }
+        _ => return Ok(()),
+    };
+    let payload: Value = match serde_json::from_str(text) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(()),
+    };
+    if payload.get("method").and_then(Value::as_str) != Some("turn/start") {
+        return Ok(());
+    }
+    let Some(request_id) = payload.get("id").and_then(Value::as_i64) else {
+        return Ok(());
+    };
+    let mode = payload
+        .get("params")
+        .and_then(|params| params.get("collaborationMode"))
+        .and_then(Value::as_str)
+        .and_then(CollaborationMode::from_wire)
+        .unwrap_or(CollaborationMode::Default);
+    tracked_turn_mode_by_request_id.insert(request_id, mode);
+    Ok(())
+}
+
 fn extract_turn_prompt(payload: &Value) -> Option<String> {
     let input = payload
         .get("params")
@@ -460,19 +587,33 @@ async fn maybe_track_server_message(
     workspace_path: &Path,
     message: &WsMessage,
     tracked_request_method_by_id: &mut HashMap<i64, TrackedRequestMethod>,
+    tracked_turn_mode_by_request_id: &mut HashMap<i64, CollaborationMode>,
     current_session_id: &mut Option<String>,
     local_turn_ids: &mut HashSet<String>,
+    local_turn_modes: &mut HashMap<String, CollaborationMode>,
     latest_assistant_message: &mut String,
     latest_preview_segment: &mut String,
     latest_plan_by_id: &mut HashMap<String, String>,
     latest_completed_plan_text: &mut Option<String>,
+    telegram_bridge: &Arc<Mutex<Option<TelegramInteractiveBridge>>>,
 ) -> Result<()> {
+    maybe_bridge_request_user_input(
+        repository,
+        thread_key,
+        message,
+        telegram_bridge,
+    )
+    .await?;
+    maybe_bridge_resolved_request(message, telegram_bridge).await?;
+
     if let Some(session_id) = maybe_track_server_response(
         repository,
         thread_key,
         message,
         tracked_request_method_by_id,
+        tracked_turn_mode_by_request_id,
         local_turn_ids,
+        local_turn_modes,
     )
     .await?
     {
@@ -578,6 +719,16 @@ async fn maybe_track_server_message(
                     final_text.as_deref(),
                 )
                 .await?;
+                if local_turn_modes.remove(&completed_turn_id) == Some(CollaborationMode::Plan)
+                    && latest_completed_plan_text.is_some()
+                {
+                    maybe_send_plan_prompt_from_bridge(
+                        repository,
+                        thread_key,
+                        telegram_bridge,
+                    )
+                    .await?;
+                }
             }
             latest_assistant_message.clear();
             latest_preview_segment.clear();
@@ -590,6 +741,108 @@ async fn maybe_track_server_message(
             *latest_completed_plan_text = None;
         }
     }
+    Ok(())
+}
+
+async fn maybe_bridge_request_user_input(
+    repository: &ThreadRepository,
+    thread_key: &str,
+    message: &WsMessage,
+    telegram_bridge: &Arc<Mutex<Option<TelegramInteractiveBridge>>>,
+) -> Result<()> {
+    let Some((request_id, params)) = maybe_extract_request_user_input(message)? else {
+        return Ok(());
+    };
+    let Some(bridge) = telegram_bridge.lock().await.clone() else {
+        return Ok(());
+    };
+    let Some(record) = repository.find_active_thread_by_key(thread_key).await? else {
+        return Ok(());
+    };
+    let Some(telegram_thread_id) = record.metadata.message_thread_id else {
+        return Ok(());
+    };
+    if params.questions.iter().any(|question| question.is_secret) {
+        return Ok(());
+    }
+    let snapshot = bridge
+        .registry
+        .register_tui(
+            record.metadata.chat_id,
+            telegram_thread_id,
+            thread_key.to_owned(),
+            request_id,
+            params,
+        )
+        .await?;
+    let text = render_request_user_input_prompt(&snapshot);
+    let request = bridge
+        .bot
+        .send_message(teloxide::types::ChatId(record.metadata.chat_id), text)
+        .message_thread_id(ThreadId(MessageId(telegram_thread_id)));
+    let sent = if let Some(markup) = request_user_input_markup(snapshot.request_id, &snapshot.question)
+    {
+        request.reply_markup(markup).await?
+    } else {
+        request.await?
+    };
+    bridge
+        .registry
+        .set_prompt_message_id(record.metadata.chat_id, telegram_thread_id, sent.id.0)
+        .await;
+    Ok(())
+}
+
+async fn maybe_bridge_resolved_request(
+    message: &WsMessage,
+    telegram_bridge: &Arc<Mutex<Option<TelegramInteractiveBridge>>>,
+) -> Result<()> {
+    let Some(resolved) = maybe_extract_server_request_resolved(message)? else {
+        return Ok(());
+    };
+    let Some(bridge) = telegram_bridge.lock().await.clone() else {
+        return Ok(());
+    };
+    let Some(resolved_request) = bridge
+        .registry
+        .resolve_request_id(&resolved.thread_id, &resolved.request_id)
+        .await
+    else {
+        return Ok(());
+    };
+    if let Some(message_id) = resolved_request.prompt_message_id {
+        let _ = bridge
+            .bot
+            .edit_message_text(
+                teloxide::types::ChatId(resolved_request.chat_id),
+                MessageId(message_id),
+                "Info: Questions resolved.",
+            )
+            .await;
+    }
+    Ok(())
+}
+
+async fn maybe_send_plan_prompt_from_bridge(
+    repository: &ThreadRepository,
+    thread_key: &str,
+    telegram_bridge: &Arc<Mutex<Option<TelegramInteractiveBridge>>>,
+) -> Result<()> {
+    let Some(bridge) = telegram_bridge.lock().await.clone() else {
+        return Ok(());
+    };
+    let Some(record) = repository.find_active_thread_by_key(thread_key).await? else {
+        return Ok(());
+    };
+    let Some(telegram_thread_id) = record.metadata.message_thread_id else {
+        return Ok(());
+    };
+    send_plan_implementation_prompt(
+        &bridge.bot,
+        teloxide::types::ChatId(record.metadata.chat_id),
+        ThreadId(MessageId(telegram_thread_id)),
+    )
+    .await?;
     Ok(())
 }
 
@@ -730,6 +983,55 @@ fn maybe_extract_completed_plan_text(message: &WsMessage) -> Result<Option<Strin
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_owned))
+}
+
+fn maybe_extract_request_user_input(
+    message: &WsMessage,
+) -> Result<Option<(i64, ToolRequestUserInputParams)>> {
+    let text = match message {
+        WsMessage::Text(text) => text.as_str(),
+        WsMessage::Binary(bytes) => {
+            std::str::from_utf8(bytes).context("invalid utf8 daemon frame")?
+        }
+        _ => return Ok(None),
+    };
+    let payload: Value = match serde_json::from_str(text) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(None),
+    };
+    if payload.get("method").and_then(Value::as_str) != Some("item/tool/requestUserInput") {
+        return Ok(None);
+    }
+    let Some(request_id) = payload.get("id").and_then(Value::as_i64) else {
+        return Ok(None);
+    };
+    let params: ToolRequestUserInputParams = serde_json::from_value(
+        payload.get("params").cloned().unwrap_or(Value::Null),
+    )
+    .context("invalid item/tool/requestUserInput params")?;
+    Ok(Some((request_id, params)))
+}
+
+fn maybe_extract_server_request_resolved(
+    message: &WsMessage,
+) -> Result<Option<ServerRequestResolvedNotification>> {
+    let text = match message {
+        WsMessage::Text(text) => text.as_str(),
+        WsMessage::Binary(bytes) => {
+            std::str::from_utf8(bytes).context("invalid utf8 daemon frame")?
+        }
+        _ => return Ok(None),
+    };
+    let payload: Value = match serde_json::from_str(text) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(None),
+    };
+    if payload.get("method").and_then(Value::as_str) != Some("serverRequest/resolved") {
+        return Ok(None);
+    }
+    let params = serde_json::from_value(payload.get("params").cloned().unwrap_or(Value::Null))
+        .context("invalid serverRequest/resolved params")?;
+    Ok(Some(params))
 }
 
 fn extract_completed_turn_id(message: &WsMessage) -> Result<Option<String>> {
