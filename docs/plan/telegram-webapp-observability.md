@@ -11,12 +11,17 @@
 - workspace shared status
 - Telegram topic title 狀態同步
 - 本地 management API 的 query / SSE 骨架
+- 本地 `session-first observability` API：
+  - `GET /api/threads/:thread_key/sessions`
+  - `GET /api/threads/:thread_key/sessions/:session_id/records`
+- 本地 web 管理面已開始提供 workspace-card `Sessions` pane 與 records timeline
 
 目前仍缺：
 
 - Web App UI
 - 以 [working-session-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/working-session-observability.md) 為基礎的 thread / turn / tool timeline 展示
-- 面向 observability 的 thread summary API、working-session timeline、與 artifact view
+- Telegram Web App 自己的 auth / HTTPS / route shell
+- artifact view 與遠端載體特有的安全邊界
 
 目前新增確認的限制是：
 
@@ -139,6 +144,8 @@ Telegram Web App 的最大產品摩擦不是 UI，而是部署模型。
 working session 的資料模型、timeline record、artifact 關聯，之後應引用：
 
 - [working-session-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/working-session-observability.md)
+
+換句話說，這份文檔不再負責定義本地 session query surface 本身；那部分目前應直接視為既有能力。
 
 ## 要觀測什麼
 

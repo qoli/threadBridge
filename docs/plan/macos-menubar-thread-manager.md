@@ -15,6 +15,8 @@
   - `GET /api/runtime-health`
   - `GET /api/threads`
   - `GET /api/threads/:thread_key/transcript`
+  - `GET /api/threads/:thread_key/sessions`
+  - `GET /api/threads/:thread_key/sessions/:session_id/records`
   - `GET /api/workspaces`
   - `GET /api/archived-threads`
   - `POST /api/workspaces/pick-and-add`
@@ -52,6 +54,8 @@
 - 本地管理面已開始提供 `open workspace` control action
 - 本地管理面已開始提供 adopt / reject pending TUI handoff control action
 - 本地管理面已開始提供 transcript observability pane，可查看 final/process transcript
+- 本地管理面已開始提供 workspace-card `Sessions` pane，可查看 session summary 與 inline records timeline
+- workspace card 內的 `Sessions` / `Transcript` / `Launch Output` / `Advanced Workspace Details` 現在會在 refresh 後保留展開狀態
 - Telegram bot 啟動已抽成可複用 runner，並由 desktop runtime 單一路徑持有
 - setup 儲存後，desktop runtime 已會在背景重新嘗試拉起 Telegram polling，不再只剩重啟一條路
 
@@ -152,6 +156,7 @@ v1 的 tray menu 明確不再提供：
 - workspace list / cards
 - runtime health summary
 - recent session list
+- `Sessions` timeline pane
 - managed Codex settings
 - archive / restore / repair / adopt 等 action 的確認流程
 

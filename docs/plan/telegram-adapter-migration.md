@@ -9,6 +9,7 @@
 - final reply renderer 已有較清楚的 Telegram 專用邊界
 - topic title watcher / busy gate 開始把平台表現和狀態來源分開
 - desktop runtime 已成為正式 owner 啟動模型，Telegram 不再是共享 runtime 的正式 owner
+- 本地 session-first observability API 與 workspace-card `Sessions` pane 已落地，但 Telegram 仍未接上這條能力面
 
 但整體架構仍未完成 Telegram adapter 化。
 
@@ -20,7 +21,7 @@
 
 目前也新增記錄一組 Telegram-specific 的近期能力想法：
 
-- Telegram observability 應優先接上 session-first API，而不只停留在 thread transcript feed
+- Telegram observability 應優先接上已落地的 session-first API，而不只停留在 thread transcript feed
 - Telegram 之後應可提供 Codex 工作模型與 execution mode 的設定入口
 - Telegram 之後也應可提供 desktop launch control surface：
   - 用 slash command 觸發 desktop endpoint 的 `launch new` / `launch current` / `launch resume`
@@ -77,9 +78,13 @@
 
 ### 1. Session-first observability
 
+- 本地 `session-first observability` 已部分落地：
+  - `GET /api/threads/:thread_key/sessions`
+  - `GET /api/threads/:thread_key/sessions/:session_id/records`
+  - workspace-card `Sessions` pane
 - Telegram 相關 observability 應優先建立在 session-first API 之上
 - 不應讓 Telegram surface 長期依賴 thread transcript feed 自行分組 `session_id`
-- 換句話說，Telegram 若要補 observability / debug 能力，應直接消費正式的 session query surface
+- 換句話說，Telegram 若要補 observability / debug 能力，應直接消費既有的正式 session query surface，而不是再定義自己的 session timeline 模型
 
 ### 2. Model / Mode control surface
 

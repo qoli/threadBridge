@@ -2,7 +2,7 @@
 
 ## 目前進度
 
-這份文檔目前仍是純草稿，但它描述的前置能力已有一部分存在。
+這份文檔已從純草稿進入「部分落地」，但仍不是完整主規格。
 
 目前已實作：
 
@@ -16,15 +16,25 @@
   - `phase`
   - `text`
 - management API 已提供 `GET /api/threads/:thread_key/transcript`
-- management UI 已有初版 transcript observability pane，可查看 `final` / `process` transcript
+- `runtime_protocol` 已新增：
+  - `WorkingSessionSummaryView`
+  - `WorkingSessionRecordView`
+- management API 已提供：
+  - `GET /api/threads/:thread_key/sessions`
+  - `GET /api/threads/:thread_key/sessions/:session_id/records`
+- management UI 已有：
+  - transcript observability pane，可查看 `final` / `process` transcript
+  - workspace card 內的 `Sessions` pane，可直接打開 session summary 與 records timeline
+- `Sessions` / `Transcript` / `Launch Output` / `Advanced Workspace Details` 的展開狀態現在會在 refresh 後保留
 - process transcript 已開始覆蓋 `Plan` / `Tool` 摘要
+- session summary / records 已開始從 transcript mirror、recent session history、workspace session-status、以及 session binding broken 狀態即時計算
 
 目前尚未完成：
 
-- 把 `working session` 做成 desktop runtime / web 管理面的正式一級入口
-- session list / session detail / session records 的正式 API
-- 以單一 session 視角展示完整的 user prompt、assistant reply、tool use、error 與 artifact
-- tool input / result / request file / result file 的結構化關聯
+- `GET /api/threads/:thread_key/sessions/:session_id` 單一 summary route 尚未存在
+- `GET /api/threads/:thread_key/sessions/:session_id/artifacts` 尚未存在
+- tool input / result / request file / result file 的結構化 artifact 關聯仍未收斂
+- 獨立 observability page / route 尚未實作；目前仍是 workspace card 內的 pane
 - retention、redaction、以及 mode-aware observability 邊界
 
 目前新增確認的部署方向是：
@@ -205,7 +215,6 @@
   - `assistant_final`
   - `process_plan`
   - `process_tool`
-  - `status`
   - `error`
 - `origin`
 - `role`
@@ -215,9 +224,6 @@
   - 若來自 transcript mirror，保留 `final` / `process`
 - `phase`
   - 若來自 process transcript，保留 `plan` / `tool`
-- `tool_name`
-- `tool_detail`
-- `artifact_refs`
 - `source_ref`
 
 其中：
@@ -227,7 +233,11 @@
 - `delivery` / `phase`
   - 是保留下來的底層 debug metadata
 
-初版允許 `kind` 先由現有 transcript mirror 衍生，而不是一開始就要求所有 runtime path 重新寫事件格式。
+目前已落地的 v1 仍刻意保持最小：
+
+- `kind` 先由現有 transcript mirror 與 binding/session-status 衍生
+- `source_ref` 目前只標示簡短來源，例如 `transcript_mirror` / `session_binding`
+- `tool_name` / `tool_detail` / `artifact_refs` 尚未成為正式 wire 欄位
 
 ### 3. `SessionArtifactRef`
 
@@ -341,28 +351,35 @@ web UI 不應直接讀這些檔案。
 
 而不是完整 session 入口本身。
 
-建議補上：
+目前已存在：
 
 - `GET /api/threads/:thread_key/sessions`
   - 取 recent sessions summary
-- `GET /api/threads/:thread_key/sessions/:session_id`
-  - 取單一 session summary
 - `GET /api/threads/:thread_key/sessions/:session_id/records`
   - 取 session timeline
+
+目前尚未做：
+
+- `GET /api/threads/:thread_key/sessions/:session_id`
+  - 取單一 session summary
 - `GET /api/threads/:thread_key/sessions/:session_id/artifacts`
   - 取與 session 關聯的 artifact refs
 
 若未來管理面完全收斂成 workspace-first，也可以再補等價的 workspace route。
 
-但 v1 不需要先把 route 命名完全定死；先固定 session view model 更重要。
+目前已落地的 v1 也明確保留：
+
+- `GET /api/threads/:thread_key/transcript`
+  - 繼續作為 raw/debug transcript feed
+  - 不再被視為 session observability 的唯一入口
 
 ## 近期建議的最小落地切片
 
-這裡先明確記錄一個近期決策：
+這裡先明確記錄目前已採用的 v1 決策：
 
-- 下一步優先做 session-first API
-- 不優先做完整 observability UI
-- 也不優先把更多資料繼續堆進 thread transcript feed
+- 先做 session-first API，而不是繼續停留在 thread transcript feed
+- 先做 workspace card 內的最小 `Sessions` pane，而不是完整 observability 頁面
+- 不先引入新的 event store 或 artifact browser
 
 原因是：
 
@@ -370,13 +387,13 @@ web UI 不應直接讀這些檔案。
 - 但 UI 若想回答「現在是哪個 session 在跑」、「這次 session 做了哪些 tool」、「這次 session 的錯誤與 artifact 是什麼」，仍需要自己從 thread feed 推導
 - 這代表真正缺的不是更多 transcript，而是把既有資料整理成 session-first view
 
-因此近期較合理的最小切片應是：
+這個最小切片目前已落地：
 
 1. 在 `runtime_protocol` 中新增 `WorkingSessionSummaryView`
 2. 在 `runtime_protocol` 中新增 `WorkingSessionRecordView`
 3. 補 `GET /api/threads/:thread_key/sessions`
 4. 補 `GET /api/threads/:thread_key/sessions/:session_id/records`
-5. 初版先直接重用既有 `TranscriptMirrorEntry` 與 session artifact 關聯，不要求先引入新的 event store
+5. 初版先直接重用既有 `TranscriptMirrorEntry` 與 session-status / binding / recent history，不要求先引入新的 event store
 
 這個切片的目標不是一步到位做完整 session detail，而是先把：
 
@@ -386,7 +403,7 @@ web UI 不應直接讀這些檔案。
 - `delivery`
 - `phase`
 - `last_error`
-- artifact refs
+- refresh 後仍可維持展開的 session UI 入口
 
 整理成管理面可以直接消費的 read-only view。
 
@@ -418,6 +435,6 @@ web UI 不應直接讀這些檔案。
 
 1. 先把 `session_id` 從 transcript/mirror 提升為 management API 可直接查詢的一級實體。
 2. 在 `runtime_protocol` 中新增 `WorkingSessionSummaryView` 與 `WorkingSessionRecordView`，避免 UI 自行從 thread feed 分組。
-3. 先補 `GET /api/threads/:thread_key/sessions` 與 `GET /api/threads/:thread_key/sessions/:session_id/records`。
-4. 初版 timeline 先保留 `origin` / `delivery` / `phase`，不要過早把 process/final 差異抹平。
-5. 把 tool request/result/outbox 與 transcript mirror 建立最小 artifact 關聯，再決定是否需要更完整的 session detail、live stream 或 terminal replay。
+3. 下一步再決定是否需要 `GET /api/threads/:thread_key/sessions/:session_id` 單獨 summary route。
+4. 繼續保留 timeline 裡的 `origin` / `delivery` / `phase`，不要過早把 process/final 差異抹平。
+5. 之後再把 tool request/result/outbox 與 transcript mirror 建立最小 artifact 關聯，評估是否需要更完整的 session detail、live stream 或 terminal replay。

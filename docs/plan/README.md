@@ -23,7 +23,7 @@
   - `hcodex` self-heal 已移除，缺少 desktop owner 時會明確失敗
   - workspace heartbeat / runtime health 已改成以 desktop owner heartbeat 為主 authority
   - 舊 `CLI owner / handoff` 概念已退出現行模型，主語義改為 local/TUI mirror + idle/free readiness
-  - process transcript 已正式區分 final / process，並補上 management transcript read API、web observability pane 與 Telegram rolling preview 摘要
+  - process transcript 已正式區分 final / process，並補上 management transcript read API、session summary / records API、web observability pane，以及 Telegram rolling preview 摘要
   - 它同時也是 Telegram 退回通用 adapter 模式的前置條件
 
 ## 部分落地
@@ -49,10 +49,10 @@
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
   - 本地 management API 已開始承接它的 view / action 命名
   - local HTTP + SSE 已從草稿變成實際 transport
-  - 近期已再補上 runtime-owner reconcile、managed Codex build defaults、workspace launch config、continue-current launch control，以及 thread transcript read API
+  - 近期已再補上 runtime-owner reconcile、managed Codex build defaults、workspace launch config、continue-current launch control、thread transcript read API，以及 session summary / session records read API
   - `GET /api/threads` 已開始對外暴露 canonical `lifecycle_status`
   - runtime health 已改成 owner-canonical，`workspace_state` 僅保留 debug/observation 語義
-  - `runtime_protocol` 共享 view builder 已開始把 `ThreadStateView` / `ManagedWorkspaceView` / `ArchivedThreadView` / `RuntimeHealthView` 從 transport 層抽離
+  - `runtime_protocol` 共享 view builder 已開始把 `ThreadStateView` / `ManagedWorkspaceView` / `ArchivedThreadView` / `RuntimeHealthView` / `WorkingSession*View` 從 transport 層抽離
   - process transcript event / mirror model 已接到 management API、web UI 與 Telegram rolling preview，但 protocol 仍未收斂成正式 transport-neutral 契約，`/api/events` 也仍是 invalidation-style SSE
 - [macos-menubar-thread-manager.md](/Volumes/Data/Github/threadBridge/docs/plan/macos-menubar-thread-manager.md)
   - `threadbridge_desktop`、macOS-first tray menu、workspace-first browser management UI 已開始落地
@@ -61,10 +61,15 @@
   - tray menu 已收斂成 `New Session` 與 `Continue Telegram Session`
   - tray workspace label 現在已改成顯示 workspace execution mode，而不是 handoff `ready/degraded` 文案
   - management health view 已改成 owner heartbeat 為主的 desktop-first 模型
-  - management UI 已補上 transcript observability pane，且 adoption/repair action 已改成 owner-canonical 語義
+  - management UI 已補上 transcript observability pane、workspace-card `Sessions` pane 與 inline records timeline，且 adoption/repair action 已改成 owner-canonical 語義
   - management UI 已補上 workspace execution mode 切換、mode drift 提示，以及 mode-aware launch/resume commands
   - web 管理面新增確認的 UI 收斂方向是可評估以 HeroUI 重構
   - 目前新增確認的收斂方向是 `workspace = thread` 主模型、desktop-only 啟動與移除暫不可用的 onboarding
+- [working-session-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/working-session-observability.md)
+  - desktop runtime / web 管理面的 session 級 observability 已進入部分落地
+  - `WorkingSessionSummaryView` / `WorkingSessionRecordView`、`GET /api/threads/:thread_key/sessions`、`GET /api/threads/:thread_key/sessions/:session_id/records` 已落地
+  - management UI 已可在 workspace card 的 `Sessions` pane 中直接打開 session timeline
+  - artifact refs、獨立 observability page、retention / redaction 邊界仍未收斂
 - [codex-execution-modes.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-execution-modes.md)
   - execution mode 已進入正式 runtime 模型，不再只是草稿命題
   - workspace-local `workspace-config.json`、`ExecutionMode` enum、session execution snapshot 已落地
@@ -83,17 +88,13 @@
 
 ## 純草稿
 
-- [working-session-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/working-session-observability.md)
-  - desktop runtime / web 管理面的 session 級 observability 主草稿
-  - 目標是提供 working session 的可打開入口與 timeline / artifact view
-  - 近期已確認應優先補 session-first API，而不是繼續停留在 thread transcript feed
 - [message-queue-and-status-delivery.md](/Volumes/Data/Github/threadBridge/docs/plan/message-queue-and-status-delivery.md)
   - Telegram outbound delivery 主規格草稿
   - 也承接 busy / running 狀態訊息上的互動 control surface 規格
   - 以及文件 / 媒體超過 Telegram 上限時的 delivery fallback 規格
 - [telegram-webapp-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md)
   - Telegram Web App 觀測面草稿
-  - 目前已有通用 management API / SSE 骨架，但 thread-level observability API 仍未成形
+  - 本地 session-first observability API 與 workspace-card Sessions pane 已落地，但 Telegram Web App 本身仍未開始
   - 由於 Telegram Web App 依賴 HTTPS，近期已降為遠期可選載體，不再是本地 observability 的主路徑
 - [llm-guidance-and-goals.md](/Volumes/Data/Github/threadBridge/docs/plan/llm-guidance-and-goals.md)
   - secondary LLM 設定、AI 建議與 AI 目標層草稿

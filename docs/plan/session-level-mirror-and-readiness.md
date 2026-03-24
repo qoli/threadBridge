@@ -10,7 +10,7 @@
 - `tui_active_codex_thread_id`、adoption、auto-adopt、mirror 已落地
 - `threadBridge` 會為每個 bound workspace 啟動共享的 `codex app-server`
 - `./.threadbridge/bin/hcodex` 已是受管 remote TUI 入口，且依賴 desktop runtime owner
-- process transcript 已正式區分 final / process，並補上 management transcript read API、web observability pane 與 Telegram rolling preview
+- process transcript 已正式區分 final / process，並補上 management transcript read API、session summary / records API、web observability pane 與 Telegram rolling preview
 - Telegram 文本顯示已開始從舊 `CLI/TUI` label 收斂到更明確的使用者 / assistant / system 呈現
 
 ## 現況定位
@@ -73,6 +73,7 @@
 - `process transcript`
   - plan text、tool text、其他過程事件
 - Telegram 與 management UI 共用同一份 transcript/mirror 基礎
+- management API / web 管理面已開始把這份 mirror 基礎整理成 session summary / session records view
 - transport/source metadata 只保留作 debug / observability，不再作為 Telegram 可見角色命名
 
 ## 與本地管理面的關係
