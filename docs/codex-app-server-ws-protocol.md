@@ -196,6 +196,9 @@ server notification 例子：
 - `item/agentMessage/delta`
 - `error`
 
+也就是說，雖然 upstream 已提供 `item/plan/delta`，但以今天的 `threadBridge` 代碼來看，這條 notification 尚未在 `codex.rs` 的 direct consumer 路徑被直接接住。
+`codex plan` mirror 的具體補齊方向見 [codex-plan-mirror.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-plan-mirror.md)。
+
 ## `ThreadItem` 真實形狀
 
 上游的 `ItemStartedNotification` / `ItemCompletedNotification` 形狀是：
