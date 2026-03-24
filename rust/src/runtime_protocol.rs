@@ -1,13 +1,18 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-use anyhow::Result;
-use serde::Serialize;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 use crate::execution_mode::{ExecutionMode, workspace_execution_mode};
-use crate::repository::{RecentCodexSessionEntry, SessionBinding, ThreadRepository};
+use crate::repository::{
+    RecentCodexSessionEntry, SessionBinding, ThreadRecord, ThreadRepository,
+    TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin, TranscriptMirrorPhase,
+    TranscriptMirrorRole,
+};
 use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus, WorkspaceRuntimeHeartbeat};
 use crate::thread_state::resolve_thread_state;
+use crate::workspace_status::read_session_status;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeHealthView {
@@ -115,9 +120,63 @@ pub struct ArchivedThreadView {
     pub previous_message_thread_ids: Vec<i32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkingSessionRecordKind {
+    UserPrompt,
+    AssistantFinal,
+    ProcessPlan,
+    ProcessTool,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkingSessionSummaryView {
+    pub session_id: String,
+    pub thread_key: String,
+    pub workspace_cwd: String,
+    pub started_at: Option<String>,
+    pub updated_at: String,
+    pub run_status: String,
+    pub origins_seen: Vec<TranscriptMirrorOrigin>,
+    pub record_count: usize,
+    pub tool_use_count: usize,
+    pub has_final_reply: bool,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkingSessionRecordView {
+    pub timestamp: String,
+    pub session_id: String,
+    pub kind: WorkingSessionRecordKind,
+    pub origin: Option<TranscriptMirrorOrigin>,
+    pub role: Option<TranscriptMirrorRole>,
+    pub summary: String,
+    pub text: String,
+    pub delivery: Option<TranscriptMirrorDelivery>,
+    pub phase: Option<TranscriptMirrorPhase>,
+    pub source_ref: String,
+}
+
 #[derive(Debug)]
 struct WorkspaceAggregateView {
     items: Vec<ManagedWorkspaceView>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct WorkingSessionAggregate {
+    entries: Vec<TranscriptMirrorEntry>,
+    status_updated_at: Option<String>,
+    is_running: bool,
+    history_updated_at: Option<String>,
+    last_error: Option<WorkingSessionError>,
+}
+
+#[derive(Debug, Clone)]
+struct WorkingSessionError {
+    timestamp: String,
+    reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -309,6 +368,238 @@ pub async fn build_thread_views(repository: &ThreadRepository) -> Result<Vec<Thr
     }
     views.sort_by(|a, b| a.thread_key.cmp(&b.thread_key));
     Ok(views)
+}
+
+pub async fn build_working_session_summaries(
+    repository: &ThreadRepository,
+    record: &ThreadRecord,
+    binding: &SessionBinding,
+) -> Result<Vec<WorkingSessionSummaryView>> {
+    let workspace_cwd = binding
+        .workspace_cwd
+        .clone()
+        .context("managed workspace is missing workspace_cwd")?;
+    let aggregates = build_working_session_aggregates(repository, record, binding).await?;
+    let mut summaries = Vec::new();
+    for (session_id, aggregate) in aggregates {
+        let started_at = aggregate.entries.first().map(|entry| entry.timestamp.clone());
+        let updated_at = session_updated_at(&aggregate)
+            .or_else(|| started_at.clone())
+            .unwrap_or_else(|| binding.updated_at.clone());
+        let last_error = aggregate.last_error.as_ref().map(|error| error.reason.clone());
+        let record_count = aggregate.entries.len() + usize::from(last_error.is_some());
+        summaries.push(WorkingSessionSummaryView {
+            session_id,
+            thread_key: record.metadata.thread_key.clone(),
+            workspace_cwd: workspace_cwd.clone(),
+            started_at,
+            updated_at,
+            run_status: if aggregate.is_running {
+                "running".to_owned()
+            } else {
+                "idle".to_owned()
+            },
+            origins_seen: origins_seen_for_entries(&aggregate.entries),
+            record_count,
+            tool_use_count: aggregate
+                .entries
+                .iter()
+                .filter(|entry| {
+                    entry.delivery == TranscriptMirrorDelivery::Process
+                        && entry.phase == Some(TranscriptMirrorPhase::Tool)
+                })
+                .count(),
+            has_final_reply: aggregate.entries.iter().any(|entry| {
+                entry.role == TranscriptMirrorRole::Assistant
+                    && entry.delivery == TranscriptMirrorDelivery::Final
+            }),
+            last_error,
+        });
+    }
+    summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.session_id.cmp(&b.session_id)));
+    Ok(summaries)
+}
+
+pub async fn build_working_session_records(
+    repository: &ThreadRepository,
+    record: &ThreadRecord,
+    binding: &SessionBinding,
+    session_id: &str,
+) -> Result<Option<Vec<WorkingSessionRecordView>>> {
+    let aggregates = build_working_session_aggregates(repository, record, binding).await?;
+    let Some(aggregate) = aggregates.get(session_id) else {
+        return Ok(None);
+    };
+    let mut records = aggregate
+        .entries
+        .iter()
+        .filter_map(working_session_record_from_entry)
+        .collect::<Vec<_>>();
+    if let Some(error) = aggregate.last_error.as_ref() {
+        records.push(WorkingSessionRecordView {
+            timestamp: error.timestamp.clone(),
+            session_id: session_id.to_owned(),
+            kind: WorkingSessionRecordKind::Error,
+            origin: None,
+            role: None,
+            summary: truncate_summary(&error.reason),
+            text: error.reason.clone(),
+            delivery: None,
+            phase: None,
+            source_ref: "session_binding".to_owned(),
+        });
+    }
+    records.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    Ok(Some(records))
+}
+
+async fn build_working_session_aggregates(
+    repository: &ThreadRepository,
+    record: &ThreadRecord,
+    binding: &SessionBinding,
+) -> Result<BTreeMap<String, WorkingSessionAggregate>> {
+    let workspace_cwd = binding
+        .workspace_cwd
+        .clone()
+        .context("managed workspace is missing workspace_cwd")?;
+    let workspace_path = Path::new(&workspace_cwd);
+    let mut session_ids = BTreeSet::new();
+    let mut aggregates = BTreeMap::<String, WorkingSessionAggregate>::new();
+
+    for entry in repository.read_full_transcript_mirror(record).await? {
+        session_ids.insert(entry.session_id.clone());
+        aggregates
+            .entry(entry.session_id.clone())
+            .or_default()
+            .entries
+            .push(entry);
+    }
+
+    if let Some(session_id) = binding.current_codex_thread_id.as_ref() {
+        session_ids.insert(session_id.clone());
+    }
+    if let Some(session_id) = binding.tui_active_codex_thread_id.as_ref() {
+        session_ids.insert(session_id.clone());
+    }
+
+    for session in repository.read_recent_workspace_sessions(&workspace_cwd).await? {
+        session_ids.insert(session.session_id.clone());
+        aggregates
+            .entry(session.session_id)
+            .or_default()
+            .history_updated_at = Some(session.updated_at);
+    }
+
+    if binding.session_broken {
+        if let Some(session_id) = binding.current_codex_thread_id.as_ref() {
+            let reason = binding.session_broken_reason.clone().or_else(|| {
+                if record.metadata.session_broken {
+                    record.metadata.session_broken_reason.clone()
+                } else {
+                    None
+                }
+            });
+            if let Some(reason) = reason {
+                let timestamp = binding
+                    .session_broken_at
+                    .clone()
+                    .or_else(|| record.metadata.session_broken_at.clone())
+                    .unwrap_or_else(|| binding.updated_at.clone());
+                aggregates.entry(session_id.clone()).or_default().last_error = Some(
+                    WorkingSessionError { timestamp, reason },
+                );
+            }
+        }
+    }
+
+    let mut session_statuses = HashMap::new();
+    for session_id in &session_ids {
+        session_statuses.insert(
+            session_id.clone(),
+            read_session_status(workspace_path, session_id).await?,
+        );
+    }
+
+    for (session_id, status) in session_statuses {
+        let aggregate = aggregates.entry(session_id).or_default();
+        if let Some(status) = status {
+            aggregate.status_updated_at = Some(status.updated_at);
+            aggregate.is_running = status.phase.is_turn_busy();
+        }
+    }
+
+    Ok(aggregates)
+}
+
+fn session_updated_at(aggregate: &WorkingSessionAggregate) -> Option<String> {
+    aggregate
+        .entries
+        .last()
+        .map(|entry| entry.timestamp.clone())
+        .or_else(|| aggregate.status_updated_at.clone())
+        .or_else(|| aggregate.history_updated_at.clone())
+}
+
+fn origins_seen_for_entries(entries: &[TranscriptMirrorEntry]) -> Vec<TranscriptMirrorOrigin> {
+    let mut seen = Vec::new();
+    for origin in [
+        TranscriptMirrorOrigin::Telegram,
+        TranscriptMirrorOrigin::Tui,
+        TranscriptMirrorOrigin::Local,
+    ] {
+        if entries.iter().any(|entry| entry.origin == origin) {
+            seen.push(origin);
+        }
+    }
+    seen
+}
+
+fn working_session_record_from_entry(entry: &TranscriptMirrorEntry) -> Option<WorkingSessionRecordView> {
+    let kind = match (
+        &entry.delivery,
+        &entry.role,
+        entry.phase.as_ref(),
+    ) {
+        (TranscriptMirrorDelivery::Final, TranscriptMirrorRole::User, _) => {
+            WorkingSessionRecordKind::UserPrompt
+        }
+        (TranscriptMirrorDelivery::Final, TranscriptMirrorRole::Assistant, _) => {
+            WorkingSessionRecordKind::AssistantFinal
+        }
+        (
+            TranscriptMirrorDelivery::Process,
+            TranscriptMirrorRole::Assistant,
+            Some(TranscriptMirrorPhase::Plan),
+        ) => WorkingSessionRecordKind::ProcessPlan,
+        (
+            TranscriptMirrorDelivery::Process,
+            TranscriptMirrorRole::Assistant,
+            Some(TranscriptMirrorPhase::Tool),
+        ) => WorkingSessionRecordKind::ProcessTool,
+        _ => return None,
+    };
+
+    Some(WorkingSessionRecordView {
+        timestamp: entry.timestamp.clone(),
+        session_id: entry.session_id.clone(),
+        kind,
+        origin: Some(entry.origin.clone()),
+        role: Some(entry.role.clone()),
+        summary: truncate_summary(&entry.text),
+        text: entry.text.clone(),
+        delivery: Some(entry.delivery.clone()),
+        phase: entry.phase.clone(),
+        source_ref: "transcript_mirror".to_owned(),
+    })
+}
+
+fn truncate_summary(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= 120 {
+        return trimmed.to_owned();
+    }
+    let truncated: String = trimmed.chars().take(117).collect();
+    format!("{truncated}...")
 }
 
 pub async fn build_archived_thread_views(
@@ -589,10 +880,27 @@ pub fn workspace_mode_drift(
 mod tests {
     use super::{
         ManagedCodexBuildDefaultsView, ManagedCodexView, ManagedWorkspaceView, ThreadStateView,
-        aggregate_handoff_status, build_runtime_health,
+        WorkingSessionRecordKind, aggregate_handoff_status, build_runtime_health,
+        build_working_session_records, build_working_session_summaries,
     };
-    use crate::execution_mode::ExecutionMode;
+    use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
+    use crate::repository::{
+        ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
+        TranscriptMirrorPhase, TranscriptMirrorRole,
+    };
     use crate::runtime_owner::RuntimeOwnerStatus;
+    use crate::workspace_status::record_bot_status_event;
+    use std::path::PathBuf;
+    use tokio::fs;
+    use uuid::Uuid;
+
+    fn temp_path() -> PathBuf {
+        std::env::temp_dir().join(format!("threadbridge-runtime-protocol-test-{}", Uuid::new_v4()))
+    }
+
+    fn full_auto_snapshot() -> SessionExecutionSnapshot {
+        SessionExecutionSnapshot::from_mode(ExecutionMode::FullAuto)
+    }
 
     #[test]
     fn aggregate_handoff_status_treats_pending_adoption_as_degraded() {
@@ -721,5 +1029,162 @@ mod tests {
         assert_eq!(view.conflicted_workspaces, 1);
         assert_eq!(view.app_server_status, "unavailable");
         assert_eq!(view.handoff_readiness, "unavailable");
+    }
+
+    #[tokio::test]
+    async fn working_session_views_group_entries_and_records_by_session() {
+        let root = temp_path();
+        let workspace = temp_path();
+        fs::create_dir_all(&workspace).await.unwrap();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+        let record = repo.create_thread(1, 7, "Workspace".to_owned()).await.unwrap();
+        let record = repo
+            .bind_workspace(
+                record,
+                workspace.display().to_string(),
+                "thr_current".to_owned(),
+                full_auto_snapshot(),
+            )
+            .await
+            .unwrap();
+
+        for entry in [
+            TranscriptMirrorEntry {
+                timestamp: "2026-03-24T10:00:00.000Z".to_owned(),
+                session_id: "thr_current".to_owned(),
+                origin: TranscriptMirrorOrigin::Telegram,
+                role: TranscriptMirrorRole::User,
+                delivery: TranscriptMirrorDelivery::Final,
+                phase: None,
+                text: "hello".to_owned(),
+            },
+            TranscriptMirrorEntry {
+                timestamp: "2026-03-24T10:00:01.000Z".to_owned(),
+                session_id: "thr_current".to_owned(),
+                origin: TranscriptMirrorOrigin::Telegram,
+                role: TranscriptMirrorRole::Assistant,
+                delivery: TranscriptMirrorDelivery::Process,
+                phase: Some(TranscriptMirrorPhase::Plan),
+                text: "Plan: inspect runtime".to_owned(),
+            },
+            TranscriptMirrorEntry {
+                timestamp: "2026-03-24T10:00:02.000Z".to_owned(),
+                session_id: "thr_current".to_owned(),
+                origin: TranscriptMirrorOrigin::Telegram,
+                role: TranscriptMirrorRole::Assistant,
+                delivery: TranscriptMirrorDelivery::Final,
+                phase: None,
+                text: "done".to_owned(),
+            },
+            TranscriptMirrorEntry {
+                timestamp: "2026-03-24T09:00:00.000Z".to_owned(),
+                session_id: "thr_old".to_owned(),
+                origin: TranscriptMirrorOrigin::Tui,
+                role: TranscriptMirrorRole::User,
+                delivery: TranscriptMirrorDelivery::Final,
+                phase: None,
+                text: "older".to_owned(),
+            },
+        ] {
+            repo.append_transcript_mirror(&record, &entry).await.unwrap();
+        }
+
+        let binding = repo.read_session_binding(&record).await.unwrap().unwrap();
+        let summaries = build_working_session_summaries(&repo, &record, &binding)
+            .await
+            .unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].session_id, "thr_current");
+        assert_eq!(summaries[0].tool_use_count, 0);
+        assert!(summaries[0].has_final_reply);
+        assert_eq!(
+            summaries[0].origins_seen,
+            vec![TranscriptMirrorOrigin::Telegram]
+        );
+        assert_eq!(summaries[0].record_count, 3);
+
+        let records = build_working_session_records(&repo, &record, &binding, "thr_current")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            records.iter().map(|record| &record.kind).collect::<Vec<_>>(),
+            vec![
+                &WorkingSessionRecordKind::UserPrompt,
+                &WorkingSessionRecordKind::ProcessPlan,
+                &WorkingSessionRecordKind::AssistantFinal,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn working_session_views_surface_running_and_broken_current_session_error() {
+        let root = temp_path();
+        let workspace = temp_path();
+        fs::create_dir_all(&workspace).await.unwrap();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+        let record = repo.create_thread(1, 7, "Workspace".to_owned()).await.unwrap();
+        let record = repo
+            .bind_workspace(
+                record,
+                workspace.display().to_string(),
+                "thr_current".to_owned(),
+                full_auto_snapshot(),
+            )
+            .await
+            .unwrap();
+        repo.append_transcript_mirror(
+            &record,
+            &TranscriptMirrorEntry {
+                timestamp: "2026-03-24T10:00:00.000Z".to_owned(),
+                session_id: "thr_current".to_owned(),
+                origin: TranscriptMirrorOrigin::Telegram,
+                role: TranscriptMirrorRole::User,
+                delivery: TranscriptMirrorDelivery::Final,
+                phase: None,
+                text: "hello".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+        record_bot_status_event(
+            &workspace,
+            "bot_turn_started",
+            Some("thr_current"),
+            None,
+            Some("hello"),
+        )
+        .await
+        .unwrap();
+
+        let broken = repo
+            .mark_session_binding_broken(record, "session continuity lost")
+            .await
+            .unwrap();
+        let binding = repo.read_session_binding(&broken).await.unwrap().unwrap();
+
+        let summaries = build_working_session_summaries(&repo, &broken, &binding)
+            .await
+            .unwrap();
+        assert_eq!(summaries[0].session_id, "thr_current");
+        assert_eq!(summaries[0].run_status, "running");
+        assert_eq!(
+            summaries[0].last_error.as_deref(),
+            Some("session continuity lost")
+        );
+        assert_eq!(summaries[0].record_count, 2);
+
+        let records = build_working_session_records(&repo, &broken, &binding, "thr_current")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(records.iter().any(|record| {
+            record.kind == WorkingSessionRecordKind::Error
+                && record.source_ref == "session_binding"
+        }));
+        assert!(records.iter().any(|record| {
+            record.kind == WorkingSessionRecordKind::UserPrompt
+        }));
     }
 }

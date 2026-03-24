@@ -4,6 +4,7 @@ const appState = {
   workspaces: [],
   archived: [],
   transcripts: {},
+  sessions: {},
   executionModeDrafts: {},
 };
 
@@ -30,6 +31,22 @@ function transcriptCache(threadKey) {
     };
   }
   return appState.transcripts[threadKey];
+}
+
+function sessionCache(threadKey) {
+  if (!appState.sessions[threadKey]) {
+    appState.sessions[threadKey] = {
+      loaded: false,
+      loading: false,
+      error: null,
+      summaries: [],
+      selectedSessionId: null,
+      recordsBySessionId: {},
+      recordLoadingBySessionId: {},
+      recordErrorBySessionId: {},
+    };
+  }
+  return appState.sessions[threadKey];
 }
 
 function toneForStatus(value) {
@@ -231,6 +248,109 @@ function renderTranscriptSection(entries, delivery, emptyLabel) {
   return `<div class="transcript-list">${filtered.map(formatTranscriptEntry).join('')}</div>`;
 }
 
+function sessionRunStatus(summary) {
+  return summary?.run_status || 'idle';
+}
+
+function sessionLabel(summary) {
+  return summary?.session_id || 'unknown-session';
+}
+
+function compactOriginList(summary) {
+  const items = summary?.origins_seen || [];
+  return items.length ? items.join(', ') : 'none';
+}
+
+function formatSessionSummary(summary, threadKey) {
+  const selected = sessionCache(threadKey).selectedSessionId === summary.session_id;
+  return `<div class="transcript-entry ${selected ? 'session-entry-selected' : ''}">
+    <div class="transcript-meta">
+      <strong>${escapeHtml(sessionLabel(summary))}</strong>
+      · ${escapeHtml(summary.updated_at || 'unknown')}
+      · ${escapeHtml(sessionRunStatus(summary))}
+    </div>
+    <div class="session-inline-meta">
+      <span>origins: <code>${escapeHtml(compactOriginList(summary))}</code></span>
+      <span>records: <code>${escapeHtml(summary.record_count ?? 0)}</code></span>
+      <span>tools: <code>${escapeHtml(summary.tool_use_count ?? 0)}</code></span>
+      <span>final: <code>${escapeHtml(summary.has_final_reply ? 'yes' : 'no')}</code></span>
+    </div>
+    ${summary.last_error ? `<div class="hint">Last error: ${escapeHtml(summary.last_error)}</div>` : ''}
+    <div class="toolbar">
+      <button class="secondary" onclick="selectWorkingSession('${threadKey}', '${summary.session_id}')">View Records</button>
+    </div>
+  </div>`;
+}
+
+function formatSessionRecord(record) {
+  const kind = record.kind || 'unknown';
+  const meta = [
+    record.timestamp || 'unknown',
+    kind,
+    record.origin || 'n/a',
+    record.delivery || 'n/a',
+    record.phase || 'n/a',
+    record.source_ref || 'n/a',
+  ];
+  return `<div class="transcript-entry">
+    <div class="transcript-meta">${meta.map(value => escapeHtml(value)).join(' · ')}</div>
+    <div>${escapeHtml(record.text || '')}</div>
+  </div>`;
+}
+
+function renderWorkingSessionRecords(threadKey, sessionId) {
+  const cache = sessionCache(threadKey);
+  if (!sessionId) {
+    return '<p class="muted">Select a session to inspect its timeline.</p>';
+  }
+  if (cache.recordLoadingBySessionId[sessionId] && !cache.recordsBySessionId[sessionId]) {
+    return '<p class="muted">Loading session records…</p>';
+  }
+  const error = cache.recordErrorBySessionId[sessionId];
+  if (error) {
+    return `<p class="hint">${escapeHtml(error)}</p>`;
+  }
+  const records = cache.recordsBySessionId[sessionId] || [];
+  if (!records.length) {
+    return '<p class="muted">No session records yet.</p>';
+  }
+  return `<div class="transcript-list">${records.map(formatSessionRecord).join('')}</div>`;
+}
+
+function renderWorkingSessions(threadKey) {
+  const cache = sessionCache(threadKey);
+  if (cache.loading && !cache.loaded) {
+    return '<p class="muted">Loading sessions…</p>';
+  }
+  if (cache.error) {
+    return `<p class="hint">${escapeHtml(cache.error)}</p>`;
+  }
+  if (!cache.loaded) {
+    return `<div class="toolbar"><button class="secondary" onclick="loadWorkingSessions('${threadKey}', true)">Load Sessions</button></div>`;
+  }
+  if (!cache.summaries.length) {
+    return '<p class="muted">No sessions available for this workspace yet.</p>';
+  }
+  return `
+    <div class="toolbar">
+      <button class="secondary" onclick="loadWorkingSessions('${threadKey}', true)">Refresh Sessions</button>
+      <span class="muted">Session summaries and records are derived from transcript mirror and runtime session status.</span>
+    </div>
+    <div class="subsection">
+      <div class="section-heading compact">
+        <h3>Sessions</h3>
+      </div>
+      <div class="transcript-list">${cache.summaries.map(summary => formatSessionSummary(summary, threadKey)).join('')}</div>
+    </div>
+    <div class="subsection">
+      <div class="section-heading compact">
+        <h3>Session Records</h3>
+      </div>
+      ${renderWorkingSessionRecords(threadKey, cache.selectedSessionId)}
+    </div>
+  `;
+}
+
 function configureAddWorkspaceCard(setup) {
   const button = document.getElementById('add-workspace-button');
   const status = document.getElementById('add-workspace-status');
@@ -360,6 +480,13 @@ function renderWorkspaceCards(items) {
       </details>
 
       <details class="raw-panel transcript-panel">
+        <summary>Sessions</summary>
+        <div id="sessions-${item.thread_key}" class="stack">
+          ${renderWorkingSessions(item.thread_key)}
+        </div>
+      </details>
+
+      <details class="raw-panel transcript-panel">
         <summary>Transcript</summary>
         <div class="toolbar">
           <button class="secondary" onclick="loadTranscript('${item.thread_key}', true)">Refresh Transcript</button>
@@ -455,7 +582,7 @@ async function refresh() {
   appState.archived = archived;
   reconcileExecutionModeDrafts();
   renderAll();
-  await refreshLoadedTranscripts();
+  await Promise.all([refreshLoadedTranscripts(), refreshLoadedSessions()]);
 }
 
 function openLaunchOutput(threadKey, data) {
@@ -604,11 +731,99 @@ function renderWorkspaceTranscriptIntoDom(threadKey) {
   target.innerHTML = renderWorkspaceTranscript(threadKey);
 }
 
+function renderWorkingSessionsIntoDom(threadKey) {
+  const target = document.getElementById(`sessions-${threadKey}`);
+  if (!target) {
+    return;
+  }
+  target.innerHTML = renderWorkingSessions(threadKey);
+}
+
 async function refreshLoadedTranscripts() {
   const threadKeys = Object.entries(appState.transcripts)
     .filter(([, cache]) => cache.loaded)
     .map(([threadKey]) => threadKey);
   await Promise.all(threadKeys.map(threadKey => loadTranscript(threadKey, false)));
+}
+
+async function loadWorkingSessions(threadKey, userInitiated = false) {
+  const cache = sessionCache(threadKey);
+  if (cache.loading) {
+    return;
+  }
+  cache.loading = true;
+  cache.error = null;
+  if (userInitiated) {
+    renderWorkingSessionsIntoDom(threadKey);
+  }
+  try {
+    const response = await fetch(`/api/threads/${threadKey}/sessions`);
+    const data = await response.json();
+    if (!response.ok) {
+      cache.error = data.error || 'Session fetch failed';
+      cache.summaries = [];
+      cache.loaded = false;
+      return;
+    }
+    cache.summaries = data;
+    cache.loaded = true;
+    const sessionIds = new Set(cache.summaries.map(item => item.session_id));
+    if (!cache.selectedSessionId || !sessionIds.has(cache.selectedSessionId)) {
+      cache.selectedSessionId = cache.summaries[0]?.session_id || null;
+    }
+    if (cache.selectedSessionId) {
+      await loadWorkingSessionRecords(threadKey, cache.selectedSessionId, false);
+    }
+  } catch (error) {
+    cache.error = error instanceof Error ? error.message : 'Session fetch failed';
+    cache.summaries = [];
+    cache.loaded = false;
+  } finally {
+    cache.loading = false;
+    renderWorkingSessionsIntoDom(threadKey);
+  }
+}
+
+async function loadWorkingSessionRecords(threadKey, sessionId, userInitiated = false) {
+  const cache = sessionCache(threadKey);
+  if (!sessionId || cache.recordLoadingBySessionId[sessionId]) {
+    return;
+  }
+  cache.recordLoadingBySessionId[sessionId] = true;
+  delete cache.recordErrorBySessionId[sessionId];
+  if (userInitiated) {
+    renderWorkingSessionsIntoDom(threadKey);
+  }
+  try {
+    const response = await fetch(`/api/threads/${threadKey}/sessions/${encodeURIComponent(sessionId)}/records`);
+    const data = await response.json();
+    if (!response.ok) {
+      cache.recordErrorBySessionId[sessionId] = data.error || 'Session records fetch failed';
+      cache.recordsBySessionId[sessionId] = [];
+      return;
+    }
+    cache.recordsBySessionId[sessionId] = data;
+  } catch (error) {
+    cache.recordErrorBySessionId[sessionId] = error instanceof Error ? error.message : 'Session records fetch failed';
+    cache.recordsBySessionId[sessionId] = [];
+  } finally {
+    cache.recordLoadingBySessionId[sessionId] = false;
+    renderWorkingSessionsIntoDom(threadKey);
+  }
+}
+
+async function selectWorkingSession(threadKey, sessionId) {
+  const cache = sessionCache(threadKey);
+  cache.selectedSessionId = sessionId;
+  renderWorkingSessionsIntoDom(threadKey);
+  await loadWorkingSessionRecords(threadKey, sessionId, true);
+}
+
+async function refreshLoadedSessions() {
+  const threadKeys = Object.entries(appState.sessions)
+    .filter(([, cache]) => cache.loaded)
+    .map(([threadKey]) => threadKey);
+  await Promise.all(threadKeys.map(threadKey => loadWorkingSessions(threadKey, false)));
 }
 
 async function openWorkspace(threadKey) {

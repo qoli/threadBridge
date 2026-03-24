@@ -31,10 +31,12 @@ use crate::repository::{
 use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus};
 pub use crate::runtime_protocol::{
     ArchivedThreadView, ManagedCodexBuildDefaultsView, ManagedCodexBuildInfoView, ManagedCodexView,
-    ManagedWorkspaceView, RuntimeHealthView, ThreadStateView,
+    ManagedWorkspaceView, RuntimeHealthView, ThreadStateView, WorkingSessionRecordView,
+    WorkingSessionSummaryView,
 };
 use crate::runtime_protocol::{
-    build_archived_thread_views, build_runtime_health, build_thread_views, build_workspace_views,
+    build_archived_thread_views, build_runtime_health, build_thread_views,
+    build_working_session_records, build_working_session_summaries, build_workspace_views,
     workspace_mode_drift,
 };
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
@@ -99,6 +101,27 @@ impl ManagementApiHandle {
 
     pub async fn archived_thread_views(&self) -> Result<Vec<ArchivedThreadView>> {
         self.state.archived_thread_views().await
+    }
+
+    pub async fn working_session_summaries(
+        &self,
+        thread_key: &str,
+    ) -> Result<Vec<WorkingSessionSummaryView>> {
+        self.state
+            .working_session_summaries(thread_key)
+            .await
+            .map_err(|error| error.error)
+    }
+
+    pub async fn working_session_records(
+        &self,
+        thread_key: &str,
+        session_id: &str,
+    ) -> Result<Vec<WorkingSessionRecordView>> {
+        self.state
+            .working_session_records(thread_key, session_id)
+            .await
+            .map_err(|error| error.error)
     }
 
     pub async fn workspace_execution_mode(
@@ -389,6 +412,11 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
             "/api/threads/:thread_key/transcript",
             get(get_thread_transcript),
         )
+        .route("/api/threads/:thread_key/sessions", get(get_working_sessions))
+        .route(
+            "/api/threads/:thread_key/sessions/:session_id/records",
+            get(get_working_session_records),
+        )
         .route("/api/workspaces", get(get_workspaces))
         .route(
             "/api/workspaces/pick-and-add",
@@ -560,6 +588,24 @@ async fn get_thread_transcript(
     Ok(Json(
         state
             .thread_transcript(&thread_key, query.delivery, query.limit)
+            .await?,
+    ))
+}
+
+async fn get_working_sessions(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(thread_key): AxumPath<String>,
+) -> Result<Json<Vec<WorkingSessionSummaryView>>, ManagementApiError> {
+    Ok(Json(state.working_session_summaries(&thread_key).await?))
+}
+
+async fn get_working_session_records(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath((thread_key, session_id)): AxumPath<(String, String)>,
+) -> Result<Json<Vec<WorkingSessionRecordView>>, ManagementApiError> {
+    Ok(Json(
+        state
+            .working_session_records(&thread_key, &session_id)
             .await?,
     ))
 }
@@ -1061,6 +1107,51 @@ impl ManagementApiState {
             .repository
             .read_transcript_mirror(&record, delivery, limit.max(1))
             .await?)
+    }
+
+    async fn working_session_summaries(
+        &self,
+        thread_key: &str,
+    ) -> Result<Vec<WorkingSessionSummaryView>, ManagementApiError> {
+        let record = self
+            .repository
+            .find_active_thread_by_key(thread_key)
+            .await?
+            .ok_or_else(|| {
+                ManagementApiError::not_found(anyhow!("active thread `{thread_key}` not found"))
+            })?;
+        let binding = self
+            .repository
+            .read_session_binding(&record)
+            .await?
+            .context("managed workspace is missing session binding")?;
+        Ok(build_working_session_summaries(&self.repository, &record, &binding).await?)
+    }
+
+    async fn working_session_records(
+        &self,
+        thread_key: &str,
+        session_id: &str,
+    ) -> Result<Vec<WorkingSessionRecordView>, ManagementApiError> {
+        let record = self
+            .repository
+            .find_active_thread_by_key(thread_key)
+            .await?
+            .ok_or_else(|| {
+                ManagementApiError::not_found(anyhow!("active thread `{thread_key}` not found"))
+            })?;
+        let binding = self
+            .repository
+            .read_session_binding(&record)
+            .await?
+            .context("managed workspace is missing session binding")?;
+        build_working_session_records(&self.repository, &record, &binding, session_id)
+            .await?
+            .ok_or_else(|| {
+                ManagementApiError::not_found(anyhow!(
+                    "session `{session_id}` not found for active thread `{thread_key}`"
+                ))
+            })
     }
 
     async fn archived_thread_views(&self) -> Result<Vec<ArchivedThreadView>> {
@@ -1936,5 +2027,120 @@ impl IntoResponse for ManagementApiError {
             "error": self.error.to_string(),
         });
         (self.status, Json(message)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        WorkingSessionRecordView, WorkingSessionSummaryView, spawn_management_api,
+    };
+    use crate::config::RuntimeConfig;
+    use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
+    use crate::repository::{
+        ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
+        TranscriptMirrorRole,
+    };
+    use crate::runtime_protocol::WorkingSessionRecordKind;
+    use std::path::PathBuf;
+    use tokio::fs;
+    use uuid::Uuid;
+
+    fn temp_path() -> PathBuf {
+        std::env::temp_dir().join(format!("threadbridge-management-api-test-{}", Uuid::new_v4()))
+    }
+
+    fn runtime_config(root: &PathBuf) -> RuntimeConfig {
+        RuntimeConfig {
+            data_root_path: root.join("data"),
+            debug_log_path: root.join("debug.log"),
+            codex_working_directory: root.join("codex"),
+            codex_model: None,
+            management_bind_addr: "127.0.0.1:0".parse().unwrap(),
+        }
+    }
+
+    fn full_auto_snapshot() -> SessionExecutionSnapshot {
+        SessionExecutionSnapshot::from_mode(ExecutionMode::FullAuto)
+    }
+
+    #[tokio::test]
+    async fn session_routes_return_summaries_and_records() {
+        let root = temp_path();
+        fs::create_dir_all(&root).await.unwrap();
+        let handle = spawn_management_api(runtime_config(&root)).await.unwrap();
+        let repo: ThreadRepository = handle.state.repository.clone();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).await.unwrap();
+        let record = repo.create_thread(1, 7, "Workspace".to_owned()).await.unwrap();
+        let record = repo
+            .bind_workspace(
+                record,
+                workspace.display().to_string(),
+                "thr_current".to_owned(),
+                full_auto_snapshot(),
+            )
+            .await
+            .unwrap();
+        for entry in [
+            TranscriptMirrorEntry {
+                timestamp: "2026-03-24T10:00:00.000Z".to_owned(),
+                session_id: "thr_current".to_owned(),
+                origin: TranscriptMirrorOrigin::Telegram,
+                role: TranscriptMirrorRole::User,
+                delivery: TranscriptMirrorDelivery::Final,
+                phase: None,
+                text: "hello".to_owned(),
+            },
+            TranscriptMirrorEntry {
+                timestamp: "2026-03-24T10:00:01.000Z".to_owned(),
+                session_id: "thr_current".to_owned(),
+                origin: TranscriptMirrorOrigin::Telegram,
+                role: TranscriptMirrorRole::Assistant,
+                delivery: TranscriptMirrorDelivery::Final,
+                phase: None,
+                text: "done".to_owned(),
+            },
+        ] {
+            repo.append_transcript_mirror(&record, &entry).await.unwrap();
+        }
+
+        let client = reqwest::Client::new();
+        let summaries = client
+            .get(format!(
+                "{}/api/threads/{}/sessions",
+                handle.base_url, record.metadata.thread_key
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert!(summaries.status().is_success());
+        let summaries: Vec<WorkingSessionSummaryView> = summaries.json().await.unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].session_id, "thr_current");
+
+        let records = client
+            .get(format!(
+                "{}/api/threads/{}/sessions/thr_current/records",
+                handle.base_url, record.metadata.thread_key
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert!(records.status().is_success());
+        let records: Vec<WorkingSessionRecordView> = records.json().await.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].kind, WorkingSessionRecordKind::UserPrompt);
+        assert_eq!(records[1].kind, WorkingSessionRecordKind::AssistantFinal);
+
+        let missing = client
+            .get(format!(
+                "{}/api/threads/{}/sessions/missing/records",
+                handle.base_url, record.metadata.thread_key
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
     }
 }

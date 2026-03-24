@@ -606,6 +606,13 @@ impl ThreadRepository {
         Ok(entries.split_off(entries.len() - limit))
     }
 
+    pub async fn read_full_transcript_mirror(
+        &self,
+        record: &ThreadRecord,
+    ) -> Result<Vec<TranscriptMirrorEntry>> {
+        self.read_transcript_mirror(record, None, usize::MAX).await
+    }
+
     pub async fn read_session_binding(
         &self,
         record: &ThreadRecord,
