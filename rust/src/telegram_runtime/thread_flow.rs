@@ -312,7 +312,8 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             }
-            let Some(existing_thread_id) = usable_bound_session_id(resolved_state, session.as_ref())
+            let Some(existing_thread_id) =
+                usable_bound_session_id(resolved_state, session.as_ref())
             else {
                 send_scoped_message(
                     bot,
@@ -450,7 +451,8 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             }
-            let Some(existing_thread_id) = usable_bound_session_id(resolved_state, session.as_ref())
+            let Some(existing_thread_id) =
+                usable_bound_session_id(resolved_state, session.as_ref())
             else {
                 send_scoped_message(
                     bot,

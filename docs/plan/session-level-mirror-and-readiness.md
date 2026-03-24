@@ -13,6 +13,11 @@
 - process transcript 已正式區分 final / process，並補上 management transcript read API、session summary / records API、web observability pane 與 Telegram rolling preview
 - Telegram 文本顯示已開始從舊 `CLI/TUI` label 收斂到更明確的使用者 / assistant / system 呈現
 
+目前已知缺口：
+
+- 尚未支持 `codex plan` 消息流的 mirror
+- 問題來源暫時偏向懷疑是 Codex 上游 source / event 輸出本身，而不一定是 `threadBridge` 的 mirror 映射層
+
 ## 現況定位
 
 這份 plan 處理的是：
@@ -75,6 +80,7 @@
 - Telegram 與 management UI 共用同一份 transcript/mirror 基礎
 - management API / web 管理面已開始把這份 mirror 基礎整理成 session summary / session records view
 - transport/source metadata 只保留作 debug / observability，不再作為 Telegram 可見角色命名
+- 但目前要明確承認：`codex plan` 類消息流尚未穩定進入 mirror；若後續確認上游 source 沒有提供可消費事件，這一層只能先把它視為 source capability gap，而不是單純 adapter renderer 問題
 
 ## 與本地管理面的關係
 
@@ -105,4 +111,5 @@
 ## 下一步
 
 1. 繼續把 transcript / event contract 往更完整的 transport-neutral protocol 收斂。
-2. 在 owner 去 Telegram 化之後，再推進更完整的 transport / adapter 抽象。
+2. 先確認 `codex plan` 消息流缺口究竟是上游 source/event 缺失，還是 `threadBridge` mirror 映射遺漏。
+3. 在 owner 去 Telegram 化之後，再推進更完整的 transport / adapter 抽象。

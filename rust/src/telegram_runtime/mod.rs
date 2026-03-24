@@ -959,7 +959,10 @@ mod tests {
             Some("thr_current")
         );
         assert_eq!(usable_bound_session_id(broken, Some(&binding)), None);
-        assert_eq!(current_bound_session_id(Some(&binding)), Some("thr_current"));
+        assert_eq!(
+            current_bound_session_id(Some(&binding)),
+            Some("thr_current")
+        );
     }
 
     #[tokio::test]
