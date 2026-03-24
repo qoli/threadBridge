@@ -26,6 +26,9 @@
 - 因此後續可評估一種 `forwarded input` 模式：
   - 允許使用者把 `main chat` 裡的轉發訊息投遞到某個目標 workspace thread
   - 讓 `main chat` 維持 control surface，同時保留較順手的輸入入口
+- 另外也應記錄一條獨立的 Telegram desktop launch control：
+  - 允許 Telegram slash command 觸發 desktop endpoint 的 `launch new` / `launch current` / `launch resume`
+  - 但它不應重寫 `/new_session` 的語義，也不應直接覆蓋 `current_codex_thread_id`
 
 ## 核心模型
 
@@ -66,6 +69,7 @@
 - 對同一個 workspace 建立 fresh Codex thread
 - 原子替換 `current_codex_thread_id`
 - 清除殘留的 adoption 狀態
+- 這條命令的語義是 Telegram canonical continuity mutation，不是單純啟動本地桌面入口
 
 ### `/repair_session`
 
@@ -77,6 +81,21 @@
 - 本地 management API 目前也提供等價的 reconnect control action
 - 但現階段不能把它理解成「保證 shared ws endpoint 之後持續存活」
 - 如果 `current.json` 指到 stale endpoint，本地 `hcodex` 不會再 self-heal，而是要求 desktop runtime repair runtime
+
+### Telegram desktop launch control
+
+- 這是一條和 `/new_session`、`/repair_session` 分離的 control surface
+- 它的責任是從 Telegram 觸發 desktop runtime 已存在的本地 launch action
+- 近期較合理的形狀是單獨的 slash command，而不是把「開桌面 session」塞進 `/new_session`
+- 它可以承接：
+  - `launch new`
+  - `launch current`
+  - `launch resume <session_id>`
+- 它不應直接改寫：
+  - `current_codex_thread_id`
+  - `tui_active_codex_thread_id`
+  - adoption 狀態
+- 換句話說，Telegram desktop launch 只是在 Telegram 上暴露 owner/runtime 已授權的本地 launch control；真正的 continuity adoption 仍應沿用既有 TUI / adoption flow
 
 ## `session-binding.json`
 
@@ -111,6 +130,9 @@
 - `/new_session`
   - 永遠代表 Telegram thread 的 canonical continuity 切換
   - 也就是替換 `current_codex_thread_id`
+- Telegram desktop launch command
+  - 只代表「替 desktop endpoint 觸發受管本地入口」
+  - 不等於 canonical continuity 已切換
 - TUI 內部的 `new session`
   - 最終目標不是立刻覆蓋 `current_codex_thread_id`
   - 而是先更新 `tui_active_codex_thread_id`

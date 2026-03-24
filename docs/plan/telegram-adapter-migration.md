@@ -22,6 +22,10 @@
 
 - Telegram observability 應優先接上 session-first API，而不只停留在 thread transcript feed
 - Telegram 之後應可提供 Codex 工作模型與 execution mode 的設定入口
+- Telegram 之後也應可提供 desktop launch control surface：
+  - 用 slash command 觸發 desktop endpoint 的 `launch new` / `launch current` / `launch resume`
+  - 但這條能力不應被表達成 `codex / hcodex` 二選一
+  - 也不應回頭改寫 `/new_session` 的 continuity 語義
 - Telegram 之後可評估支持 `forwarded input`
   - 背景是現在採用 `Telegram thread = 工作 thread` 模型後，`main chat` 更像 control 面板，普通輸入空間變得不自然
   - 因此可考慮允許用戶在 `main chat` 透過轉發訊息，把內容投遞到目標 workspace thread 當成輸入
@@ -88,6 +92,50 @@
     - 回答「以什麼 approval / sandbox contract 執行」
 - 它們若要在 Telegram 露出，都應只是 runtime protocol control action 的 adapter surface
 
+### 2.2. Desktop launch control surface
+
+- Telegram 之後應可補一條獨立的 slash command，用來驅動 desktop endpoint 的本地 launch 行為
+- 它近期應只承接既有 desktop launch control 的 adapter surface，而不是重新定義 runtime continuity
+- 較合理的動作集合是：
+  - `launch new`
+  - `launch current`
+  - `launch resume <session_id>`
+- 這條 control surface 的重點是：
+  - 讓 Telegram 可以要求 desktop runtime 打開受管本地入口
+  - 而不是讓使用者在 Telegram 中選 `codex` 或 `hcodex`
+- 近期不應做的事情是：
+  - 暴露 `codex / hcodex` 切換
+  - 把它包裝成 `/new_session` 的別名
+  - 讓 Telegram launch action 直接覆蓋 `current_codex_thread_id`
+
+也就是說，這條能力應被理解成：
+
+- Telegram adapter 的 desktop launch control
+
+而不是：
+
+- session lifecycle mutation
+- local runtime implementation choice switch
+
+### 2.5. Busy Gate follow-up control surface
+
+- Telegram busy gate 不應永遠只剩下單純 reject 文案
+- 之後可補兩種更明確的 follow-up 動作：
+  - `STOP 並插入發言`
+  - `序列發言`
+- 這兩者都屬於 Telegram adapter 的 control surface
+- 但它們依賴的 runtime 語義不同：
+  - `STOP 並插入發言`
+    - 仍屬單 active turn 模型
+  - `序列發言`
+    - 已開始接近顯式 queue 模型
+
+因此較合理的收斂順序應是：
+
+1. `STOP`
+2. `STOP 並插入發言`
+3. `序列發言`
+
 ### 3. `forwarded input`
 
 - 這是一個 Telegram-only 的輸入補充模式
@@ -102,6 +150,7 @@
 - `forwarded input`
 - topic title
 - preview draft
+- desktop launch slash command
 - Telegram-specific render / callback / media send policy
 
 其中 `forwarded input` 目前更值得優先考慮的是作為輸入能力，而不是 bot 輸出轉發能力。
@@ -132,6 +181,7 @@
 
 - preview draft 更新
 - slash command 與 control action
+- desktop launch slash command 和 `/new_session` / adoption flow 的邊界
 - image upload / pending batch
 - topic title 更新
 - markdown renderer
@@ -260,6 +310,10 @@ core runtime 應負責：
 - preview 在 custom app 裡應該是 delta stream、replace stream，還是 terminal-style replay？
 - Telegram adapter 是否仍然是預設 entrypoint，還是未來要支援多 adapter 同時註冊？
 - 近期 Telegram 是否應補上 Codex 工作模型與 execution mode 的設定入口？
+- Busy Gate 下的新輸入是否應正式支持：
+  - `STOP 並插入發言`
+  - `序列發言`
+  - 還是只先停在 `STOP`？
 - `forwarded input` 若要支持，近期是否只先支持把 forwarded message 當成輸入，而不先支持 bot 輸出轉發到其他 Telegram thread / chat？
 - 若支持 `forwarded input`，目標 thread 應如何決定：
   - 由 `main chat` 的顯式 command / button 先選定目標 thread

@@ -35,7 +35,7 @@
   - v1 忙碌閘控已落地
   - Telegram 文字 turn / 圖片分析已改成 background 執行，後續輸入現在會命中 reject
   - bot 啟動時的 stale busy reconciliation 已開始落地
-  - 但 queue 模型、更完整的狀態語義、`STOP` / 提示類互動控制面、更乾淨的 ingress / dispatcher 邊界，以及更完整的 stale busy owner 模型仍未收斂
+  - 但 queue 模型、更完整的狀態語義、`STOP` / `STOP 並插入發言` / `序列發言` 這類互動控制面、更乾淨的 ingress / dispatcher 邊界，以及更完整的 stale busy owner 模型仍未收斂
 - [topic-title-status.md](/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md)
   - 已落地 `workspace/title + busy/broken suffix`
   - 已落地新產生的 topic rename service message best-effort cleanup
@@ -44,6 +44,7 @@
   - `/add_workspace`、`/new_session`、`/repair_session` 的正式生命週期已存在
   - `current_codex_thread_id` 已成為 canonical pointer，`tui_active_codex_thread_id` / adoption 也已進入正式 runtime
   - Telegram thread 內的一般輸入與 session-control gate 已開始直接讀 canonical state
+  - 已新增記錄：Telegram desktop launch command 應作為獨立 control surface，而不是改寫 `/new_session`
   - 剩餘工作主要是兼容層與狀態語義收尾
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
   - 本地 management API 已開始承接它的 view / action 命名
@@ -108,7 +109,7 @@
   - Telegram adapter 遷移草稿
   - owner authority 應先從 Telegram 路徑抽離，再做更完整的 adapter migration
   - 近期優先級應是補齊 Telegram 自身適配，而不是先做第二個 IM adapter 驗證
-  - 近期 Telegram v0 能力面包括 session-first observability、model/mode 設定，以及 `main chat = control 面板` 下的 `forwarded input`
+  - 近期 Telegram v0 能力面包括 session-first observability、model/mode 設定、desktop launch control、Busy Gate follow-up control surface，以及 `main chat = control 面板` 下的 `forwarded input`
 
 ## 主規格
 
