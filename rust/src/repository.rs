@@ -8,6 +8,9 @@ use uuid::Uuid;
 
 use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot, workspace_execution_mode};
 use crate::image_artifacts::{ImageAnalysisArtifact, PendingImageBatch, PendingImageBatchEntry};
+use crate::thread_transition::{
+    BindingMutation, ThreadTransition, TransitionResult, apply_transition,
+};
 
 const MAIN_THREAD_KEY: &str = "main-thread";
 const SESSION_BINDING_FILE_NAME: &str = "session-binding.json";
@@ -237,7 +240,7 @@ impl SessionBinding {
         self
     }
 
-    fn fresh(
+    pub(crate) fn fresh(
         workspace_cwd: Option<String>,
         current_codex_thread_id: Option<String>,
         execution: SessionExecutionSnapshot,
@@ -262,6 +265,49 @@ impl SessionBinding {
             updated_at: now,
             legacy_codex_thread_id: None,
             legacy_selected_session_id: None,
+        }
+    }
+
+    pub(crate) fn verified(self, now: &str) -> Self {
+        Self {
+            last_verified_at: Some(now.to_owned()),
+            session_broken: false,
+            session_broken_at: None,
+            session_broken_reason: None,
+            updated_at: now.to_owned(),
+            ..self
+        }
+    }
+
+    pub(crate) fn selected_session(self, session_id: String, now: &str) -> Self {
+        Self {
+            current_codex_thread_id: Some(session_id),
+            last_verified_at: Some(now.to_owned()),
+            session_broken: false,
+            session_broken_at: None,
+            session_broken_reason: None,
+            tui_active_codex_thread_id: None,
+            tui_session_adoption_pending: false,
+            tui_session_adoption_prompt_message_id: None,
+            updated_at: now.to_owned(),
+            ..self
+        }
+    }
+
+    pub(crate) fn broken(self, reason: String, now: &str) -> Self {
+        Self {
+            session_broken: true,
+            session_broken_at: Some(now.to_owned()),
+            session_broken_reason: Some(reason),
+            updated_at: now.to_owned(),
+            ..self
+        }
+    }
+
+    pub(crate) fn touched(self, now: &str) -> Self {
+        Self {
+            updated_at: now.to_owned(),
+            ..self
         }
     }
 }
@@ -636,60 +682,32 @@ impl ThreadRepository {
         execution: SessionExecutionSnapshot,
     ) -> Result<ThreadRecord> {
         let now = now_iso();
-        let mut binding =
-            SessionBinding::fresh(Some(workspace_cwd), Some(codex_thread_id), execution);
-        binding.updated_at = now.clone();
-        if let (Some(workspace_cwd), Some(session_id)) = (
-            binding.workspace_cwd.as_deref(),
-            binding.current_codex_thread_id.as_deref(),
-        ) {
-            self.record_recent_workspace_session(
+        let transition = apply_transition(
+            &record.metadata,
+            None,
+            ThreadTransition::BindWorkspace {
                 workspace_cwd,
-                session_id,
-                binding.current_execution_mode,
-            )
-            .await?;
-        }
-        self.write_session_binding(&record, &binding).await?;
-        self.update_metadata(ThreadRecord {
-            metadata: ThreadMetadata {
-                last_codex_turn_at: Some(now),
-                session_broken: false,
-                session_broken_at: None,
-                session_broken_reason: None,
-                ..record.metadata.clone()
+                codex_thread_id,
+                execution,
             },
-            ..record
-        })
-        .await
+            &now,
+        )?;
+        self.persist_transition(record, transition).await
     }
 
     pub async fn mark_session_binding_verified(
         &self,
         record: ThreadRecord,
     ) -> Result<ThreadRecord> {
-        let mut binding = self
-            .read_session_binding(&record)
-            .await?
-            .context("session binding is missing")?;
         let now = now_iso();
-        binding.last_verified_at = Some(now.clone());
-        binding.session_broken = false;
-        binding.session_broken_at = None;
-        binding.session_broken_reason = None;
-        binding.updated_at = now.clone();
-        self.write_session_binding(&record, &binding).await?;
-        self.update_metadata(ThreadRecord {
-            metadata: ThreadMetadata {
-                last_codex_turn_at: Some(now),
-                session_broken: false,
-                session_broken_at: None,
-                session_broken_reason: None,
-                ..record.metadata.clone()
-            },
-            ..record
-        })
-        .await
+        let binding = self.read_session_binding(&record).await?;
+        let transition = apply_transition(
+            &record.metadata,
+            binding,
+            ThreadTransition::VerifySession,
+            &now,
+        )?;
+        self.persist_transition(record, transition).await
     }
 
     pub async fn select_session_binding_session(
@@ -697,44 +715,17 @@ impl ThreadRepository {
         record: ThreadRecord,
         session_id: impl Into<String>,
     ) -> Result<ThreadRecord> {
-        let mut binding = self
-            .read_session_binding(&record)
-            .await?
-            .context("session binding is missing")?;
         let now = now_iso();
-        let session_id = session_id.into();
-        binding.current_codex_thread_id = Some(session_id);
-        binding.last_verified_at = Some(now.clone());
-        binding.session_broken = false;
-        binding.session_broken_at = None;
-        binding.session_broken_reason = None;
-        binding.tui_active_codex_thread_id = None;
-        binding.tui_session_adoption_pending = false;
-        binding.tui_session_adoption_prompt_message_id = None;
-        binding.updated_at = now.clone();
-        if let (Some(workspace_cwd), Some(session_id)) = (
-            binding.workspace_cwd.as_deref(),
-            binding.current_codex_thread_id.as_deref(),
-        ) {
-            self.record_recent_workspace_session(
-                workspace_cwd,
-                session_id,
-                binding.current_execution_mode,
-            )
-            .await?;
-        }
-        self.write_session_binding(&record, &binding).await?;
-        self.update_metadata(ThreadRecord {
-            metadata: ThreadMetadata {
-                last_codex_turn_at: Some(now),
-                session_broken: false,
-                session_broken_at: None,
-                session_broken_reason: None,
-                ..record.metadata.clone()
+        let binding = self.read_session_binding(&record).await?;
+        let transition = apply_transition(
+            &record.metadata,
+            binding,
+            ThreadTransition::SelectSession {
+                session_id: session_id.into(),
             },
-            ..record
-        })
-        .await
+            &now,
+        )?;
+        self.persist_transition(record, transition).await
     }
 
     pub async fn mark_session_binding_broken(
@@ -742,41 +733,25 @@ impl ThreadRepository {
         record: ThreadRecord,
         reason: impl Into<String>,
     ) -> Result<ThreadRecord> {
-        let reason = reason.into();
         let now = now_iso();
-        let mut binding = self
-            .read_session_binding(&record)
-            .await?
-            .unwrap_or_else(|| {
-                SessionBinding::fresh(None, None, SessionExecutionSnapshot::default())
-            });
-        binding.session_broken = true;
-        binding.session_broken_at = Some(now.clone());
-        binding.session_broken_reason = Some(reason.clone());
-        binding.updated_at = now.clone();
-        self.write_session_binding(&record, &binding).await?;
-        self.update_metadata(ThreadRecord {
-            metadata: ThreadMetadata {
-                session_broken: true,
-                session_broken_at: Some(now),
-                session_broken_reason: Some(reason),
-                ..record.metadata.clone()
+        let binding = self.read_session_binding(&record).await?;
+        let transition = apply_transition(
+            &record.metadata,
+            binding,
+            ThreadTransition::MarkBroken {
+                reason: reason.into(),
             },
-            ..record
-        })
-        .await
+            &now,
+        )?;
+        self.persist_transition(record, transition).await
     }
 
     pub async fn archive_thread(&self, record: ThreadRecord) -> Result<ThreadRecord> {
-        self.update_metadata(ThreadRecord {
-            metadata: ThreadMetadata {
-                archived_at: Some(now_iso()),
-                status: ThreadStatus::Archived,
-                ..record.metadata.clone()
-            },
-            ..record
-        })
-        .await
+        let now = now_iso();
+        let binding = self.read_session_binding(&record).await?;
+        let transition =
+            apply_transition(&record.metadata, binding, ThreadTransition::Archive, &now)?;
+        self.persist_transition(record, transition).await
     }
 
     pub async fn restore_thread(
@@ -785,24 +760,18 @@ impl ThreadRepository {
         message_thread_id: i32,
         title: String,
     ) -> Result<ThreadRecord> {
-        let mut previous = record.metadata.previous_message_thread_ids.clone();
-        if let Some(current) = record.metadata.message_thread_id {
-            if current != message_thread_id && !previous.contains(&current) {
-                previous.push(current);
-            }
-        }
-        self.update_metadata(ThreadRecord {
-            metadata: ThreadMetadata {
-                archived_at: None,
-                message_thread_id: Some(message_thread_id),
-                previous_message_thread_ids: previous,
-                status: ThreadStatus::Active,
-                title: Some(title),
-                ..record.metadata.clone()
+        let now = now_iso();
+        let binding = self.read_session_binding(&record).await?;
+        let transition = apply_transition(
+            &record.metadata,
+            binding,
+            ThreadTransition::Restore {
+                message_thread_id,
+                title,
             },
-            ..record
-        })
-        .await
+            &now,
+        )?;
+        self.persist_transition(record, transition).await
     }
 
     pub async fn list_archived_threads(&self, chat_id: i64) -> Result<Vec<ThreadRecord>> {
@@ -1101,6 +1070,33 @@ impl ThreadRepository {
             metadata: updated,
             ..record
         })
+    }
+
+    async fn persist_transition(
+        &self,
+        record: ThreadRecord,
+        transition: TransitionResult,
+    ) -> Result<ThreadRecord> {
+        if let BindingMutation::Write(binding) = &transition.binding {
+            self.write_session_binding(&record, binding).await?;
+        }
+        if let Some(recent_session) = transition.recent_session.as_ref() {
+            if let BindingMutation::Write(binding) = &transition.binding {
+                if let Some(workspace_cwd) = binding.workspace_cwd.as_deref() {
+                    self.record_recent_workspace_session(
+                        workspace_cwd,
+                        &recent_session.session_id,
+                        recent_session.execution_mode,
+                    )
+                    .await?;
+                }
+            }
+        }
+        self.update_metadata(ThreadRecord {
+            metadata: transition.metadata,
+            ..record
+        })
+        .await
     }
 
     async fn get_or_create(

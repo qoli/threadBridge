@@ -51,7 +51,11 @@ title 現在承載的是非常少量的 durable runtime state：
 
 ## 資料來源
 
-目前 title 只看 binding 是否 broken：
+目前 title 的正式語義是只看 canonical binding 是否 broken：
+
+- `binding_status=broken`
+
+底層目前仍可能經過這些欄位推導：
 
 - `metadata.session_broken`
 - `session-binding.json.session_broken`

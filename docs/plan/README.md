@@ -38,13 +38,14 @@
   - bot 啟動時的 stale busy reconciliation 已開始落地
   - 但 queue 模型、更完整的狀態語義、`STOP` / `STOP 並插入發言` / `序列發言` 這類互動控制面、更乾淨的 ingress / dispatcher 邊界，以及更完整的 stale busy owner 模型仍未收斂
 - [topic-title-status.md](/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md)
-  - 已落地 `workspace/title + busy/broken suffix`
+  - 已落地 `workspace/title + broken suffix`
   - 已落地新產生的 topic rename service message best-effort cleanup
   - context ratio 仍未實作
 - [session-lifecycle.md](/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md)
   - `/add_workspace`、`/new_session`、`/repair_session` 的正式生命週期已存在
   - `current_codex_thread_id` 已成為 canonical pointer，`tui_active_codex_thread_id` / adoption 也已進入正式 runtime
   - Telegram thread 內的一般輸入與 session-control gate 已開始直接讀 canonical state
+  - canonical continuity mutation 已開始透過 repository 內部的共用 transition path 收斂
   - 已新增記錄：Telegram desktop launch command 應作為獨立 control surface，而不是改寫 `/new_session`
   - 剩餘工作主要是兼容層與狀態語義收尾
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
@@ -83,6 +84,7 @@
   - canonical `lifecycle_status` / `binding_status` / `run_status` 已開始透過 shared resolver 進入代碼
   - ordinary Telegram gate、management API、topic title 已開始共用同一套 canonical state axes
   - management API 的 thread / workspace / runtime views 已開始透過共享 protocol/view builder 收斂到同一套 canonical state sources
+  - repository write-side 的 canonical mutation 已開始透過 transition service 收斂
   - `/api/events` 已開始從 canonical view diff 輸出 typed SSE event
   - web 管理面已開始直接套用 top-level typed payload
   - `binding_status=conflict`、`run_status=unbound` 這類過渡值已退出 canonical state axes
@@ -127,6 +129,8 @@
   - 目標是 Telegram delivery 主規格
 
 目前這兩份都還沒有完全變成實際代碼的唯一 source of truth。
+
+其中 `runtime-state-machine` 已開始同時影響 read-side state axes 與 repository 內部的 canonical transition path，但對外 event coverage / observability / full surface adoption 仍未完全收斂。
 
 ## 依賴關係
 

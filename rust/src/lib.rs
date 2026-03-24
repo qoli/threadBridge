@@ -16,6 +16,7 @@ pub mod runtime_protocol;
 pub mod telegram_probe;
 pub mod telegram_runtime;
 pub mod thread_state;
+pub mod thread_transition;
 pub mod tool_results;
 pub mod tui_proxy;
 pub mod workspace;

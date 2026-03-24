@@ -25,6 +25,7 @@
 - transport-neutral 的正式 view / action 命名仍未完全收斂
 - local HTTP + SSE 已成為目前最務實的實驗載體
 - 已新增共享的 `runtime_protocol` view builder，開始把 `ThreadStateView` / `ManagedWorkspaceView` / `ArchivedThreadView` / `RuntimeHealthView` / `WorkingSession*View` 從 `management_api` 的 transport 邏輯裡拆出來
+- repository write-side 的 canonical mutation 已開始透過共用 transition service 收斂
 - runtime health 已開始改成 owner-canonical；`workspace_state` 不再是 primary readiness source
 - process transcript 已開始透過 `GET /api/threads/:thread_key/transcript` 對外暴露，且本地 web / Telegram preview 已開始共用同一份摘要來源
 - session-first observability 已開始透過 `GET /api/threads/:thread_key/sessions` 與 `GET /api/threads/:thread_key/sessions/:session_id/records` 對外暴露
@@ -76,6 +77,15 @@
 - control action
 - 資料來源與 source of truth
 
+這裡要刻意區分兩層：
+
+- `runtime protocol`
+  - 對外的 view / action / event naming
+- repository transition service
+  - 內部 canonical mutation authority
+
+後者不應被文檔寫成新的 transport-facing public API。
+
 傳輸層在 v1 先用：
 
 - local HTTP
@@ -124,6 +134,7 @@
 
 - `last_used_at`
 - `last_error`
+- `session_broken` 等衍生欄位若仍存在於其他 view，亦屬 compatibility/debug，不是新的 canonical axis
 
 ### 2. `ArchivedThreadView`
 
@@ -149,6 +160,7 @@
   - 代表 active Codex turn 是否 busy，不等於 local session claim 是否存在
 - `session_broken`
   - 目前仍作為 compatibility/debug 欄位存在，但 UI 與後續文檔應以 `binding_status=broken` 為 canonical 判斷
+- repository 內部的 transition service 不改變這個對外語義；它只是把 write-side state mutation 收斂到同一條內部路徑
 
 至少包含：
 

@@ -2,7 +2,7 @@
 
 ## 目前進度
 
-這份文檔已開始部分落地，但仍不是完整唯一主規格。
+這份文檔已開始部分落地，且已進一步成為狀態語義與 canonical transition 的主規格，但仍不是完整唯一 source of truth。
 
 目前部分已在代碼中可見的狀態語義：
 
@@ -17,12 +17,19 @@
 - topic title 的 `broken` suffix 已開始從 canonical binding state 派生；`busy` 已退出 title 語義
 - `binding_status=conflict`、`run_status=unbound` 這類過渡值已從 canonical state axes 中移除
 - `session_broken` 目前仍保留在部分 view 作為 compatibility/debug 欄位，但不再應被視為和 `binding_status` 平行的另一條 canonical state axis
+- repository 內部的 canonical write path 已開始透過共用 transition service 收斂
+  - `bind_workspace`
+  - `mark_session_binding_verified`
+  - `select_session_binding_session`
+  - `mark_session_binding_broken`
+  - `archive_thread`
+  - `restore_thread`
 
 目前尚未完成的部分：
 
 - 讓更多 surface 在呈現 thread / workspace state 時完全只引用同一套 canonical axes
 - 把 canonical view 的欄位命名完全收斂到現行模型，例如 `current_codex_thread_id`
-- 把狀態轉移 authority 再集中，避免 archive / restore / control action 仍分散在多個入口各自更新 metadata/binding
+- 把更多非 repository surface 的控制語義也完全收斂到同一套 transition vocabulary，而不是只在 repository 內部收口
 - 讓 `/api/events` 的 typed payload coverage 與 observability 層再進一步收斂，而不只停在目前的 change-event + refresh trigger 模型
 
 ## 問題
@@ -94,6 +101,7 @@ source of truth：
 
 source of truth：
 
+- canonical 判定以 usable workspace binding + `session_broken` flag 為準
 - `session-binding.json`
 - `session_broken`
 - `session_broken_reason`
@@ -112,6 +120,9 @@ source of truth：
 - `session_broken`
   - 目前仍可能出現在部分 workspace/thread view 中
   - 但它應被理解成 `binding_status=broken` 的 compatibility/debug 映射，而不是新的對外主狀態欄位
+- `mark_session_binding_broken`
+  - 現行實作應理解成「既有 workspace continuity 斷裂」
+  - 若 thread 連 usable workspace binding 都沒有，應維持 `unbound`，而不是創造一個沒有 binding 的 `broken`
 
 ### 3. `run_status`
 
@@ -241,9 +252,9 @@ archive 後：
 - `binding_status` 原樣保留
 - 在 idle 情況下，`run_status` 維持 `idle`
 
-目前仍要承認一個過渡現況：
+目前已收斂的一個現況是：
 
-- archive 目前主要仍是 Telegram lifecycle / metadata 變化
+- archive / restore 的 canonical metadata mutation 已開始透過共用 transition path 寫回
 - 若之後要嚴格禁止 archived thread 保持 `running`，仍需要更集中化的 transition authority 或明確 gate
 
 ### restore
@@ -309,7 +320,7 @@ restore 後：
 - `topic-title-status`
   - 只能從這份文件定義的狀態軸取值
 - `runtime-protocol`
-  - 之後若定義 `ThreadStateView`，應對齊這份文件
+  - 對外 view / action naming 應對齊這份文件；內部 write-side transition 也不應自創另一套 state 語義
 
 ## 暫定結論
 

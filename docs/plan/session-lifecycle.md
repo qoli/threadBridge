@@ -14,10 +14,17 @@
 - 本地 management API / desktop runtime 已開始承接等價的 create-bind / reconnect control flow
 - `binding_status` / `run_status` 已開始透過 shared resolver 與 `runtime-state-machine` 對齊
 - Telegram thread 內的一般輸入與 session-control gate 已開始直接讀 canonical state，而不是各自重寫 archived / broken / running 判定
+- canonical continuity mutation 已開始透過 repository 內部共用 transition path 收斂
+  - bind
+  - verify
+  - select session
+  - broken
+  - archive
+  - restore
 
 目前尚未完成：
 
-- 與 `runtime-state-machine` 的完整 API / 文檔收斂
+- 與 `runtime-state-machine` / `runtime-protocol` 的完整文字與 control naming 收斂
 
 目前新增記錄的一個 Telegram adapter 相關想法是：
 
@@ -81,6 +88,9 @@
 - 本地 management API 目前也提供等價的 reconnect control action
 - 但現階段不能把它理解成「保證 shared ws endpoint 之後持續存活」
 - 如果 `current.json` 指到 stale endpoint，本地 `hcodex` 不會再 self-heal，而是要求 desktop runtime repair runtime
+- `broken` 的語義應理解成「既有 workspace continuity 失效」
+  - 不是 `unbound` 的替代狀態
+  - 也不是缺少 binding 時應退回去創造的新狀態
 
 ### Telegram desktop launch control
 
@@ -103,6 +113,7 @@
 
 - 最小但明確的 binding 文件
 - source of truth 是 Telegram thread 對 workspace 與 current Codex thread 的綁定
+- 但 canonical 對外判定仍應回到 `runtime-state-machine` 的 `binding_status`
 
 現行欄位重點：
 
@@ -115,6 +126,15 @@
 - `tui_active_codex_thread_id`
 - `tui_session_adoption_pending`
 - `tui_session_adoption_prompt_message_id`
+
+這裡要明確區分：
+
+- `session_broken*`
+  - 是 continuity/binding 相關的持久化欄位
+- `binding_status`
+  - 是對外 canonical state
+
+也就是說，不應把 `session_broken` 當成和 `binding_status` 平行的另一套主狀態。
 
 舊欄位：
 
