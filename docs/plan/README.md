@@ -24,6 +24,7 @@
   - workspace heartbeat / runtime health 已改成以 desktop owner heartbeat 為主 authority
   - 舊 `CLI owner / handoff` 概念已退出現行模型，主語義改為 local/TUI mirror + idle/free readiness
   - process transcript 已正式區分 final / process，並補上 management transcript read API、session summary / records API、web observability pane，以及 Telegram rolling preview 摘要
+  - 已補記一個 mirror 缺口：目前尚未支持 `codex plan` 消息流 mirror，且問題可能位於 Codex 上游 source/event 輸出
   - 它同時也是 Telegram 退回通用 adapter 模式的前置條件
 
 ## 部分落地
@@ -57,7 +58,7 @@
   - runtime health 已改成 owner-canonical，`workspace_state` 僅保留 debug/observation 語義
   - `runtime_protocol` 共享 view builder 已開始把 `ThreadStateView` / `ManagedWorkspaceView` / `ArchivedThreadView` / `RuntimeHealthView` / `WorkingSession*View` 從 transport 層抽離
   - broken thread count、workspace recovery hint、以及 working session broken error 聚合，已開始改以 canonical `binding_status` 判定
-  - `session_broken` / `last_used_at` / `last_error` 仍保留為 compatibility/debug 欄位，但不再應作為新的主判斷入口
+  - public view 已開始移除 `session_broken` / `last_error` alias；對外主判斷改固定收斂到 `binding_status` / `run_status` / `session_broken_reason`
   - `GET /api/events` 已開始輸出 typed SSE event，而不是每輪都推整包 snapshot
   - web UI 已開始直接套用 top-level typed SSE payload，並只對 transcript / sessions 做 targeted refetch
   - 但 protocol 仍未收斂成完整 transport-neutral 契約，尤其更細的 observability record 仍未走完整增量 event 模型
@@ -92,7 +93,7 @@
   - `/api/events` 已開始從 canonical view diff 輸出 typed SSE event
   - web 管理面已開始直接套用 top-level typed payload
   - `binding_status=conflict`、`run_status=unbound` 這類過渡值已退出 canonical state axes
-  - `session_broken` 仍保留為 compatibility/debug 欄位，但 canonical 判斷已收斂回 `binding_status`；`current_codex_thread_id` 也不再被等同於「一定可直接 resume 的 usable continuity」
+  - `session_broken` 仍保留為內部持久化 continuity 記錄，但 public surface 的 canonical 判斷已收斂回 `binding_status`；`current_codex_thread_id` 也不再被等同於「一定可直接 resume 的 usable continuity」
   - 但它仍未成為所有 surface 的完整唯一 source of truth，尤其更細的 event payload coverage 與 observability 仍待收斂
 - [workspace-runtime-surface.md](/Volumes/Data/Github/threadBridge/docs/plan/workspace-runtime-surface.md)
   - `.threadbridge/`、managed appendix、`hcodex`、tool request/result lane 已形成實際 workspace runtime surface

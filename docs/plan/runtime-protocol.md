@@ -15,12 +15,12 @@
   - active thread sessions summary / records
   - managed workspace list
   - archived thread list
-  - pick-and-add / reconnect / open / archive / restore
+  - pick-and-add / repair session binding / open / archive / restore
   - runtime-owner reconcile
   - managed Codex preference / cache refresh / source build / build-defaults
   - workspace launch config
   - adopt / reject pending TUI handoff
-  - `launch-new` / `launch-current` / `launch-resume`
+  - `launch-hcodex-new` / `launch-hcodex-continue-current` / `launch-hcodex-resume`
 - `threadbridge_desktop` 已開始直接依賴這些本地 view / action
 - transport-neutral 的正式 view / action 命名仍未完全收斂
 - local HTTP + SSE 已成為目前最務實的實驗載體
@@ -33,7 +33,7 @@
 - `binding_status` / `run_status` 已開始透過 shared resolver 收斂成同一套 wire semantics
 - `conflict` 已明確保留為 workspace-view 的獨立欄位，而不是 `binding_status` 的另一個值
 - runtime health 的 broken thread count、workspace recovery hint、以及 working session broken error 聚合，已開始從 canonical `binding_status` 派生
-- `session_broken`、`last_used_at`、`last_error` 這些欄位目前仍保留，但應理解成輸出相容 alias，而不是 view / UI / aggregation 的主判斷來源
+- public view 已開始移除 `session_broken` / `last_error` 這類 compatibility alias；workspace/thread 的 canonical 判斷應直接讀 `binding_status` / `run_status` / `session_broken_reason`
 - `GET /api/events` 已開始輸出 typed SSE event，而不是每輪都推整包 snapshot
 - 目前已落地的 event kind 包括：
   - `setup_changed`
@@ -132,15 +132,13 @@
 - `last_codex_turn_at`
 - `archived_at`
 
-目前已存在、但應視為 compatibility / debug 欄位：
+目前保留的非 canonical 輔助欄位：
 
 - `last_used_at`
-- `last_error`
-- `session_broken` 等衍生欄位若仍存在於其他 view，亦屬 compatibility/debug，不是新的 canonical axis
 
 這裡再補一個行為要求：
 
-- `ThreadStateView` 的 consumer 不應因為 `last_error` 或任何 `session_broken` alias 存在，就繞過 `binding_status` / `run_status` 的 canonical 判定
+- `ThreadStateView` 的 consumer 不應繞過 `binding_status` / `run_status` 的 canonical 判定
 
 ### 2. `ArchivedThreadView`
 
@@ -164,9 +162,7 @@
   - 是 workspace-level 衍生欄位，不是 `binding_status` 的另一個枚舉值
 - `run_status`
   - 代表 active Codex turn 是否 busy，不等於 local session claim 是否存在
-- `session_broken`
-  - 目前仍作為 compatibility/debug 欄位存在，但 UI 與後續文檔應以 `binding_status=broken` 為 canonical 判斷
-- broken count、recovery hint、以及其他 workspace-level 衍生判斷，也應以 `binding_status` 為準，而不是直接依賴 `session_broken`
+- broken count、recovery hint、以及其他 workspace-level 衍生判斷，也應以 `binding_status` 為準
 - repository 內部的 transition service 不改變這個對外語義；它只是把 write-side state mutation 收斂到同一條內部路徑
 
 至少包含：
@@ -184,7 +180,6 @@
 - `current_codex_thread_id`
 - `tui_active_codex_thread_id`
 - `tui_session_adoption_pending`
-- `session_broken`
 - `recent_codex_sessions`
 - `conflict`
 - `last_used_at`
@@ -211,12 +206,6 @@
   - owner 尚未提供 heartbeat，或 desktop owner 根本不存在
 
 workspace 內現有 artifact / endpoint state 可以作為 debug observation，但不再作 primary health fallback。
-
-這裡也要固定一個 compatibility 邊界：
-
-- `session_broken`
-  - 可以繼續保留在 wire payload 供舊 consumer/debug 使用
-  - 但不應再被管理面 action label、recovery hint、runtime health count、或其他新 aggregation 當成 primary input
 
 ### 4. `RecentCodexSessionView`
 
@@ -349,9 +338,9 @@ v1 至少定義：
 - `update_managed_codex_build_defaults`
 - `save_telegram_setup`
 
-目前代碼中的 local HTTP / handler 名稱仍可能保留：
+目前代碼中的 local HTTP / handler 名稱已開始直接切到正式語義，例如：
 
-- `reconnect_codex`
+- `repair_session_binding`
 - `archive_thread`
 
 這裡近期要明確固定一個原則：
@@ -377,11 +366,12 @@ v1 至少定義：
 - `POST /api/runtime-owner/reconcile`
 - `POST /api/threads/:thread_key/adopt-tui`
 - `POST /api/threads/:thread_key/reject-tui`
+- `POST /api/threads/:thread_key/repair-session-binding`
 - `GET /api/workspaces/:thread_key/launch-config`
-- `POST /api/workspaces/:thread_key/reconnect`
 - `POST /api/workspaces/:thread_key/open`
-- `POST /api/workspaces/:thread_key/launch-new`
-- `POST /api/workspaces/:thread_key/launch-resume`
+- `POST /api/workspaces/:thread_key/launch-hcodex-new`
+- `POST /api/workspaces/:thread_key/launch-hcodex-continue-current`
+- `POST /api/workspaces/:thread_key/launch-hcodex-resume`
 - `POST /api/workspaces/:thread_key/repair-runtime`
 - `POST /api/threads/:thread_key/archive`
 - `POST /api/threads/:thread_key/restore`
@@ -449,6 +439,7 @@ v1 至少保留：
 目前新增確認的缺口是：
 
 - mirror / observability 已開始承接更完整的 Codex 過程文本，event model 應收斂成等價的 process transcript 事件，而不是各 adapter 自己拼 `plan_text` / `tool_text`
+- `codex plan` 消息流目前尚未穩定進入 mirror；問題暫時懷疑更接近 Codex source/event 輸出缺口，而不是單純 protocol consumer 沒接上
 - `managed_codex_changed` 這類更細的 owner / build event 尚未獨立落地
 - event stream 雖然已 typed 化，但目前仍只直接驅動 top-level views；更細的 observability record 仍未走完整增量 payload
 

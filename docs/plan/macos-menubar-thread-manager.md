@@ -23,13 +23,13 @@
   - `POST /api/runtime-owner/reconcile`
   - `POST /api/threads/:thread_key/adopt-tui`
   - `POST /api/threads/:thread_key/reject-tui`
+  - `POST /api/threads/:thread_key/repair-session-binding`
   - `GET /api/workspaces/:thread_key/launch-config`
-  - `POST /api/workspaces/:thread_key/reconnect`
   - `POST /api/workspaces/:thread_key/open`
   - `POST /api/workspaces/:thread_key/repair-runtime`
-  - `POST /api/workspaces/:thread_key/launch-new`
-  - `POST /api/workspaces/:thread_key/launch-current`
-  - `POST /api/workspaces/:thread_key/launch-resume`
+  - `POST /api/workspaces/:thread_key/launch-hcodex-new`
+  - `POST /api/workspaces/:thread_key/launch-hcodex-continue-current`
+  - `POST /api/workspaces/:thread_key/launch-hcodex-resume`
   - `POST /api/threads/:thread_key/archive`
   - `POST /api/threads/:thread_key/restore`
   - `POST /api/managed-codex/preference`

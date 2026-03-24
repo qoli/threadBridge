@@ -628,7 +628,7 @@ function renderWorkspaceCards(items) {
             <span class="session-pill">
               <code>${escapeHtml(session.session_id)}</code>
               <span class="muted">${escapeHtml(session.execution_mode || 'unknown')}</span>
-              <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="launchResumeWithSession('${item.thread_key}', '${session.session_id}')">Resume</button>
+              <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="launchHcodexResumeWithSession('${item.thread_key}', '${session.session_id}')">Resume</button>
             </span>
           `).join('') || '<span class="muted">No recent sessions to resume.</span>'}
         </div>
@@ -636,9 +636,9 @@ function renderWorkspaceCards(items) {
 
       <div class="actions-grid">
         <button class="secondary" onclick="openWorkspace('${item.thread_key}')">Open Workspace</button>
-        <button ${item.conflict ? 'disabled' : ''} onclick="launchNew('${item.thread_key}')">New Session</button>
-        <button ${item.conflict || !item.current_codex_thread_id ? 'disabled' : ''} onclick="launchCurrent('${item.thread_key}')">Continue Telegram Session</button>
-        <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="repairContinuity('${item.thread_key}', '${item.binding_status}', ${item.tui_session_adoption_pending ? 'true' : 'false'})">${item.tui_session_adoption_pending ? 'Adopt TUI' : item.binding_status === 'broken' ? 'Repair Session' : 'Reconnect Session'}</button>
+        <button ${item.conflict ? 'disabled' : ''} onclick="launchHcodexNew('${item.thread_key}')">New Session</button>
+        <button ${item.conflict || !item.current_codex_thread_id ? 'disabled' : ''} onclick="launchHcodexContinueCurrent('${item.thread_key}')">Continue Telegram Session</button>
+        <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="repairContinuity('${item.thread_key}', '${item.binding_status}', ${item.tui_session_adoption_pending ? 'true' : 'false'})">${item.tui_session_adoption_pending ? 'Adopt TUI' : 'Repair Session'}</button>
         <button class="secondary" onclick="repairRuntime('${item.thread_key}')">Repair Runtime</button>
         <button ${item.conflict ? 'disabled' : ''} onclick="showLaunchConfig('${item.thread_key}')">Show Launch Commands</button>
         <button onclick='archiveThread(${JSON.stringify(item.thread_key)}, ${JSON.stringify(workspacePrimaryLabel(item))})'>Archive</button>
@@ -646,7 +646,7 @@ function renderWorkspaceCards(items) {
 
       <div class="toolbar">
         <input id="resume-${item.thread_key}" type="text" placeholder="session id to resume" />
-        <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="launchResume('${item.thread_key}')">Launch Resume</button>
+        <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="launchHcodexResume('${item.thread_key}')">Launch Resume</button>
       </div>
 
       <details class="raw-panel" data-thread-key="${item.thread_key}" data-panel-key="advanced" ${panelOpenAttr(item.thread_key, 'advanced')}>
@@ -823,8 +823,8 @@ async function updateExecutionMode(threadKey) {
   await refresh();
 }
 
-async function launchNew(threadKey) {
-  const response = await fetch(`/api/workspaces/${threadKey}/launch-new`, { method: 'POST' });
+async function launchHcodexNew(threadKey) {
+  const response = await fetch(`/api/workspaces/${threadKey}/launch-hcodex-new`, { method: 'POST' });
   const data = await response.json();
   if (!response.ok) {
     alert(data.error || 'Launch failed');
@@ -834,8 +834,8 @@ async function launchNew(threadKey) {
   await refresh();
 }
 
-async function launchCurrent(threadKey) {
-  const response = await fetch(`/api/workspaces/${threadKey}/launch-current`, { method: 'POST' });
+async function launchHcodexContinueCurrent(threadKey) {
+  const response = await fetch(`/api/workspaces/${threadKey}/launch-hcodex-continue-current`, { method: 'POST' });
   const data = await response.json();
   if (!response.ok) {
     alert(data.error || 'Launch failed');
@@ -845,17 +845,17 @@ async function launchCurrent(threadKey) {
   await refresh();
 }
 
-async function launchResume(threadKey) {
+async function launchHcodexResume(threadKey) {
   const sessionId = document.getElementById(`resume-${threadKey}`).value.trim();
   if (!sessionId) {
     alert('Enter a session id first');
     return;
   }
-  await launchResumeWithSession(threadKey, sessionId);
+  await launchHcodexResumeWithSession(threadKey, sessionId);
 }
 
-async function launchResumeWithSession(threadKey, sessionId) {
-  const response = await fetch(`/api/workspaces/${threadKey}/launch-resume`, {
+async function launchHcodexResumeWithSession(threadKey, sessionId) {
+  const response = await fetch(`/api/workspaces/${threadKey}/launch-hcodex-resume`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
@@ -869,11 +869,11 @@ async function launchResumeWithSession(threadKey, sessionId) {
   await refresh();
 }
 
-async function reconnectCodex(threadKey) {
-  const response = await fetch(`/api/workspaces/${threadKey}/reconnect`, { method: 'POST' });
+async function repairSessionBinding(threadKey) {
+  const response = await fetch(`/api/threads/${threadKey}/repair-session-binding`, { method: 'POST' });
   const data = await response.json();
   if (!response.ok) {
-    alert(data.error || 'Reconnect failed');
+    alert(data.error || 'Session repair failed');
     return;
   }
   await refresh();
@@ -884,11 +884,7 @@ async function repairContinuity(threadKey, bindingStatus, adoptionPending) {
     await adoptTuiSession(threadKey);
     return;
   }
-  if (bindingStatus === 'broken') {
-    await reconnectCodex(threadKey);
-    return;
-  }
-  await reconnectCodex(threadKey);
+  await repairSessionBinding(threadKey);
 }
 
 async function loadTranscript(threadKey, userInitiated = false) {

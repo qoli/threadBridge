@@ -119,7 +119,6 @@ pub struct ManagedWorkspaceView {
     pub current_codex_thread_id: Option<String>,
     pub tui_active_codex_thread_id: Option<String>,
     pub tui_session_adoption_pending: bool,
-    pub session_broken: bool,
     pub last_used_at: Option<String>,
     pub conflict: bool,
     pub app_server_status: &'static str,
@@ -156,10 +155,7 @@ pub struct ThreadStateView {
     pub last_verified_at: Option<String>,
     pub last_codex_turn_at: Option<String>,
     pub archived_at: Option<String>,
-    // Compatibility alias for consumers that still read `last_used_at`.
     pub last_used_at: Option<String>,
-    // Compatibility/debug alias for consumers that still read a generic error field.
-    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -286,7 +282,6 @@ pub async fn build_workspace_views(
             .await
             .unwrap_or_default();
         let resolved_state = resolve_thread_state(&record.metadata, Some(&binding)).await?;
-        let session_broken = resolved_state.binding_status == BindingStatus::Broken;
         let session_broken_reason = binding
             .session_broken_reason
             .clone()
@@ -313,7 +308,6 @@ pub async fn build_workspace_views(
             current_codex_thread_id: binding.current_codex_thread_id.clone(),
             tui_active_codex_thread_id: binding.tui_active_codex_thread_id.clone(),
             tui_session_adoption_pending: binding.tui_session_adoption_pending,
-            session_broken,
             last_used_at: record.metadata.last_codex_turn_at.clone(),
             conflict: false,
             app_server_status: runtime_status.app_server_status,
@@ -423,7 +417,6 @@ pub async fn build_thread_views(repository: &ThreadRepository) -> Result<Vec<Thr
             last_codex_turn_at: metadata.last_codex_turn_at.clone(),
             archived_at: metadata.archived_at,
             last_used_at: metadata.last_codex_turn_at,
-            last_error: session_broken_reason,
         });
     }
     views.sort_by(|a, b| a.thread_key.cmp(&b.thread_key));
@@ -1010,7 +1003,6 @@ mod tests {
             last_codex_turn_at: Some("2026-03-24T10:00:00.000Z".to_owned()),
             archived_at: None,
             last_used_at: Some("2026-03-24T10:00:00.000Z".to_owned()),
-            last_error: None,
         };
 
         let value = serde_json::to_value(view).unwrap();
@@ -1022,10 +1014,11 @@ mod tests {
         assert_eq!(value["last_verified_at"], "2026-03-24T09:00:00.000Z");
         assert_eq!(value["last_codex_turn_at"], "2026-03-24T10:00:00.000Z");
         assert_eq!(value["last_used_at"], "2026-03-24T10:00:00.000Z");
+        assert!(value.get("last_error").is_none());
     }
 
     #[test]
-    fn managed_workspace_view_serializes_canonical_and_compatibility_fields() {
+    fn managed_workspace_view_serializes_canonical_fields() {
         let view = ManagedWorkspaceView {
             workspace_cwd: "/tmp/workspace".to_owned(),
             title: Some("Workspace".to_owned()),
@@ -1040,7 +1033,6 @@ mod tests {
             current_codex_thread_id: Some("thr_current".to_owned()),
             tui_active_codex_thread_id: Some("thr_tui".to_owned()),
             tui_session_adoption_pending: false,
-            session_broken: true,
             last_used_at: Some("2026-03-24T10:00:00.000Z".to_owned()),
             conflict: false,
             app_server_status: "running",
@@ -1060,7 +1052,7 @@ mod tests {
         assert_eq!(value["binding_status"], "broken");
         assert_eq!(value["run_status"], "idle");
         assert_eq!(value["current_codex_thread_id"], "thr_current");
-        assert_eq!(value["session_broken"], true);
+        assert!(value.get("session_broken").is_none());
     }
 
     #[test]
@@ -1080,7 +1072,6 @@ mod tests {
                 current_codex_thread_id: Some("thr-a".to_owned()),
                 tui_active_codex_thread_id: None,
                 tui_session_adoption_pending: false,
-                session_broken: true,
                 last_used_at: None,
                 conflict: true,
                 app_server_status: "running",
@@ -1109,7 +1100,6 @@ mod tests {
                 current_codex_thread_id: Some("thr-b".to_owned()),
                 tui_active_codex_thread_id: None,
                 tui_session_adoption_pending: false,
-                session_broken: true,
                 last_used_at: None,
                 conflict: false,
                 app_server_status: "missing",

@@ -217,7 +217,7 @@ impl LocalControlHandle {
         Ok(updated)
     }
 
-    pub async fn reconnect_codex(&self, thread_key: &str) -> Result<ThreadRecord> {
+    pub async fn repair_session_binding(&self, thread_key: &str) -> Result<ThreadRecord> {
         let record = self
             .state
             .repository

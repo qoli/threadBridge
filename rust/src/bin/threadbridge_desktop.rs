@@ -496,7 +496,7 @@ mod macos_app {
                 let management_api = app.management_api.clone();
                 let proxy = proxy.clone();
                 runtime.spawn(async move {
-                    if let Err(error) = management_api.launch_workspace_new(&thread_key).await {
+                    if let Err(error) = management_api.launch_hcodex_new(&thread_key).await {
                         warn!(
                             event = "desktop_runtime.launch_new.failed",
                             error = %error,
@@ -512,7 +512,7 @@ mod macos_app {
                 let proxy = proxy.clone();
                 runtime.spawn(async move {
                     if let Err(error) = management_api
-                        .launch_workspace_continue_current(&thread_key)
+                        .launch_hcodex_continue_current(&thread_key)
                         .await
                     {
                         warn!(
@@ -743,7 +743,6 @@ mod macos_app {
                 current_codex_thread_id: Some("thr_current".to_owned()),
                 tui_active_codex_thread_id: None,
                 tui_session_adoption_pending: false,
-                session_broken: false,
                 last_used_at: None,
                 conflict: false,
                 app_server_status: "running",

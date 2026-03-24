@@ -317,8 +317,8 @@
   - 視為舊命令名或內部/歷史語境
   - 描述目前正式產品流時，優先寫 `/add_workspace` 或 create-bind flow
 - `/reconnect_codex`
-  - 視為 management / 歷史命名
-  - 描述目前 Telegram 指令時，優先寫 `/repair_session`
+  - 視為舊 management / 歷史命名
+  - 描述目前正式 continuity repair flow 時，優先寫 `/repair_session` 或 `repair_session_binding`
 - `/new`
   - 視為舊命令名
   - 描述目前 Telegram 指令時，優先寫 `/new_session`

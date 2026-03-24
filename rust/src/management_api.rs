@@ -142,27 +142,29 @@ impl ManagementApiHandle {
             .await
     }
 
-    pub async fn launch_workspace_new(&self, thread_key: &str) -> Result<LaunchWorkspaceResponse> {
-        self.state.launch_workspace_new(thread_key).await
+    pub async fn launch_hcodex_new(&self, thread_key: &str) -> Result<LaunchWorkspaceResponse> {
+        self.state.launch_hcodex_new(thread_key).await
     }
 
-    pub async fn launch_workspace_continue_current(
+    pub async fn launch_hcodex_continue_current(
         &self,
         thread_key: &str,
     ) -> Result<LaunchWorkspaceResponse> {
-        self.state
-            .launch_workspace_continue_current(thread_key)
-            .await
+        self.state.launch_hcodex_continue_current(thread_key).await
     }
 
-    pub async fn launch_workspace_resume(
+    pub async fn launch_hcodex_resume(
         &self,
         thread_key: &str,
         session_id: &str,
     ) -> Result<LaunchWorkspaceResponse> {
         self.state
-            .launch_workspace_resume(thread_key, session_id)
+            .launch_hcodex_resume(thread_key, session_id)
             .await
+    }
+
+    pub async fn repair_session_binding(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
+        self.state.repair_session_binding(thread_key).await
     }
 
     pub async fn add_workspace(&self, workspace_cwd: &str) -> Result<AddWorkspaceResult> {
@@ -229,9 +231,9 @@ struct ArchiveThreadResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct ThreadMutationResponse {
-    ok: bool,
-    thread_key: String,
+pub struct ThreadMutationResponse {
+    pub ok: bool,
+    pub thread_key: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -444,8 +446,8 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
             get(get_workspace_execution_mode).put(put_workspace_execution_mode),
         )
         .route(
-            "/api/workspaces/:thread_key/reconnect",
-            post(post_reconnect_codex),
+            "/api/threads/:thread_key/repair-session-binding",
+            post(post_repair_session_binding),
         )
         .route(
             "/api/workspaces/:thread_key/open",
@@ -456,16 +458,16 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
             post(post_repair_workspace_runtime),
         )
         .route(
-            "/api/workspaces/:thread_key/launch-new",
-            post(post_launch_workspace_new),
+            "/api/workspaces/:thread_key/launch-hcodex-new",
+            post(post_launch_hcodex_new),
         )
         .route(
-            "/api/workspaces/:thread_key/launch-current",
-            post(post_launch_workspace_continue_current),
+            "/api/workspaces/:thread_key/launch-hcodex-continue-current",
+            post(post_launch_hcodex_continue_current),
         )
         .route(
-            "/api/workspaces/:thread_key/launch-resume",
-            post(post_launch_workspace_resume),
+            "/api/workspaces/:thread_key/launch-hcodex-resume",
+            post(post_launch_hcodex_resume),
         )
         .route(
             "/api/threads/:thread_key/archive",
@@ -674,11 +676,11 @@ async fn put_workspace_execution_mode(
     ))
 }
 
-async fn post_reconnect_codex(
+async fn post_repair_session_binding(
     State(state): State<Arc<ManagementApiState>>,
     AxumPath(thread_key): AxumPath<String>,
 ) -> Result<Json<ThreadMutationResponse>, ManagementApiError> {
-    Ok(Json(state.reconnect_codex(&thread_key).await?))
+    Ok(Json(state.repair_session_binding(&thread_key).await?))
 }
 
 async fn post_open_workspace(
@@ -695,30 +697,30 @@ async fn post_repair_workspace_runtime(
     Ok(Json(state.repair_workspace_runtime(&thread_key).await?))
 }
 
-async fn post_launch_workspace_new(
+async fn post_launch_hcodex_new(
     State(state): State<Arc<ManagementApiState>>,
     AxumPath(thread_key): AxumPath<String>,
 ) -> Result<Json<LaunchWorkspaceResponse>, ManagementApiError> {
-    Ok(Json(state.launch_workspace_new(&thread_key).await?))
+    Ok(Json(state.launch_hcodex_new(&thread_key).await?))
 }
 
-async fn post_launch_workspace_continue_current(
+async fn post_launch_hcodex_continue_current(
     State(state): State<Arc<ManagementApiState>>,
     AxumPath(thread_key): AxumPath<String>,
 ) -> Result<Json<LaunchWorkspaceResponse>, ManagementApiError> {
     Ok(Json(
-        state.launch_workspace_continue_current(&thread_key).await?,
+        state.launch_hcodex_continue_current(&thread_key).await?,
     ))
 }
 
-async fn post_launch_workspace_resume(
+async fn post_launch_hcodex_resume(
     State(state): State<Arc<ManagementApiState>>,
     AxumPath(thread_key): AxumPath<String>,
     Json(payload): Json<LaunchResumeRequest>,
 ) -> Result<Json<LaunchWorkspaceResponse>, ManagementApiError> {
     Ok(Json(
         state
-            .launch_workspace_resume(&thread_key, &payload.session_id)
+            .launch_hcodex_resume(&thread_key, &payload.session_id)
             .await?,
     ))
 }
@@ -1518,12 +1520,12 @@ impl ManagementApiState {
         })
     }
 
-    async fn reconnect_codex(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
+    async fn repair_session_binding(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
         let config = self.workspace_launch_config(thread_key).await?;
         self.maybe_reconcile_owner_workspace(&config.workspace_cwd)
             .await?;
         let control = self.local_control().await?;
-        let record = control.reconnect_codex(thread_key).await?;
+        let record = control.repair_session_binding(thread_key).await?;
         Ok(ThreadMutationResponse {
             ok: true,
             thread_key: record.metadata.thread_key,
@@ -1591,7 +1593,7 @@ impl ManagementApiState {
         Ok(())
     }
 
-    async fn launch_workspace_new(&self, thread_key: &str) -> Result<LaunchWorkspaceResponse> {
+    async fn launch_hcodex_new(&self, thread_key: &str) -> Result<LaunchWorkspaceResponse> {
         let config = self.workspace_launch_config(thread_key).await?;
         launch_hcodex_via_terminal(&config.launch_new_command).await?;
         Ok(LaunchWorkspaceResponse {
@@ -1601,7 +1603,7 @@ impl ManagementApiState {
         })
     }
 
-    async fn launch_workspace_continue_current(
+    async fn launch_hcodex_continue_current(
         &self,
         thread_key: &str,
     ) -> Result<LaunchWorkspaceResponse> {
@@ -1618,7 +1620,7 @@ impl ManagementApiState {
         })
     }
 
-    async fn launch_workspace_resume(
+    async fn launch_hcodex_resume(
         &self,
         thread_key: &str,
         session_id: &str,
@@ -2311,6 +2313,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn renamed_control_routes_exist_and_legacy_routes_are_gone() {
+        let root = temp_path();
+        fs::create_dir_all(&root).await.unwrap();
+        let handle = spawn_management_api(runtime_config(&root)).await.unwrap();
+        let client = reqwest::Client::new();
+
+        let repair = client
+            .post(format!(
+                "{}/api/threads/thread-1/repair-session-binding",
+                handle.base_url
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(repair.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let launch_new = client
+            .post(format!(
+                "{}/api/workspaces/thread-1/launch-hcodex-new",
+                handle.base_url
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(launch_new.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let legacy_repair = client
+            .post(format!(
+                "{}/api/workspaces/thread-1/reconnect",
+                handle.base_url
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(legacy_repair.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let legacy_launch = client
+            .post(format!(
+                "{}/api/workspaces/thread-1/launch-current",
+                handle.base_url
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(legacy_launch.status(), reqwest::StatusCode::NOT_FOUND);
     }
 
     #[test]
