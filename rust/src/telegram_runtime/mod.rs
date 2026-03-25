@@ -70,6 +70,8 @@ pub enum Command {
     Sessions,
     #[command(description = "Show recent records for a specific session")]
     SessionLog,
+    #[command(description = "Interrupt the currently running turn for this workspace")]
+    Stop,
     #[command(description = "Set this workspace thread to Plan collaboration mode")]
     PlanMode,
     #[command(description = "Set this workspace thread to Default collaboration mode")]
@@ -1136,6 +1138,7 @@ mod tests {
         assert!(commands.iter().any(|command| command == "/execution_mode"));
         assert!(commands.iter().any(|command| command == "/sessions"));
         assert!(commands.iter().any(|command| command == "/session_log"));
+        assert!(commands.iter().any(|command| command == "/stop"));
         assert!(commands.iter().any(|command| command == "/plan_mode"));
         assert!(commands.iter().any(|command| command == "/default_mode"));
         assert!(
@@ -1384,6 +1387,7 @@ mod tests {
             Command::parse("/session_log", ""),
             Ok(Command::SessionLog)
         ));
+        assert!(matches!(Command::parse("/stop", ""), Ok(Command::Stop)));
         assert!(matches!(
             Command::parse("/plan_mode", ""),
             Ok(Command::PlanMode)
@@ -1416,6 +1420,10 @@ mod tests {
         assert!(matches!(
             parse_fallback_command_text("/launch@threadbridge_bot current"),
             Some(Command::Launch)
+        ));
+        assert!(matches!(
+            parse_fallback_command_text("/stop@threadbridge_bot"),
+            Some(Command::Stop)
         ));
         assert_eq!(
             normalize_slash_command_text("/add_workspace@threadbridge_bot /tmp/workspace"),

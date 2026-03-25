@@ -700,6 +700,8 @@ async fn execute_image_analysis_turn(
         });
     }
     let execution_mode = workspace_execution_mode(&workspace_path).await?;
+    let turn_workspace_path = workspace_path.clone();
+    let turn_session_id = existing_thread_id.to_owned();
     let result = state
         .codex
         .run_locked_with_events_and_mode(
@@ -709,7 +711,22 @@ async fn execute_image_analysis_turn(
             input,
             |event| {
                 let preview = preview.clone();
+                let turn_workspace_path = turn_workspace_path.clone();
+                let turn_session_id = turn_session_id.clone();
                 async move {
+                    if let crate::codex::CodexThreadEvent::TurnStarted {
+                        turn_id: Some(turn_id),
+                    } = &event
+                    {
+                        let _ = record_bot_status_event(
+                            &turn_workspace_path,
+                            "bot_turn_started",
+                            Some(&turn_session_id),
+                            Some(turn_id),
+                            None,
+                        )
+                        .await;
+                    }
                     preview.lock().await.consume(&event).await;
                 }
             },

@@ -15,7 +15,9 @@ use super::status_sync;
 use super::*;
 use crate::codex::{COLLABORATION_MODE_UNAVAILABLE_PREFIX, CodexServerRequest};
 use crate::collaboration_mode::CollaborationMode;
-use crate::execution_mode::{ExecutionMode, workspace_execution_mode, write_workspace_execution_config};
+use crate::execution_mode::{
+    ExecutionMode, workspace_execution_mode, write_workspace_execution_config,
+};
 use crate::local_control::LocalControlHandle;
 use crate::management_api::{
     HcodexLaunchConfigView, WorkspaceExecutionModeView, hcodex_launch_command,
@@ -282,14 +284,18 @@ fn render_launch_usage(config: &HcodexLaunchConfigView) -> String {
     };
     format!(
         "Usage: `/launch new`, `/launch current`, or `/launch resume <session_id>`.\ncurrent_codex_thread_id: `{}`\nrecent_sessions: `{}`",
-        config.current_codex_thread_id
+        config
+            .current_codex_thread_id
             .clone()
             .unwrap_or_else(|| "none".to_owned()),
         recent,
     )
 }
 
-fn render_working_sessions(binding: &SessionBinding, summaries: &[WorkingSessionSummaryView]) -> String {
+fn render_working_sessions(
+    binding: &SessionBinding,
+    summaries: &[WorkingSessionSummaryView],
+) -> String {
     if summaries.is_empty() {
         return "No working sessions recorded yet.".to_owned();
     }
@@ -325,12 +331,20 @@ fn render_working_sessions(binding: &SessionBinding, summaries: &[WorkingSession
     lines.join("\n")
 }
 
-fn render_working_session_records(session_id: &str, records: &[WorkingSessionRecordView]) -> String {
+fn render_working_session_records(
+    session_id: &str,
+    records: &[WorkingSessionRecordView],
+) -> String {
     if records.is_empty() {
         return format!("No records found for session `{session_id}`.");
     }
     let mut lines = vec![format!("Recent records for session `{session_id}`:")];
-    for record in records.iter().rev().take(TELEGRAM_SESSION_RECORD_LIMIT).rev() {
+    for record in records
+        .iter()
+        .rev()
+        .take(TELEGRAM_SESSION_RECORD_LIMIT)
+        .rev()
+    {
         let kind = match record.kind {
             WorkingSessionRecordKind::UserPrompt => "user_prompt",
             WorkingSessionRecordKind::AssistantFinal => "assistant_final",
@@ -342,6 +356,19 @@ fn render_working_session_records(session_id: &str, records: &[WorkingSessionRec
         lines.push(format!("- {} | {} | {}", record.timestamp, kind, summary));
     }
     lines.join("\n")
+}
+
+fn render_stop_started_message(snapshot: &SessionCurrentStatus) -> String {
+    match snapshot.activity_source {
+        crate::workspace_status::SessionActivitySource::Tui => format!(
+            "Interrupt requested for shared TUI session `{}`. Wait for the current turn to settle.",
+            snapshot.session_id
+        ),
+        crate::workspace_status::SessionActivitySource::ManagedRuntime => format!(
+            "Interrupt requested for Telegram session `{}`. Wait for the current turn to settle.",
+            snapshot.session_id
+        ),
+    }
 }
 
 pub(crate) async fn run_command(
@@ -636,8 +663,13 @@ pub(crate) async fn run_command(
         }
         Command::Launch => {
             if is_control_chat(msg) {
-                send_scoped_message(bot, msg.chat.id, None, "Use /launch inside a workspace thread.")
-                    .await?;
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    None,
+                    "Use /launch inside a workspace thread.",
+                )
+                .await?;
                 return Ok(());
             }
             let thread_id = msg.thread_id.context("thread message missing thread id")?;
@@ -646,10 +678,16 @@ pub(crate) async fn run_command(
                 .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
                 .await?;
             let session = state.repository.read_session_binding(&record).await?;
-            let (resolved_state, _) = resolve_busy_gate_state(state, &record, session.as_ref()).await?;
+            let (resolved_state, _) =
+                resolve_busy_gate_state(state, &record, session.as_ref()).await?;
             if resolved_state.is_archived() {
-                send_scoped_message(bot, msg.chat.id, Some(thread_id), "This workspace is archived.")
-                    .await?;
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "This workspace is archived.",
+                )
+                .await?;
                 return Ok(());
             }
             let Some(binding) = session.as_ref() else {
@@ -664,8 +702,13 @@ pub(crate) async fn run_command(
             };
             let config = workspace_launch_config_for_record(state, &record, binding).await?;
             let Some(argument) = command_argument_text(msg, "launch") else {
-                send_scoped_message(bot, msg.chat.id, Some(thread_id), render_launch_usage(&config))
-                    .await?;
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    render_launch_usage(&config),
+                )
+                .await?;
                 return Ok(());
             };
             let Some(target) = parse_launch_command_target(argument) else {
@@ -745,10 +788,16 @@ pub(crate) async fn run_command(
                 .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
                 .await?;
             let session = state.repository.read_session_binding(&record).await?;
-            let (resolved_state, _) = resolve_busy_gate_state(state, &record, session.as_ref()).await?;
+            let (resolved_state, _) =
+                resolve_busy_gate_state(state, &record, session.as_ref()).await?;
             if resolved_state.is_archived() {
-                send_scoped_message(bot, msg.chat.id, Some(thread_id), "This workspace is archived.")
-                    .await?;
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "This workspace is archived.",
+                )
+                .await?;
                 return Ok(());
             }
             let Some(binding) = session.as_ref() else {
@@ -822,10 +871,16 @@ pub(crate) async fn run_command(
                 .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
                 .await?;
             let session = state.repository.read_session_binding(&record).await?;
-            let (resolved_state, _) = resolve_busy_gate_state(state, &record, session.as_ref()).await?;
+            let (resolved_state, _) =
+                resolve_busy_gate_state(state, &record, session.as_ref()).await?;
             if resolved_state.is_archived() {
-                send_scoped_message(bot, msg.chat.id, Some(thread_id), "This workspace is archived.")
-                    .await?;
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "This workspace is archived.",
+                )
+                .await?;
                 return Ok(());
             }
             let Some(binding) = session.as_ref() else {
@@ -838,7 +893,8 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             };
-            let summaries = build_working_session_summaries(&state.repository, &record, binding).await?;
+            let summaries =
+                build_working_session_summaries(&state.repository, &record, binding).await?;
             send_scoped_message(
                 bot,
                 msg.chat.id,
@@ -864,10 +920,16 @@ pub(crate) async fn run_command(
                 .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
                 .await?;
             let session = state.repository.read_session_binding(&record).await?;
-            let (resolved_state, _) = resolve_busy_gate_state(state, &record, session.as_ref()).await?;
+            let (resolved_state, _) =
+                resolve_busy_gate_state(state, &record, session.as_ref()).await?;
             if resolved_state.is_archived() {
-                send_scoped_message(bot, msg.chat.id, Some(thread_id), "This workspace is archived.")
-                    .await?;
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "This workspace is archived.",
+                )
+                .await?;
                 return Ok(());
             }
             let Some(binding) = session.as_ref() else {
@@ -908,6 +970,98 @@ pub(crate) async fn run_command(
                 msg.chat.id,
                 Some(thread_id),
                 render_working_session_records(session_id, &records),
+            )
+            .await?;
+        }
+        Command::Stop => {
+            if is_control_chat(msg) {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    None,
+                    "Use /stop inside a workspace thread.",
+                )
+                .await?;
+                return Ok(());
+            }
+            let thread_id = msg.thread_id.context("thread message missing thread id")?;
+            let record = state
+                .repository
+                .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
+                .await?;
+            let session = state.repository.read_session_binding(&record).await?;
+            let (resolved_state, blocking_snapshot) =
+                resolve_busy_gate_state(state, &record, session.as_ref()).await?;
+            if resolved_state.is_archived() {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "This workspace is archived.",
+                )
+                .await?;
+                return Ok(());
+            }
+            let Some(binding) = session.as_ref() else {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "This workspace thread is not bound yet.",
+                )
+                .await?;
+                return Ok(());
+            };
+            let Some(busy) = blocking_snapshot.as_ref() else {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "No active turn is running for this workspace.",
+                )
+                .await?;
+                return Ok(());
+            };
+            let Some(turn_id) = busy.turn_id.as_deref() else {
+                send_scoped_warning_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    format!(
+                        "A turn is running for session `{}`, but its turn id is unavailable, so `/stop` cannot interrupt it yet.",
+                        busy.session_id
+                    ),
+                )
+                .await?;
+                return Ok(());
+            };
+            let workspace_path = workspace_path_from_binding(binding)?;
+            let codex_workspace = state
+                .control
+                .workspace_runtime_service()
+                .shared_codex_workspace(workspace_path)
+                .await?;
+            state
+                .codex
+                .interrupt_turn(&codex_workspace, &busy.session_id, turn_id)
+                .await?;
+            state
+                .repository
+                .append_log(
+                    &record,
+                    LogDirection::System,
+                    format!(
+                        "Requested interrupt for session `{}` turn `{}` via `/stop`.",
+                        busy.session_id, turn_id
+                    ),
+                    None,
+                )
+                .await?;
+            send_scoped_message(
+                bot,
+                msg.chat.id,
+                Some(thread_id),
+                render_stop_started_message(busy),
             )
             .await?;
         }
@@ -1378,6 +1532,8 @@ async fn execute_text_turn(
     let mirror_record = record.clone();
     let mirror_repository = state.repository.clone();
     let mirror_session_id = existing_thread_id.to_owned();
+    let turn_workspace_path = workspace_path.clone();
+    let turn_session_id = existing_thread_id.to_owned();
     let execution_mode = workspace_execution_mode(&workspace_path).await?;
     let interactive_bot = bot.clone();
     let interactive_state = state.clone();
@@ -1396,7 +1552,22 @@ async fn execute_text_turn(
                 let mirror_record = mirror_record.clone();
                 let mirror_repository = mirror_repository.clone();
                 let mirror_session_id = mirror_session_id.clone();
+                let turn_workspace_path = turn_workspace_path.clone();
+                let turn_session_id = turn_session_id.clone();
                 async move {
+                    if let CodexThreadEvent::TurnStarted {
+                        turn_id: Some(turn_id),
+                    } = &event
+                    {
+                        let _ = record_bot_status_event(
+                            &turn_workspace_path,
+                            "bot_turn_started",
+                            Some(&turn_session_id),
+                            Some(turn_id),
+                            None,
+                        )
+                        .await;
+                    }
                     preview.lock().await.consume(&event).await;
                     if let Some(entry) = process_entry_from_codex_event(
                         &event,
@@ -1649,19 +1820,19 @@ pub(crate) async fn launch_plan_implementation_turn(
 mod tests {
     use super::{
         LaunchCommandTarget, parse_execution_mode_argument, parse_launch_command_target,
-        persist_collaboration_mode_change, render_working_session_records,
-        render_working_sessions, workspace_launch_config_for_record,
+        persist_collaboration_mode_change, render_working_session_records, render_working_sessions,
+        workspace_launch_config_for_record,
     };
     use crate::collaboration_mode::CollaborationMode;
     use crate::config::{AppConfig, RuntimeConfig, TelegramConfig};
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
     use crate::hcodex_ingress::HcodexIngressManager;
     use crate::repository::{
-        ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorOrigin,
-        TranscriptMirrorPhase, TranscriptMirrorRole,
+        ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorOrigin, TranscriptMirrorPhase,
+        TranscriptMirrorRole,
     };
-    use crate::runtime_protocol::{WorkingSessionRecordKind, WorkingSessionRecordView};
     use crate::runtime_control::{RuntimeControlContext, RuntimeOwnershipMode};
+    use crate::runtime_protocol::{WorkingSessionRecordKind, WorkingSessionRecordView};
     use crate::telegram_runtime::AppState;
     use crate::workspace_status::WorkspaceStatusCache;
     use std::collections::HashSet;
@@ -1703,7 +1874,10 @@ mod tests {
             parse_execution_mode_argument("full-auto"),
             Some(ExecutionMode::FullAuto)
         );
-        assert_eq!(parse_execution_mode_argument("yolo"), Some(ExecutionMode::Yolo));
+        assert_eq!(
+            parse_execution_mode_argument("yolo"),
+            Some(ExecutionMode::Yolo)
+        );
         assert_eq!(parse_execution_mode_argument("plan"), None);
     }
 
@@ -1721,7 +1895,10 @@ mod tests {
             started_at: Some("2026-03-25T00:00:00.000Z".to_owned()),
             updated_at: "2026-03-25T00:01:00.000Z".to_owned(),
             run_status: "running".to_owned(),
-            origins_seen: vec![TranscriptMirrorOrigin::Telegram, TranscriptMirrorOrigin::Tui],
+            origins_seen: vec![
+                TranscriptMirrorOrigin::Telegram,
+                TranscriptMirrorOrigin::Tui,
+            ],
             record_count: 3,
             tool_use_count: 1,
             has_final_reply: true,

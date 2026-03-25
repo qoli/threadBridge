@@ -232,7 +232,7 @@ impl PreviewRenderer {
                 self.in_progress = true;
                 self.status = preview_status("Preparing reply...")
             }
-            CodexThreadEvent::TurnStarted => {
+            CodexThreadEvent::TurnStarted { .. } => {
                 self.in_progress = true;
                 self.status = preview_status("Reading context...");
             }
@@ -538,7 +538,7 @@ mod tests {
     #[test]
     fn preview_renderer_applies_heartbeat_to_draft_text() {
         let mut renderer = PreviewRenderer::new(3500, 800);
-        renderer.consume(&CodexThreadEvent::TurnStarted);
+        renderer.consume(&CodexThreadEvent::TurnStarted { turn_id: None });
         assert_eq!(renderer.get_render_text(), "○ Reading context...");
 
         renderer.consume(&CodexThreadEvent::ItemUpdated {
@@ -556,7 +556,7 @@ mod tests {
     #[test]
     fn preview_renderer_heartbeat_rotates_prefix_marker() {
         let mut renderer = PreviewRenderer::new(3500, 800);
-        renderer.consume(&CodexThreadEvent::TurnStarted);
+        renderer.consume(&CodexThreadEvent::TurnStarted { turn_id: None });
         assert_eq!(renderer.get_render_text(), "○ Reading context...");
 
         renderer.heartbeat();
@@ -593,7 +593,7 @@ mod tests {
     #[test]
     fn preview_renderer_uses_process_entry_summary() {
         let mut renderer = PreviewRenderer::new(3500, 800);
-        renderer.consume(&CodexThreadEvent::TurnStarted);
+        renderer.consume(&CodexThreadEvent::TurnStarted { turn_id: None });
         let changed = renderer.consume_process_entry(&TranscriptMirrorEntry {
             timestamp: "2026-03-22T00:00:00.000Z".to_owned(),
             session_id: "session-1".to_owned(),

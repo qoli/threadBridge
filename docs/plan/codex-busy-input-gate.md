@@ -9,6 +9,10 @@
 - Telegram 文字訊息 busy gate
 - 圖片保存後延後分析的 busy gate
 - `/new_session`、`/repair_session` 受 busy 狀態保護
+- `/stop` 已作為第一個正式 busy control action 落地
+  - Telegram 可對目前 running turn 送出 app-server `turn/interrupt`
+  - direct bot turn 與 shared TUI ingress 都已開始把 `turn_id` 寫入 workspace status，供 `/stop` 定位目前 active turn
+- busy reject / command reject 文案已開始提示 `/stop`
 - busy 狀態已經不只看 bot 本身，也會讀 workspace shared status
 - Telegram 文字 turn 與圖片分析改成 background 執行；handler 會先寫入 busy，再快速返回
 - 因此同一 Telegram chat / topic 的後續輸入，現在會在 busy gate 被明確拒絕，而不再主要表現成長 handler 造成的隱性串行化
@@ -23,8 +27,7 @@
 - 更完整的 `runtime-state-machine` 對齊
 - Web App 觀測面上的正式狀態展示
 - Telegram 互動式 busy control surface
-  - `STOP ai 回應`
-  - 執行中提示內的 follow-up affordance
+  - 更完整的執行中提示 / callback / keyboard affordance
   - Busy Gate 下的新輸入策略
     - `STOP 並插入發言`
     - `序列發言`

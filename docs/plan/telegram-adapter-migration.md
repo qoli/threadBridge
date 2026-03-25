@@ -2,7 +2,7 @@
 
 ## 目前進度
 
-這份文檔目前仍是草稿，尚未正式進入完整的 adapter migration 階段。
+這份文檔目前仍是草稿，但 Telegram v0 的第一批 adapter surface 已經部分落地。
 
 目前已有的前置收斂：
 
@@ -19,7 +19,18 @@
   - 本地 / TUI session 產生的 `request_user_input` 會透過 shared runtime interaction event mirror 回 Telegram
   - plan-only turn 結束後可透過同一條 adapter-owned interaction bridge 送出 `Implement this plan?` prompt
   - secret input 仍不支持
-- 本地 session-first observability API 與 workspace-card `Sessions` pane 已落地，但 Telegram 仍未接上這條能力面
+- Telegram session-first observability slash commands 已落地：
+  - `/sessions`
+  - `/session_log <session_id>`
+- Telegram desktop launch control 已落地：
+  - `/launch new`
+  - `/launch current`
+  - `/launch resume <session_id>`
+- Telegram execution mode control 已落地：
+  - `/execution_mode`
+- Busy Gate follow-up control 已先落地第一個正式 action：
+  - `/stop`
+  - 目前是單獨 interrupt current turn；`STOP 並插入發言` / `序列發言` 仍未做
 
 但整體架構仍未完成 Telegram adapter 化。
 
@@ -31,16 +42,16 @@
 
 目前也新增記錄一組 Telegram-specific 的近期能力想法：
 
-- Telegram observability 應優先接上已落地的 session-first API，而不只停留在 thread transcript feed
-- Telegram 之後應可提供 Codex 工作模型與 execution mode 的設定入口
+- Telegram observability 已先接上已落地的 session-first API，而不只停留在 thread transcript feed
+- Telegram 已有 execution mode 設定入口；Codex 工作模型入口仍未做
 - Telegram collaboration mode 設定入口已先行落地，且應持續和 execution mode 分開
 - Telegram 已承接最小 v1 的 app-server / TUI 互動式回應面：
   - `request_user_input`
   - post-plan `Implement this plan?`
   - 後續仍可再擴成更一般的 interrupt / questionnaire surface
-- Telegram 之後也應可提供 desktop launch control surface：
+- Telegram desktop launch control surface 已先落地：
   - 用 slash command 觸發 desktop endpoint 的 `launch new` / `launch current` / `launch resume`
-  - 但這條能力不應被表達成 `codex / hcodex` 二選一
+  - 這條能力不應被表達成 `codex / hcodex` 二選一
   - 也不應回頭改寫 `/new_session` 的 continuity 語義
 - Telegram 之後可評估支持 `forwarded input`
   - 背景是現在採用 `Telegram thread = 工作 thread` 模型後，`main chat` 更像 control 面板，普通輸入空間變得不自然
@@ -97,14 +108,14 @@
   - `GET /api/threads/:thread_key/sessions`
   - `GET /api/threads/:thread_key/sessions/:session_id/records`
   - workspace-card `Sessions` pane
-- Telegram 相關 observability 應優先建立在 session-first API 之上
+- Telegram 相關 observability 已開始建立在 session-first API 之上
 - 不應讓 Telegram surface 長期依賴 thread transcript feed 自行分組 `session_id`
 - 換句話說，Telegram 若要補 observability / debug 能力，應直接消費既有的正式 session query surface，而不是再定義自己的 session timeline 模型
 
 ### 2. Model / Mode control surface
 
 - Telegram 之後可補上 Codex 工作模型設定入口
-- Telegram 之後也可補上 execution mode 設定入口
+- Telegram 已補上 execution mode 設定入口
 - Telegram 已補上 collaboration mode 設定入口
 - 這兩者應視為不同控制面：
   - `Codex 工作模型`
@@ -133,8 +144,8 @@
 
 ### 2.2. Desktop launch control surface
 
-- Telegram 之後應可補一條獨立的 slash command，用來驅動 desktop endpoint 的本地 launch 行為
-- 它近期應只承接既有 desktop launch control 的 adapter surface，而不是重新定義 runtime continuity
+- Telegram 已補上一條獨立的 slash command，用來驅動 desktop endpoint 的本地 launch 行為
+- 它目前只承接既有 desktop launch control 的 adapter surface，而不是重新定義 runtime continuity
 - 較合理的動作集合是：
   - `launch new`
   - `launch current`
@@ -159,6 +170,7 @@
 ### 2.5. Busy Gate follow-up control surface
 
 - Telegram busy gate 不應永遠只剩下單純 reject 文案
+- 第一個正式 control action `/stop` 已落地
 - 之後可補兩種更明確的 follow-up 動作：
   - `STOP 並插入發言`
   - `序列發言`

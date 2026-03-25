@@ -40,8 +40,9 @@
 - [codex-busy-input-gate.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-busy-input-gate.md)
   - v1 忙碌閘控已落地
   - Telegram 文字 turn / 圖片分析已改成 background 執行，後續輸入現在會命中 reject
+  - `/stop` 已作為第一個正式 busy control action 落地，並開始使用 session turn id 走 app-server interrupt
   - bot 啟動時的 stale busy reconciliation 已開始落地
-  - 但 queue 模型、更完整的狀態語義、`STOP` / `STOP 並插入發言` / `序列發言` 這類互動控制面、更乾淨的 ingress / dispatcher 邊界，以及更完整的 stale busy owner 模型仍未收斂
+  - 但 queue 模型、更完整的狀態語義、`STOP 並插入發言` / `序列發言` 這類 follow-up 控制面、更乾淨的 ingress / dispatcher 邊界，以及更完整的 stale busy owner 模型仍未收斂
 - [topic-title-status.md](/Volumes/Data/Github/threadBridge/docs/plan/topic-title-status.md)
   - 已落地 `workspace/title + broken suffix`
   - 已落地新產生的 topic rename service message best-effort cleanup
@@ -143,8 +144,8 @@
   - Telegram adapter 遷移草稿
   - owner authority 與 shared runtime control 已先從 Telegram 路徑抽離，再做更完整的 adapter migration
   - 近期優先級應是補齊 Telegram 自身適配，而不是先做第二個 IM adapter 驗證
-  - Telegram collaboration mode slash commands 與最小 `request_user_input` / `Implement this plan` 互動面已先行落地，且互動 UI 已改成 adapter-owned bridge
-  - 近期 Telegram v0 剩餘能力面包括 session-first observability、model/mode 設定、desktop launch control、Busy Gate follow-up control surface，以及 `main chat = control 面板` 下的 `forwarded input`
+  - Telegram collaboration mode slash commands、`/launch`、`/execution_mode`、`/sessions`、`/session_log`、`/stop`，以及最小 `request_user_input` / `Implement this plan` 互動面已先行落地，且互動 UI 已改成 adapter-owned bridge
+  - 近期 Telegram v0 剩餘能力面主要包括 Codex 工作模型設定、更完整的 Busy Gate follow-up control surface，以及 `main chat = control 面板` 下的 `forwarded input`
 
 ## 主規格
 

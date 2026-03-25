@@ -50,7 +50,7 @@ pub enum CodexThreadEvent {
     #[serde(rename = "thread.started")]
     ThreadStarted { thread_id: String },
     #[serde(rename = "turn.started")]
-    TurnStarted,
+    TurnStarted { turn_id: Option<String> },
     #[serde(rename = "turn.completed")]
     TurnCompleted {
         turn_id: Option<String>,
@@ -514,6 +514,13 @@ impl CodexRunner {
         params
     }
 
+    fn build_turn_interrupt_params(thread_id: &str, turn_id: &str) -> Value {
+        json!({
+            "threadId": thread_id,
+            "turnId": turn_id,
+        })
+    }
+
     fn parse_binding(result: &Value) -> Result<CodexThreadBinding> {
         let thread = result
             .get("thread")
@@ -855,7 +862,13 @@ impl CodexRunner {
                     .to_owned();
                 Ok(Some(CodexThreadEvent::ThreadStarted { thread_id }))
             }
-            "turn/started" => Ok(Some(CodexThreadEvent::TurnStarted)),
+            "turn/started" => Ok(Some(CodexThreadEvent::TurnStarted {
+                turn_id: params
+                    .get("turn")
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            })),
             "turn/completed" => {
                 let turn = params.get("turn").cloned().unwrap_or(Value::Null);
                 let turn_id = turn.get("id").and_then(Value::as_str).map(str::to_owned);
@@ -1123,6 +1136,22 @@ impl CodexRunner {
             .await
     }
 
+    pub async fn interrupt_turn(
+        &self,
+        workspace: &CodexWorkspace,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Result<()> {
+        let mut client = AppServerClient::start(workspace).await?;
+        let _ = client
+            .request_simple(
+                "turn/interrupt",
+                Self::build_turn_interrupt_params(thread_id, turn_id),
+            )
+            .await?;
+        Ok(())
+    }
+
     fn ensure_locked_thread_id(
         &self,
         locked_thread_id: &str,
@@ -1172,8 +1201,14 @@ impl CodexRunner {
 
         while !(request_acked && turn_completed) {
             match client.read_message().await? {
-                RpcMessage::Response { id, .. } if id == request_id => {
+                RpcMessage::Response { id, result } if id == request_id => {
                     request_acked = true;
+                    let turn_id = result
+                        .get("turn")
+                        .and_then(|turn| turn.get("id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    on_event(CodexThreadEvent::TurnStarted { turn_id }).await;
                 }
                 RpcMessage::Error { id, message, data } if id == request_id => {
                     let details = data.map(|value| value.to_string()).unwrap_or_default();
@@ -1241,7 +1276,7 @@ impl CodexRunner {
                                 }
                             }
                             CodexThreadEvent::Error { .. }
-                            | CodexThreadEvent::TurnStarted
+                            | CodexThreadEvent::TurnStarted { .. }
                             | CodexThreadEvent::ThreadStarted { .. } => {}
                         }
                         on_event(event).await;
@@ -1405,8 +1440,8 @@ fn normalize_item(item: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppServerClient, CodexInputItem, CodexRunner, CodexThreadBinding, CodexWorkspace, Value,
-        json, normalize_item,
+        AppServerClient, CodexInputItem, CodexRunner, CodexThreadBinding, CodexThreadEvent,
+        CodexWorkspace, Value, json, normalize_item,
     };
     use crate::collaboration_mode::CollaborationMode;
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
@@ -1490,6 +1525,13 @@ mod tests {
     }
 
     #[test]
+    fn turn_interrupt_params_include_thread_and_turn_ids() {
+        let params = CodexRunner::build_turn_interrupt_params("thr_123", "turn_456");
+        assert_eq!(params["threadId"], "thr_123");
+        assert_eq!(params["turnId"], "turn_456");
+    }
+
+    #[test]
     fn initialize_params_enable_experimental_api_with_camel_case() {
         let params = AppServerClient::initialize_params();
         assert_eq!(params["capabilities"]["experimentalApi"], true);
@@ -1563,6 +1605,27 @@ mod tests {
             "id": "r_1"
         }));
         assert_eq!(normalized["type"], "reasoning");
+    }
+
+    #[test]
+    fn turn_started_notification_carries_turn_id_when_present() {
+        let event = CodexRunner::map_notification(
+            "turn/started",
+            json!({
+                "turn": {
+                    "id": "turn_123",
+                }
+            }),
+            &mut std::collections::HashMap::new(),
+            &mut std::collections::HashMap::new(),
+        )
+        .unwrap();
+        assert!(matches!(
+            event,
+            Some(CodexThreadEvent::TurnStarted {
+                turn_id: Some(ref turn_id)
+            }) if turn_id == "turn_123"
+        ));
     }
 
     #[test]

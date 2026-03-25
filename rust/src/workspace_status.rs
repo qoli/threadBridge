@@ -599,7 +599,7 @@ pub async fn record_bot_status_event(
         "bot_turn_started" => {
             current.phase = WorkspaceStatusPhase::TurnRunning;
             current.client = Some("threadbridge".to_owned());
-            current.summary = summary.and_then(summarize_prompt);
+            current.summary = summary.and_then(summarize_prompt).or(current.summary);
             current
         }
         "bot_turn_completed" | "bot_turn_failed" | "bot_turn_recovered" => {
@@ -627,6 +627,32 @@ pub async fn record_bot_status_event(
     let aggregate = read_workspace_aggregate_status(workspace_path).await?;
     let _ = refresh_workspace_aggregate_status(workspace_path, aggregate).await?;
     Ok(next)
+}
+
+pub async fn record_hcodex_ingress_turn_started(
+    workspace_path: &Path,
+    session_id: &str,
+    turn_id: Option<&str>,
+) -> Result<SessionCurrentStatus> {
+    ensure_workspace_status_surface(workspace_path).await?;
+    let mut current = read_session_status(workspace_path, session_id)
+        .await?
+        .unwrap_or_else(|| {
+            default_session_status(workspace_path, session_id, SessionActivitySource::Tui)
+        });
+    current.schema_version = STATUS_SCHEMA_VERSION;
+    current.workspace_cwd = canonical_workspace_string(workspace_path);
+    current.activity_source = SessionActivitySource::Tui;
+    current.live = true;
+    current.phase = WorkspaceStatusPhase::TurnRunning;
+    current.shell_pid = Some(0);
+    current.client = Some(HCODEX_INGRESS_CLIENT.to_owned());
+    current.turn_id = turn_id.map(str::to_owned);
+    current.updated_at = now_iso();
+    write_session_status(workspace_path, &current).await?;
+    let aggregate = read_workspace_aggregate_status(workspace_path).await?;
+    let _ = refresh_workspace_aggregate_status(workspace_path, aggregate).await?;
+    Ok(current)
 }
 
 pub async fn record_hcodex_ingress_connected(
@@ -963,8 +989,8 @@ mod tests {
         list_live_local_sessions, local_tui_session_claim_path, read_local_tui_session_claim,
         read_session_status, read_workspace_aggregate_status, record_bot_status_event,
         record_hcodex_ingress_completed, record_hcodex_ingress_connected,
-        record_hcodex_ingress_prompt, record_hcodex_launcher_ended, record_hcodex_launcher_started,
-        session_status_path,
+        record_hcodex_ingress_prompt, record_hcodex_ingress_turn_started,
+        record_hcodex_launcher_ended, record_hcodex_launcher_started, session_status_path,
     };
     use std::path::PathBuf;
     use tokio::fs;
@@ -1631,6 +1657,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bot_turn_started_can_attach_turn_id_without_overwriting_summary() {
+        let workspace = temp_path();
+        record_bot_status_event(
+            &workspace,
+            "bot_turn_started",
+            Some("thr_bot"),
+            None,
+            Some("prompt summary"),
+        )
+        .await
+        .unwrap();
+
+        let session = record_bot_status_event(
+            &workspace,
+            "bot_turn_started",
+            Some("thr_bot"),
+            Some("turn-1"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(session.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(session.summary.as_deref(), Some("prompt summary"));
+    }
+
+    #[tokio::test]
     async fn live_local_session_listing_reads_per_session_registry() {
         let workspace = temp_path();
         ensure_workspace_status_surface(&workspace).await.unwrap();
@@ -1750,5 +1803,23 @@ mod tests {
             .filter(|line| line.contains("\"event\":\"turn_completed\""))
             .count();
         assert_eq!(turn_completed_count, 1);
+    }
+
+    #[tokio::test]
+    async fn hcodex_ingress_turn_started_persists_turn_id() {
+        let workspace = temp_path();
+        ensure_workspace_status_surface(&workspace).await.unwrap();
+
+        record_hcodex_ingress_turn_started(&workspace, "thr_tui", Some("turn-1"))
+            .await
+            .unwrap();
+
+        let session = read_session_status(&workspace, "thr_tui")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.phase, WorkspaceStatusPhase::TurnRunning);
+        assert_eq!(session.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(session.client.as_deref(), Some(HCODEX_INGRESS_CLIENT));
     }
 }

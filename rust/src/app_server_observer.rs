@@ -22,6 +22,7 @@ use crate::telegram_runtime::final_reply::compose_visible_final_reply;
 use crate::workspace_status::{
     record_hcodex_ingress_completed, record_hcodex_ingress_preview_text,
     record_hcodex_ingress_process_event, record_hcodex_ingress_prompt,
+    record_hcodex_ingress_turn_started,
 };
 
 #[derive(Debug, Clone)]
@@ -255,8 +256,11 @@ async fn handle_observer_event(
             )
             .await?;
         }
+        CodexThreadEvent::TurnStarted { turn_id } => {
+            record_hcodex_ingress_turn_started(workspace_path, thread_id, turn_id.as_deref())
+                .await?;
+        }
         CodexThreadEvent::ThreadStarted { .. }
-        | CodexThreadEvent::TurnStarted
         | CodexThreadEvent::Error { .. }
         | CodexThreadEvent::ItemStarted { .. }
         | CodexThreadEvent::ItemUpdated { .. }

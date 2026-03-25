@@ -26,6 +26,7 @@ use crate::repository::ThreadRepository;
 use crate::runtime_interaction::RuntimeInteractionSender;
 use crate::workspace_status::{
     record_hcodex_ingress_connected, record_hcodex_ingress_disconnected,
+    record_hcodex_ingress_turn_started,
 };
 
 const INGRESS_HEALTH_PATH: &str = "/healthz";
@@ -461,6 +462,13 @@ async fn maybe_track_server_response(
             .and_then(|turn| turn.get("id"))
             .and_then(Value::as_str)
         {
+            if let Some(record) = repository.find_active_thread_by_key(thread_key).await?
+                && let Some(binding) = repository.read_session_binding(&record).await?
+                && let Some(session_id) = binding.tui_active_codex_thread_id.as_deref()
+            {
+                record_hcodex_ingress_turn_started(workspace_path, session_id, Some(turn_id))
+                    .await?;
+            }
             if let Some(mode) = tracked_turn_mode_by_request_id.remove(&response_id) {
                 observer_runtime.record_turn_mode(turn_id, mode).await;
             }
