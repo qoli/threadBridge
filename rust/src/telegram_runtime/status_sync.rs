@@ -73,7 +73,7 @@ fn truncate_topic_base(base: &str, suffix: &str) -> String {
 
 fn workspace_local_conflict(
     aggregate: Option<&WorkspaceAggregateStatus>,
-    owner_claim: Option<&LocalTuiSessionClaim>,
+    local_tui_claim: Option<&LocalTuiSessionClaim>,
 ) -> bool {
     let Some(aggregate) = aggregate else {
         return false;
@@ -81,13 +81,13 @@ fn workspace_local_conflict(
     if aggregate.live_tui_session_ids.is_empty() {
         return false;
     }
-    let Some(owner_claim) = owner_claim else {
+    let Some(local_tui_claim) = local_tui_claim else {
         return true;
     };
     if aggregate.live_tui_session_ids.len() > 1 {
         return true;
     }
-    let Some(expected_session_id) = owner_claim.session_id.as_deref() else {
+    let Some(expected_session_id) = local_tui_claim.session_id.as_deref() else {
         return false;
     };
     aggregate
@@ -516,7 +516,7 @@ async fn sync_local_transcript_mirrors_once(
 
     for (workspace_key, workspace_records) in by_workspace {
         let workspace_path = PathBuf::from(&workspace_key);
-        let Some(owner_claim) = read_local_tui_session_claim(&workspace_path).await? else {
+        let Some(local_tui_claim) = read_local_tui_session_claim(&workspace_path).await? else {
             pending_local_user_prompts.retain(|key| !key.starts_with(&workspace_key));
             let Some(lines) = read_workspace_event_lines(&workspace_path).await? else {
                 continue;
@@ -526,7 +526,7 @@ async fn sync_local_transcript_mirrors_once(
         };
         let aggregate =
             crate::workspace_status::read_workspace_aggregate_status(&workspace_path).await?;
-        if workspace_local_conflict(Some(&aggregate), Some(&owner_claim)) {
+        if workspace_local_conflict(Some(&aggregate), Some(&local_tui_claim)) {
             pending_local_user_prompts.retain(|key| !key.starts_with(&workspace_key));
             let Some(lines) = read_workspace_event_lines(&workspace_path).await? else {
                 continue;
@@ -536,7 +536,7 @@ async fn sync_local_transcript_mirrors_once(
         }
         let Some(owner_record) = workspace_records
             .iter()
-            .find(|record| record.metadata.thread_key == owner_claim.thread_key)
+            .find(|record| record.metadata.thread_key == local_tui_claim.thread_key)
             .cloned()
         else {
             pending_local_user_prompts.retain(|key| !key.starts_with(&workspace_key));
@@ -555,7 +555,7 @@ async fn sync_local_transcript_mirrors_once(
         };
         let previous_offset = match workspace_event_offsets.get(&workspace_key).copied() {
             Some(offset) => offset,
-            None => initial_workspace_event_offset(&lines, &owner_claim),
+            None => initial_workspace_event_offset(&lines, &local_tui_claim),
         };
         let new_offset = lines.len();
         for line in lines.iter().skip(previous_offset) {
@@ -584,15 +584,17 @@ async fn sync_local_transcript_mirrors_once(
                         );
                         continue;
                     };
-                    if owner_claim
+                    if local_tui_claim
                         .session_id
                         .as_deref()
                         .is_some_and(|expected| expected != session_id)
                     {
                         continue;
                     }
-                    let Some(entry) =
-                        local_mirror_entry_from_event(&event, owner_claim.session_id.as_deref())
+                    let Some(entry) = local_mirror_entry_from_event(
+                        &event,
+                        local_tui_claim.session_id.as_deref(),
+                    )
                     else {
                         warn!(
                             event = "workspace_mirror.local_user_prompt_missing_text",
@@ -639,7 +641,7 @@ async fn sync_local_transcript_mirrors_once(
                     else {
                         continue;
                     };
-                    if owner_claim
+                    if local_tui_claim
                         .session_id
                         .as_deref()
                         .is_some_and(|expected| expected != session_id)
@@ -667,7 +669,7 @@ async fn sync_local_transcript_mirrors_once(
                         .get("thread-id")
                         .and_then(|value| value.as_str())
                     {
-                        if owner_claim
+                        if local_tui_claim
                             .session_id
                             .as_deref()
                             .is_none_or(|expected| expected == session_id)
@@ -686,7 +688,7 @@ async fn sync_local_transcript_mirrors_once(
                 _ => {}
             }
             if let Some(entry) =
-                local_mirror_entry_from_event(&event, owner_claim.session_id.as_deref())
+                local_mirror_entry_from_event(&event, local_tui_claim.session_id.as_deref())
             {
                 let inserted = state
                     .repository
@@ -746,13 +748,16 @@ fn local_prompt_tracking_key(workspace_key: &str, session_id: &str) -> String {
     format!("{workspace_key}::{session_id}")
 }
 
-fn initial_workspace_event_offset(lines: &[String], owner_claim: &LocalTuiSessionClaim) -> usize {
+fn initial_workspace_event_offset(
+    lines: &[String],
+    local_tui_claim: &LocalTuiSessionClaim,
+) -> usize {
     lines
         .iter()
         .position(|line| {
             serde_json::from_str::<WorkspaceStatusEventRecord>(line)
                 .ok()
-                .is_some_and(|event| event.occurred_at >= owner_claim.started_at)
+                .is_some_and(|event| event.occurred_at >= local_tui_claim.started_at)
         })
         .unwrap_or(lines.len())
 }
@@ -1024,8 +1029,8 @@ mod tests {
     }
 
     #[test]
-    fn initial_offset_starts_from_owner_claim_started_at() {
-        let owner_claim = LocalTuiSessionClaim {
+    fn initial_offset_starts_from_local_tui_claim_started_at() {
+        let local_tui_claim = LocalTuiSessionClaim {
             schema_version: 2,
             workspace_cwd: "/tmp/workspace".to_owned(),
             thread_key: "thread-key".to_owned(),
@@ -1058,7 +1063,7 @@ mod tests {
             .unwrap(),
         ];
 
-        assert_eq!(initial_workspace_event_offset(&lines, &owner_claim), 1);
+        assert_eq!(initial_workspace_event_offset(&lines, &local_tui_claim), 1);
     }
 
     #[test]

@@ -983,11 +983,11 @@ async fn should_route_telegram_input_to_live_tui_session(
         return Ok(false);
     }
     let workspace_path = workspace_path_from_binding(binding)?;
-    let Some(owner_claim) = read_local_tui_session_claim(&workspace_path).await? else {
+    let Some(local_tui_claim) = read_local_tui_session_claim(&workspace_path).await? else {
         return Ok(false);
     };
-    if owner_claim.thread_key != record.metadata.thread_key
-        || owner_claim.session_id.as_deref() != Some(tui_session_id)
+    if local_tui_claim.thread_key != record.metadata.thread_key
+        || local_tui_claim.session_id.as_deref() != Some(tui_session_id)
     {
         return Ok(false);
     }

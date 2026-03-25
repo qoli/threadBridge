@@ -635,16 +635,16 @@ pub async fn record_hcodex_ingress_connected(
     session_id: &str,
 ) -> Result<SessionCurrentStatus> {
     ensure_workspace_status_surface(workspace_path).await?;
-    let mut owner_claim = read_local_tui_session_claim(workspace_path)
+    let mut local_tui_claim = read_local_tui_session_claim(workspace_path)
         .await?
         .filter(|claim| claim.thread_key == thread_key)
         .unwrap_or_else(|| {
             default_local_tui_session_claim(workspace_path, thread_key.to_owned(), 0)
         });
-    owner_claim.thread_key = thread_key.to_owned();
-    owner_claim.session_id = Some(session_id.to_owned());
-    owner_claim.updated_at = now_iso();
-    write_local_tui_session_claim(workspace_path, &owner_claim).await?;
+    local_tui_claim.thread_key = thread_key.to_owned();
+    local_tui_claim.session_id = Some(session_id.to_owned());
+    local_tui_claim.updated_at = now_iso();
+    write_local_tui_session_claim(workspace_path, &local_tui_claim).await?;
 
     deactivate_other_hcodex_ingress_sessions(workspace_path, session_id).await?;
     let mut current = read_session_status(workspace_path, session_id)
@@ -657,10 +657,10 @@ pub async fn record_hcodex_ingress_connected(
     current.activity_source = SessionActivitySource::Tui;
     current.live = true;
     current.phase = WorkspaceStatusPhase::ShellActive;
-    current.shell_pid = Some(owner_claim.shell_pid);
-    current.child_pid = owner_claim.child_pid;
-    current.child_pgid = owner_claim.child_pgid;
-    current.child_command = owner_claim.child_command.clone();
+    current.shell_pid = Some(local_tui_claim.shell_pid);
+    current.child_pid = local_tui_claim.child_pid;
+    current.child_pgid = local_tui_claim.child_pgid;
+    current.child_command = local_tui_claim.child_command.clone();
     current.client = Some(HCODEX_INGRESS_CLIENT.to_owned());
     current.turn_id = None;
     current.updated_at = now_iso();
@@ -834,12 +834,12 @@ pub async fn record_hcodex_launcher_started(
     child_command: &str,
 ) -> Result<()> {
     ensure_workspace_status_surface(workspace_path).await?;
-    let mut owner_claim =
+    let mut local_tui_claim =
         default_local_tui_session_claim(workspace_path, thread_key.to_owned(), shell_pid);
-    owner_claim.child_pid = Some(child_pid);
-    owner_claim.child_command = Some(child_command.to_owned());
-    owner_claim.updated_at = now_iso();
-    write_local_tui_session_claim(workspace_path, &owner_claim).await?;
+    local_tui_claim.child_pid = Some(child_pid);
+    local_tui_claim.child_command = Some(child_command.to_owned());
+    local_tui_claim.updated_at = now_iso();
+    write_local_tui_session_claim(workspace_path, &local_tui_claim).await?;
     Ok(())
 }
 
@@ -850,18 +850,18 @@ pub async fn record_hcodex_launcher_ended(
     child_pid: u32,
 ) -> Result<()> {
     ensure_workspace_status_surface(workspace_path).await?;
-    let Some(owner_claim) = read_local_tui_session_claim(workspace_path).await? else {
+    let Some(local_tui_claim) = read_local_tui_session_claim(workspace_path).await? else {
         return Ok(());
     };
-    if owner_claim.thread_key != thread_key
-        || owner_claim.shell_pid != shell_pid
-        || owner_claim.child_pid != Some(child_pid)
+    if local_tui_claim.thread_key != thread_key
+        || local_tui_claim.shell_pid != shell_pid
+        || local_tui_claim.child_pid != Some(child_pid)
     {
         return Ok(());
     }
 
     remove_local_tui_session_claim(workspace_path).await?;
-    if let Some(session_id) = owner_claim.session_id.as_deref()
+    if let Some(session_id) = local_tui_claim.session_id.as_deref()
         && let Some(mut current) = read_session_status(workspace_path, session_id).await?
     {
         current.live = false;
@@ -1276,14 +1276,14 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let owner_claim = read_local_tui_session_claim(&workspace).await.unwrap().unwrap();
+        let local_tui_claim = read_local_tui_session_claim(&workspace).await.unwrap().unwrap();
         let aggregate = read_workspace_aggregate_status(&workspace).await.unwrap();
 
         assert!(!old_session.live);
         assert!(new_session.live);
         assert_eq!(new_session.shell_pid, Some(42));
         assert_eq!(new_session.child_pid, Some(77));
-        assert_eq!(owner_claim.session_id.as_deref(), Some("thr_new"));
+        assert_eq!(local_tui_claim.session_id.as_deref(), Some("thr_new"));
         assert_eq!(aggregate.live_tui_session_ids, vec!["thr_new".to_owned()]);
     }
 
@@ -1302,13 +1302,13 @@ mod tests {
             .await
             .unwrap();
 
-        let owner_claim = read_local_tui_session_claim(&workspace).await.unwrap();
+        let local_tui_claim = read_local_tui_session_claim(&workspace).await.unwrap();
         let session = read_session_status(&workspace, "thr_new")
             .await
             .unwrap()
             .unwrap();
 
-        assert!(owner_claim.is_none());
+        assert!(local_tui_claim.is_none());
         assert!(!session.live);
         assert_eq!(session.phase, WorkspaceStatusPhase::Idle);
     }
