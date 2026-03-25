@@ -91,7 +91,7 @@ server notification 例子：
 補充：
 
 - app-server 也可能在 turn 中主動送出 JSON-RPC server request，而不是只有 notification。
-- `threadBridge` 現在已開始正式消費 `item/tool/requestUserInput`，並在 Telegram / TUI proxy 路徑上回送對應 JSON-RPC response。
+- `threadBridge` 現在已開始正式消費 `item/tool/requestUserInput`，並在 Telegram / `hcodex` ingress 路徑上回送對應 JSON-RPC response。
 - `serverRequest/resolved` 會被視為 pending interactive request 的 authoritative cleanup 邊界。
 
 ## `threadBridge` 目前實際使用的 request
@@ -177,7 +177,7 @@ server notification 例子：
 - 真正的 turn 過程與結果，靠 notification 串流回來
 - `threadBridge` 現在也會在需要時帶 `collaborationMode`
   - direct Telegram thread 會使用 sticky thread-local mode
-  - local TUI proxy 也會追蹤 `turn/start.collaborationMode`
+  - local `hcodex` ingress 也會追蹤 `turn/start.collaborationMode`
 
 ## 對 `threadBridge` 重要的 notification
 

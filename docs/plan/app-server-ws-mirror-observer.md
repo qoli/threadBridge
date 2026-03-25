@@ -7,7 +7,7 @@
 目前已確認的前提：
 
 - `threadBridge` 已新增獨立的 app-server ws observer，mirror intake 不再只掛在 `rust/src/hcodex_ingress.rs`
-- `TUI proxy` 目前同時承擔：
+- `hcodex` ingress 目前承擔：
   - `hcodex` 連線入口
   - launch ticket 驗證
   - TUI session / turn metadata 追蹤
@@ -21,7 +21,7 @@
 目前尚未完成：
 
 - observer 目前仍建立在 `thread/resume` attach 語義上，而不是正式的 upstream subscribe API
-- public naming 與 runtime protocol 仍沿用 `tui_proxy` 詞彙，尚未完全對齊新的 ingress/observer 分層
+- 少量文檔、legacy compatibility alias、與歷史分析仍沿用 `tui_proxy` 詞彙，尚未完全對齊新的 ingress/observer 分層
 - broader session observability 與 transport-neutral observer contract 仍未完成
 
 ## 問題
@@ -29,9 +29,9 @@
 目前 `threadBridge` 會讓人產生一個抽象混淆：
 
 - `shared app-server` 是 workspace 的 canonical runtime backend
-- 但 local/TUI mirror 卻主要落在 `TUI proxy`
+- 但 local/TUI mirror 的歷史心智仍常被描述成長在 `TUI proxy`
 
-這使得 `TUI proxy` 看起來像是在承擔 app-server ingress / event authority，實際上它只是 `hcodex` 這條本地 TUI 路徑的中介層。
+這使得歷史上的 `TUI proxy` 看起來像是在承擔 app-server ingress / event authority，實際上它只是 `hcodex` 這條本地 TUI 路徑的中介層；現在主要 read-side 已改由 observer 承接。
 
 問題不只是命名，而是責任面被黏在一起：
 
@@ -173,9 +173,9 @@
 - 但也不是 shared runtime 架構的理想最終形狀
 - 它們反映的是 app-server ws 遷移完成後，interface shape 還沒完全收斂
 
-### 3. 目前仍可視為合理保留在 proxy 的核心
+### 3. 目前仍可視為合理保留在 ingress 的核心
 
-如果 `TUI proxy` 要繼續存在，較合理保留的責任應該是：
+如果這個 `hcodex` ingress 元件要繼續存在，較合理保留的責任應該是：
 
 - `hcodex` 專有 ingress
 - workspace-scoped listener / reuse / rebuild
@@ -193,7 +193,7 @@
 
 因此，若只用一句話描述目前狀態：
 
-- `TUI proxy` 不是單純的 TUI bridge
+- 歷史上的 `TUI proxy` 不只是單純的 TUI bridge
 - 它同時混合了：
   - `hcodex` ingress
   - CLI 時代延續下來的 mirror / adoption 語義
@@ -209,14 +209,14 @@
 
 這份文檔只處理一件事：
 
-- 將 local/TUI session mirror 的主要 read-side intake，從 `TUI proxy` 遷移到獨立的 app-server ws observer
+- 將 local/TUI session mirror 的主要 read-side intake，從歷史上的 `TUI proxy` 路徑遷移到獨立的 app-server ws observer
 
 這份文檔不處理：
 
 - mirror 內容本身的 user-facing 呈現規格
 - Telegram renderer / preview 文案
 - `request_user_input` 的最終 adapter UX
-- 是否完全移除 `TUI proxy`
+- 是否完全移除 `hcodex` ingress 元件
 - upstream `codex app-server` websocket transport 的產品承諾調整
 
 換句話說，這是一份 `mirror intake boundary` 草稿，不是新的整體 mirror 主規格。
@@ -268,11 +268,11 @@
 
 - app-server ws 協議本身大體上已足夠
 
-它現在缺的不是「能不能看見事件」，而是 threadBridge 尚未把 mirror consumer 正式抽成獨立 observer。
+它現在缺的不是「能不能看見事件」，而是 threadBridge 尚未把 observer contract、subscription 語義、與 broader observability 收尾做完整。
 
-## 為何現在還掛在 TUI proxy
+## 為何歷史上會掛在 TUI proxy
 
-目前掛在 `TUI proxy` 的價值主要是實作方便，而不是抽象正確：
+早期把 mirror 掛在 `TUI proxy` 的價值主要是實作方便，而不是抽象正確：
 
 - proxy 已經站在 `hcodex <-> daemon` 的中間
 - 它天然拿得到 client request 與 daemon response
@@ -281,27 +281,27 @@
 
 所以把 mirror 先做在 proxy 裡是務實的，但這不代表它是最終邊界。
 
-當 shared app-server runtime 已是主模型後，mirror 若仍長期停在 proxy，只會讓責任邊界越來越難收斂。
+現在 shared app-server observer 已落地，剩下的問題已不是「要不要 observer」，而是如何把殘留 terminology 與 compatibility boundary 收斂乾淨。
 
 ## 建議的收斂後責任面
 
-### 1. `TUI proxy` 應保留
+### 1. `hcodex` ingress 應保留
 
 - `hcodex` 本地連線入口
 - `thread_key` 與 live local TUI session 對齊
 - 需要回注到 live TUI session 的 request/response bridge
 - adoption / local ownership 輔助狀態
 
-### 2. `TUI proxy` 應逐步卸下
+### 2. `hcodex` ingress 應逐步卸下
 
 - preview mirror 的主 intake
 - process transcript mirror 的主 intake
 - final assistant visible reply mirror 的主 intake
 - 對 app-server item 流的主要 read-side 解譯責任
 
-### 3. 新的 observer 應承接
+### 3. observer 已承接，後續應補完
 
-- attach / detach thread subscription
+- attach / detach thread subscription contract
 - 以 session 為單位的 event 消費
 - transcript mirror 寫入
 - workspace status / observability projection
@@ -370,16 +370,15 @@
 
 ## 建議的下一步
 
-1. 先在文檔上正式承認：`TUI proxy` 目前承接 mirror，且 git 歷史支持它屬於尚未清理完畢的舊架構殘留，而不是未來主分層。
-2. 在 threadBridge 內做一個最小 prototype：
-   - 獨立 ws client
+1. 在文檔上正式承認：mirror 的主要 read-side intake 已移到 observer，而 `TUI proxy` 只保留歷史名稱與分析語境。
+2. 補齊 observer 的 contract 文檔：
    - `initialize`
    - attach 指定 `thread.id`
    - 消費 `turn/*`、`item/*`、`serverRequest/resolved`
    - 寫入現有 transcript / workspace status
-3. 先讓 observer 與 proxy 並存，驗證 mirror record 是否能完全對齊。
-4. 將 proxy 中與 mirror intake 直接相關的路徑逐步下沉到 observer。
-5. 等 mirror 收斂後，再重新命名或重述 `TUI proxy` 的責任邊界，避免它繼續被理解成 app-server gateway。
+3. 持續驗證 observer 與 ingress 並存時的 mirror record、interactive request、與 dedupe 邊界。
+4. 將 ingress 中與 mirror intake 直接相關的歷史說明與 terminology 逐步下沉到 observer 文檔。
+5. 等 contract 收斂後，再重新命名或重述 `hcodex` ingress 的責任邊界，避免它繼續被理解成 app-server gateway。
 
 這份 observer 重構在整體 post-CLI 清理中的優先級應固定為：
 
@@ -387,7 +386,7 @@
 
 原因不是它最容易，而是：
 
-- 只要 mirror 仍主要從 `TUI proxy` / ingress interception 取得，整體 runtime 就仍殘留 CLI 時代的接入點心智
+- 只要文檔與 compatibility 邊界仍把 mirror 理解成 `TUI proxy` / ingress interception 的副產品，整體 runtime 就仍殘留 CLI 時代的接入點心智
 - 只有先把 shared `app-server ws` 做成主要 mirror event source，後續的 adoption 收斂、launch contract 收斂、以及 adapter/core 邊界整理才有穩定基礎
 
 換句話說：

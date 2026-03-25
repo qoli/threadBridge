@@ -349,7 +349,7 @@ desktop runtime 應對下列責任負責：
 
 - managed Codex binary 啟動與驗證
 - `codex app-server`
-- TUI proxy
+- `hcodex` ingress
 - handoff continuity
 - healthcheck / restart
 - 對外發布穩定的 local status surface
@@ -439,7 +439,7 @@ v1 明確限制：
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
   - 應提供本地 query / control surface 的 view / action 命名
 - [session-level-mirror-and-readiness.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-mirror-and-readiness.md)
-  - 定義 shared daemon、受管 `hcodex`、TUI proxy、adoption 與 owner 現況
+  - 定義 shared daemon、受管 `hcodex`、`hcodex` ingress、adoption 與 owner 現況
 - [telegram-webapp-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md)
   - observability 可共用同一份 thread state / event model，但不是這份文檔的主責
 

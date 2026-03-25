@@ -13,7 +13,7 @@
 目前對現況的意義：
 
 - 它描述的是已被 shared app-server runtime 取代的舊模型
-- 現在正式路徑是 shared daemon + `./.threadbridge/bin/hcodex` + TUI proxy + adoption flow
+- 現在正式路徑是 shared daemon + `./.threadbridge/bin/hcodex` + `hcodex` ingress + adoption flow
 - 文中提到的 `codex-sync.bash`、`codex_sync_event`、`codex_sync_notify`、`.codex/hooks.json` 已不再由現行 `/bind_workspace` 安裝
 
 這份歷史方案當時的邊界：

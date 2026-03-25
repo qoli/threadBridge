@@ -484,7 +484,7 @@ v1 至少保留：
   - 主要餵給 `ThreadStateView`
 - `conversations.jsonl`
   - 可補充 thread / session 歷史
-- `.threadbridge/state/shared-runtime/*`
+- `.threadbridge/state/runtime-observer/*`（讀舊 workspace 時仍可能遇到 legacy `shared-runtime/*`）
   - 餵給 `run_status`、owner / runtime health
 - workspace recent session history
   - 餵給 `RecentCodexSessionView`

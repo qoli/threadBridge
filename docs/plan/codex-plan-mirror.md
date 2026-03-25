@@ -10,9 +10,9 @@
   - app-server 會發 `item/plan/delta`
   - turn item 會發 `plan`
   - assistant message 內的 `<proposed_plan>` 內容會被剝離，不會作為最終 assistant 文本直接暴露
-- `threadBridge` 已有 final / process transcript 分流，也已有 Telegram rolling preview 與 TUI proxy mirror
+- `threadBridge` 已有 final / process transcript 分流，也已有 Telegram rolling preview 與 local/TUI mirror
 - `threadBridge` 已能消費 `item/plan/delta`，並把 live plan snapshot 送進 process transcript / preview
-- direct bot path 與 raw workspace / TUI proxy path 都已補上 finalized `plan` item 的 final reply fallback
+- direct bot path 與 workspace-local `hcodex` / observer path 都已補上 finalized `plan` item 的 final reply fallback
 - Telegram final reply 不再只依賴 upstream assistant final text；plan-only turn 會使用 finalized plan text，mixed case 會組合 assistant text 與 plan markdown
 
 目前仍可後續收斂的部分：
@@ -105,13 +105,13 @@ v1 的取捨是：
 
 如果之後 observability 覺得 plan snapshot 太噪音，再另外收斂 transcript compaction 規則。
 
-### 3. TUI proxy / local mirror
+### 3. App-Server Observer / Local Mirror
 
-在 `rust/src/hcodex_ingress.rs` 這條 raw workspace message 路徑：
+在 `rust/src/app_server_observer.rs` 這條 app-server observer 路徑：
 
 - 保留既有 assistant preview segmentation reset 規則
 - `item/plan/delta` 應能生成 plan process transcript event
-- generated plan process transcript event 應繼續沿用既有 `record_tui_proxy_process_event(...)` 寫入路徑
+- generated plan process transcript event 應繼續沿用既有 `record_hcodex_ingress_process_event(...)` 寫入路徑
 
 這代表 v1 不需要新建另一套 local mirror persistence lane。
 
@@ -161,7 +161,7 @@ Telegram rolling preview 仍沿用現在的模型：
 
 - `codex.rs` 解決 direct bot path 的 event intake
 - `process_transcript.rs` 收斂 direct bot path 與 raw workspace path 的 plan normalization
-- `hcodex_ingress.rs` 繼續承接 local/TUI mirror 的 process transcript record
+- `app_server_observer.rs` 承接 local/TUI mirror 的 process transcript record
 - Telegram runtime completion path 解決 plan-only 與 mixed case 的 final reply 組裝
 
 ## 測試要求

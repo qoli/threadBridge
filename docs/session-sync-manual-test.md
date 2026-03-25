@@ -30,7 +30,7 @@
 
 ## 前置條件
 
-1. bot 已重啟到包含 desktop owner、TUI proxy、mirror、draft 的版本
+1. bot 已重啟到包含 desktop owner、`hcodex` ingress、observer、mirror、draft 的版本
 2. 你有一個已綁定 workspace 的 Telegram thread
 3. 該 workspace 已安裝 `.threadbridge/` runtime surface
 

@@ -68,7 +68,7 @@ title 現在承載的是非常少量的 durable runtime state：
 
 ## 後續方向
 
-之後若 TUI proxy 與 adoption 完成，title 還需要再決定是否承載：
+之後若 `hcodex` ingress / adoption contract 進一步收斂，title 還需要再決定是否承載：
 
 - adoption pending
 - alternate TUI session 正在 mirror

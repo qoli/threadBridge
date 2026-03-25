@@ -10,7 +10,7 @@ The runtime is organized in four layers:
 
 - Desktop runtime owner and management plane: the macOS desktop entrypoint owns the local management API, tray/web management UI, runtime-owner reconcile loop, managed Codex preferences/builds, and machine-level runtime health authority.
 - Telegram adapter: the Rust bot receives Telegram updates, enforces authorization, manages thread commands, streams live Codex previews, and sends results back to Telegram, but it is no longer the formal runtime owner.
-- Workspace runtime control: the Rust runtime maps each Telegram thread to bot-local metadata under `data/`, binds it to a real workspace path, starts and repairs workspace-scoped shared `codex app-server` daemons and TUI proxy surfaces, resumes Codex threads through that shared runtime, and validates thread `cwd` against the stored workspace binding.
+- Workspace runtime control: the Rust runtime maps each Telegram thread to bot-local metadata under `data/`, binds it to a real workspace path, starts and repairs workspace-scoped shared `codex app-server` daemons and `hcodex` ingress surfaces, resumes Codex threads through that shared runtime, and validates thread `cwd` against the stored workspace binding.
 - Tool executors: workspace-local wrapper commands under `.threadbridge/bin/` call Python scripts in `tools/` to materialize prompt configs, generated images, and Telegram outbox payloads.
 
 Important repo areas:

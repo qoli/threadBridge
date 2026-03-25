@@ -237,7 +237,7 @@
 至少應先回答：
 
 - 誰能正式 ensure / repair app-server
-- 誰能正式 ensure / rebuild TUI proxy
+- 誰能正式 ensure / rebuild `hcodex` ingress
 - 哪些路徑只能讀 owner state，而不能自行補拉 runtime
 
 這一步的目標不是 UI 遷移，而是把 runtime authority 從 Telegram 路徑抽出去。
