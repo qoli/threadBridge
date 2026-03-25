@@ -4,228 +4,213 @@
 
 這份文檔目前已進入「部分落地」。
 
-目前已確認：
+目前代碼中已成立的部分：
 
 - `desktop runtime owner` 已是正式 runtime authority
 - workspace app-server 已是 canonical runtime backend
 - `hcodex` 已是 owner-managed local entrypoint，而不是自補 runtime 的獨立 owner
 - local/TUI mirror intake 已開始從歷史上的 proxy 路徑拆到獨立 app-server observer
-- management API 與 Telegram adapter 已開始消費同一批 runtime / transcript / control 語義
+- management API 已開始透過 shared `runtime_protocol` view / action / event 命名對外暴露 runtime semantics
+- adoption 已不是單純 UI 概念，而是持久化 state、`runtime_readiness` 衍生值、以及 control action 的一部分
 
-目前尚未完成：
+目前尚未完成的部分：
 
+- observer 仍帶有 Telegram bridge glue，尚未完全退回純 read-side projection
+- Telegram 雖已開始消費 shared transcript / control semantics，但仍不是完全只透過 shared protocol 工作
 - `runtime protocol` 仍未完全收斂成 transport-neutral 的正式契約
-- observer 雖已存在，但 broader session observability 與 public vocabulary 收尾仍未完成
 - `hcodex` ingress、launch contract、與 compatibility shim 的長期保留邊界仍未完全寫死
 - adoption 的最終命名與對外呈現仍未拍板
 
 ## 問題
 
-`threadBridge` 近期架構演化的核心，不是先抽新的 API，也不是先產品化多 adapter，而是把四個角色徹底拆開：
+`threadBridge` 近期架構演化的核心，不是先抽新的 API，也不是先產品化多 adapter，而是把幾個角色徹底拆開：
 
 - `desktop runtime owner`
 - `app-server ws observer`
-- `hcodex`
+- `hcodex` / ingress
+- shared runtime / protocol semantics
 - Telegram / management surface
 
-目前最大的架構債，不在於功能缺失，而在於這四個角色仍有過渡性責任重疊，尤其是 `hcodex` / ingress 路徑仍曾混合入口、mirror、以及部分 adapter glue。
+現在真正的問題不是功能缺失，而是：
 
-如果不先把 owner/runtime contract 收斂清楚，後續不論是 observer 化、`hcodex` launch cleanup、還是 transport abstraction，都很容易重新把 authority、projection、與 adapter UX 黏回一起。
+- 某些邊界已經在代碼裡成立，但文檔仍停留在較舊的抽象
+- 某些理想分層還沒完全落地，但文檔已經把它寫成現在式
+- observer、ingress、Telegram bridge、adoption state、與 management control 的責任面仍有過渡性重疊
+
+如果不先把 owner/runtime contract 收斂清楚，後續不論是 observer 收尾、`hcodex` launch cleanup、還是 transport abstraction，都很容易重新把 authority、projection、與 adapter UX 黏回一起。
 
 ## 定位
 
-這份文檔是 owner/runtime boundary 的總草稿。
+這份文檔是 owner/runtime boundary 的總草稿，採用「描述現在 + 指出未來應如何演化」的寫法。
 
 它處理：
 
-- runtime authority 應固定在哪一層
-- mirror read-side source 應固定在哪一層
-- `hcodex` 應保留哪些核心責任
-- Telegram / management surface 應如何退回 protocol consumer
+- runtime authority 目前固定在哪一層
+- observer / ingress / adapter 目前各自實際承擔什麼責任
+- 哪些邊界已成立，哪些還只是目標方向
+- adoption 在 owner/runtime contract 上屬於哪一層語義
 
 它不處理：
 
 - Telegram renderer / callback UX 的完整產品規格
 - `codex plan`、preview、delivery 等單一子問題的細節規格
 - 完整 transport-neutral protocol 的最終 wire format
+- adoption 的完整 state / action / UI 子規格
 - 每一個 compatibility shim 的立即移除時程
 
-## 核心決策
+## 當前代碼狀態
 
-### 1. `desktop runtime owner` 是唯一 runtime authority
+### 1. `desktop runtime owner`
 
-近期唯一 authority 是 `desktop runtime owner`。
+目前 `desktop runtime owner` 已是唯一 runtime authority。
 
-它負責：
+目前已成立：
 
 - ensure / repair workspace runtime
 - owner-canonical runtime health
-- workspace-scoped control action orchestration
-- observer 與本地入口的存在性管理
+- workspace-scoped control orchestration
+- ensure workspace app-server 與 `hcodex ingress`
 
-它不負責：
+目前沒有承擔：
 
 - Telegram message rendering
 - preview / final reply 樣式
 - adapter-specific callback UX
 
-### 2. observer 是 canonical read-side projection source
+### 2. `app-server ws observer`
 
-`app-server ws observer` 的角色，是 mirror / observability 的 canonical read-side projection source，而不是新的 runtime owner。
+observer 已不是純構想，而是已存在的 read-side runtime。
 
-observer 負責：
+目前已承擔：
 
 - thread-scoped event 訂閱
 - preview / final / process projection
 - session observability feed
 - mirror intake contract
 
-observer 不負責：
+目前仍額外承擔的過渡責任：
 
-- 啟動 Codex binary
-- child pid 管理
-- workspace launch orchestration
-- adapter-specific prompt / markup rendering
+- Telegram `request_user_input` prompt bridging
+- resolved request UI 更新
+- plan mode follow-up prompt 發送
 
-### 3. `hcodex` 是受管本地入口，不是 observer 或 authority
+也就是說，observer 在 today 的代碼裡還不是完全純化的 read-side projection；它仍含少量 adapter glue。
 
-`hcodex` 的合理定位是：
+### 3. `hcodex` / ingress
 
-- convenience entrypoint
-- binary selector
-- local lifecycle shim
-- minimal transport compatibility shim
+`hcodex` 的 today 形狀，已經不是舊 TUI proxy 模型，但也還沒有窄到只剩一個薄 entrypoint。
 
-`hcodex` / ingress 路徑應保留的責任：
+目前已承擔：
 
-- launch 本地 `codex --remote`
-- runtime-ready 檢查
-- local session claim / pid tracking
-- launch lifecycle 記錄
-- 必要的 compatibility bridge / resolver
-- live interactive response injection
+- `ensure-hcodex-runtime`
+- `resolve-hcodex-launch`
+- `hcodex_ws_url + launch_ticket` 主路徑
+- `run-hcodex-session`
+- local session claim / launcher lifecycle 記錄
+- live request-response injection
 
-它不應承擔：
+目前仍屬於 ingress / compatibility 邊界的一部分：
 
-- mirror canonical projection
-- session observability 主聚合
-- Telegram preview / final delivery
-- runtime health authority
+- websocket ingress listener / relay
+- observer runtime 的掛接
+- Telegram interactive bridge 的接線點
 
-### 4. adapter 只消費 protocol 語義
+這表示 `hcodex` / ingress 的主路徑其實已經很明確，但「哪些能力屬於長期入口契約、哪些只是過渡結構」仍未完全寫死。
 
-Telegram adapter 與 management surface 的角色，應收斂成 protocol consumer / renderer。
+### 4. shared runtime / protocol semantics
 
-其中：
+`runtime protocol` 在 today 的代碼裡已不只是概念。
 
-- `desktop runtime owner`
-  - producer / authority
-- `runtime protocol`
-  - canonical event / action semantics
-- `management_api`
-  - 本地 HTTP / SSE transport
-- Telegram adapter
-  - protocol consumer / renderer
+目前已存在：
 
-這代表近期不應把 adoption、mirror、launch contract 的收斂理解成「先抽一個 API」，而應理解成：
+- shared view model，例如 `RuntimeHealthView`、`ManagedWorkspaceView`、`ThreadStateView`
+- typed SSE event，例如 `RuntimeEventKind`
+- management API 上的 query / control / event stream
+- canonical `runtime_readiness`、`binding_status`、`run_status` 等 shared naming
 
-- 先固定 runtime contract 與語義邊界
-- 再讓不同 surface 以各自 transport 消費它
+目前尚未完全成立的是：
 
-### 5. adoption 是 runtime signal，不是 `hcodex` UI
+- transport-neutral 的完整 public contract
+- Telegram 完全退回純 protocol consumer，而不再透過 observer bridge 接到少量 direct path
 
-`hcodex` 可以產生「本地 session 結束後，有 continuity switch 候選」這種 lifecycle signal，但提示使用者、送出按鈕、接受 adopt / reject，應由 adapter surface 承接。
+### 5. adoption
 
-因此：
+adoption 在 today 的代碼裡已是 runtime state / control 的一部分，而不是單純 `hcodex` UI signal。
 
-- signal 的 canonical 語義應提升到 runtime / state / control 模型
-- Telegram 只負責把 signal 變成互動面
-- management API 只是 transport，不是 adoption semantics owner
+目前已成立：
 
-## 責任分工
+- `tui_session_adoption_pending` 持久化在 binding state
+- `runtime_readiness` 會派生出 `pending_adoption`
+- Telegram 與 management API 都有 adopt / reject control surface
+- `hcodex` session 結束後會標記 adoption pending
 
-### Desktop Runtime Owner
+這份文檔只固定 adoption 的 ownership 邊界：
 
-負責：
+- 它屬於 runtime / state / control 模型
+- 它不是 `hcodex` 單方擁有的 UI 語義
 
-- ensure / repair workspace daemon
-- ensure observer 與 `hcodex` 入口
-- runtime health authority
-- reconcile 與 control orchestration
+詳細 state / action / UX 規格不在這份文檔重複定義。
 
-不負責：
+## 目標方向
 
-- adapter UX
-- message rendering
-- mirror projection 細節
+### 1. `desktop runtime owner`
 
-### App-Server WS Observer
+- 維持唯一 runtime authority
+- 維持 owner-canonical runtime health
+- 繼續避免 Telegram 或 `hcodex` 重新長回 owner 行為
 
-負責：
+### 2. observer
 
-- thread-scoped event 訂閱
-- preview / final / process projection
-- session observability 事件流
+- 收斂成真正純粹的 read-side projection / observability runtime
+- 不再直接承擔 Telegram prompt / markup / follow-up rendering
+- 讓 adapter-specific bridge 從 observer 主體退出
 
-不負責：
+### 3. `hcodex` / ingress
 
-- local process lifecycle
-- binary launch
-- adapter-specific rendering
+- 收斂成受管本地入口
+- 保留 binary selection、launch lifecycle、local session claim、必要 compatibility shim
+- 避免再次承擔 mirror canonical projection 或 runtime authority
 
-### `hcodex`
+### 4. Telegram / management surface
 
-負責：
+- 更完整地透過 shared runtime semantics 工作
+- 對 mirror、control、state 的依賴固定在 shared protocol / state model
+- 減少對 ingress / observer 內部細節的直接耦合
 
-- 便利入口
-- binary selection
-- launch lifecycle
-- local session claim / pid tracking
-- 必要 compatibility shim
+### 5. adoption
 
-不負責：
-
-- mirror canonical source
-- runtime authority
-- adapter UI
-
-### Telegram / Management Surface
-
-負責：
-
-- commands / callback / media ingress
-- prompt / button / callback rendering
-- preview / final delivery
-- control action 呈現與觸發
-
-不負責：
-
-- 直接確保 shared runtime
-- 定義 canonical lifecycle semantics
-- 直接成為 mirror source
+- 保留它作為 runtime state / control 語義的一部分
+- 命名與最終對外呈現仍可演化
+- 不讓其實作再次退回成一條只存在於某個 adapter 或某個 ingress 路徑的隱性規則
 
 ## 與其他計劃的關係
 
 - [app-server-ws-mirror-observer.md](/Volumes/Data/Github/threadBridge/docs/plan/app-server-ws-mirror-observer.md)
-  - 處理 mirror intake 從歷史 ingress / proxy 路徑拆到 observer 的子問題
+  - 處理 observer / mirror intake 的子問題與收尾
 - [post-cli-runtime-cleanup.md](/Volumes/Data/Github/threadBridge/docs/plan/post-cli-runtime-cleanup.md)
   - 處理 `hcodex` launch contract、legacy artifact、與 compatibility 命名收尾
+- [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
+  - 承接 shared event / action / view naming 與 transport-facing contract
+- [session-lifecycle.md](/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md)
+  - 承接 thread / workspace / Codex thread continuity 與 adoption lifecycle
+- [runtime-state-machine.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-state-machine.md)
+  - 承接 canonical state axes、`pending_adoption`、與 control-side state semantics
 - [runtime-transport-abstraction.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-transport-abstraction.md)
   - 這份文檔是 transport abstraction 之前的前置邊界收斂
-- [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
-  - 未來應承接這份文檔所要求的 canonical event / action / state semantics
 
 這份文檔不重複定義上述子問題的實作細節，而是固定它們共同依附的 owner/runtime boundary。
 
 ## 開放問題
 
-- adoption 最終是否保留這個對外命名，或改成更中性的 continuity switch 語言
-- observer 是否需要更正式的 upstream subscribe contract，而不只依附現有 attach / resume 語義
+- observer 何時才算真正退出 adapter-specific bridge / rendering
 - `hcodex` ingress 中哪些 compatibility shim 屬於長期入口能力，哪些應視為過渡結構
-- `runtime protocol` 何時才算從本地 HTTP / SSE transport 收斂成真正的 transport-neutral 契約
+- Telegram 何時才算完整退回 protocol consumer，而不再依賴 direct observer bridge path
+- adoption 最終是否保留這個對外命名，或改成更中性的 continuity switch 語言
+- `runtime protocol` 何時才算從 today 的 HTTP / SSE + shared views 收斂成更完整的 transport-neutral 契約
 
 ## 建議的下一步
 
-- 繼續把 observer 的 vocabulary、observability feed、與 public naming 收尾，避免文檔仍混用 `TUI proxy` 與 `hcodex ingress`
-- 把 `hcodex` launch / ingress / compatibility shim 的長期保留邊界記錄到 cleanup 文檔，而不是散落在實作與 commit message
-- 逐步讓 Telegram / management surface 對 mirror 與 control action 的依賴固定在 shared runtime semantics，而不是 ingress 內部細節
+- 把 observer 的 today glue 與 target state 分開寫，避免文檔再把理想分層誤寫成現況
+- 把 `hcodex` 主路徑已成立的 launch contract 記錄清楚，再把未拍板的 shim 邊界列成 open questions
+- 對 adoption 只保留 ownership 與 boundary 描述，將詳細 semantics 收斂回 `session-lifecycle`、`runtime-state-machine`、`runtime-protocol`
+- 逐步讓 Telegram / management surface 對 mirror 與 control action 的依賴固定在 shared runtime semantics，而不是 observer / ingress 內部細節
