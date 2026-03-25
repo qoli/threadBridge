@@ -1104,6 +1104,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_local_tui_session_claim_falls_back_to_legacy_file() {
+        let workspace = temp_path();
+        fs::create_dir_all(legacy_local_tui_session_claim_path(&workspace).parent().unwrap())
+            .await
+            .unwrap();
+
+        let legacy_claim = default_local_tui_session_claim(&workspace, "thread-key", 42);
+        fs::write(
+            legacy_local_tui_session_claim_path(&workspace),
+            format!("{}\n", serde_json::to_string_pretty(&legacy_claim).unwrap()),
+        )
+        .await
+        .unwrap();
+
+        let claim = read_local_tui_session_claim(&workspace).await.unwrap().unwrap();
+        assert_eq!(claim.thread_key, "thread-key");
+        assert_eq!(claim.shell_pid, 42);
+    }
+
+    #[tokio::test]
+    async fn remove_local_tui_session_claim_removes_legacy_and_canonical_files() {
+        let workspace = temp_path();
+        ensure_workspace_status_surface(&workspace).await.unwrap();
+        fs::create_dir_all(legacy_local_tui_session_claim_path(&workspace).parent().unwrap())
+            .await
+            .unwrap();
+
+        let canonical_claim = default_local_tui_session_claim(&workspace, "thread-key", 42);
+        super::write_local_tui_session_claim(&workspace, &canonical_claim)
+            .await
+            .unwrap();
+
+        let legacy_claim = default_local_tui_session_claim(&workspace, "thread-key", 99);
+        fs::write(
+            legacy_local_tui_session_claim_path(&workspace),
+            format!("{}\n", serde_json::to_string_pretty(&legacy_claim).unwrap()),
+        )
+        .await
+        .unwrap();
+
+        super::remove_local_tui_session_claim(&workspace)
+            .await
+            .unwrap();
+
+        assert!(
+            !fs::try_exists(local_tui_session_claim_path(&workspace))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !fs::try_exists(legacy_local_tui_session_claim_path(&workspace))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
     async fn hcodex_ingress_writes_only_canonical_client_tag() {
         let workspace = temp_path();
         ensure_workspace_status_surface(&workspace).await.unwrap();
