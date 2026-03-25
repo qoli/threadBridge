@@ -242,6 +242,11 @@ async fn run_hcodex_session(config: &RunHcodexSessionCli) -> Result<()> {
     // sideband state like launch_ticket in the query string. Upstream Codex
     // only accepts bare ws://host:port endpoints for --remote, so we bridge
     // non-canonical launch URLs to a local loopback websocket before spawning.
+    //
+    // The bridge is also responsible for keeping the first upstream ingress
+    // session alive across any short local reconnects. launch_ticket is
+    // intentionally single-use, so a reconnect must reattach to the same
+    // bridged upstream session instead of dialing launch_ws_url again.
     // Do not "simplify" this by passing launch_ws_url directly to Codex.
     let prepared_remote = prepare_codex_remote_ws_url(&config.launch_ws_url).await?;
     let codex_remote_ws_url = prepared_remote.codex_remote_ws_url;
@@ -320,7 +325,8 @@ async fn resolve_hcodex_launch(config: &ResolveHcodexLaunchCli) -> Result<()> {
     let ticket = issue_hcodex_launch_ticket(&config.workspace, &selected.thread_key).await?;
     // This URL is for the hcodex ingress handshake, not a codex --remote URL.
     // run-hcodex-session is responsible for bridging it to a bare ws://host:port
-    // endpoint before spawning upstream Codex.
+    // endpoint before spawning upstream Codex and for preserving that first
+    // upstream ingress session across local reconnects.
     let launch_ws_url = build_launch_ws_url(hcodex_ws_url, &ticket)?;
     println!(
         "{}\t{}\t{}",

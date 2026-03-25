@@ -217,6 +217,9 @@ pub async fn consume_hcodex_launch_ticket(
     workspace_path: &Path,
     ticket: &str,
 ) -> Result<Option<HcodexLaunchTicket>> {
+    // launch_ticket is intentionally single-use. Reconnect tolerance belongs in
+    // hcodex_ws_bridge, which must keep the first upstream ingress session
+    // alive instead of trying to consume the same ticket a second time.
     if !ticket
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))

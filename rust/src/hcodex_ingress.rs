@@ -388,6 +388,8 @@ async fn resolve_thread_key_from_ticket(
         .map(|(_, value)| value)
         .filter(|value| !value.trim().is_empty())
         .context("hcodex ingress launch is missing launch_ticket")?;
+    // launch_ticket is one-shot. If a later local reconnect reaches this path
+    // again, the bridge has already lost the original upstream session.
     let ticket = consume_hcodex_launch_ticket(workspace_path, ticket)
         .await?
         .context("hcodex ingress launch ticket is invalid or already used")?;
