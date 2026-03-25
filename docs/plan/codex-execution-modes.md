@@ -35,18 +35,21 @@
   - current session mode
   - `mode_drift`
   - mode-aware launch commands
+- Telegram adapter 已提供 execution mode command surface：
+  - `/execution_mode`
+  - 可直接查看目前 workspace mode / current session mode / `mode_drift`
+  - 可直接寫回 workspace-local execution mode config
 - tray workspace label 已改成顯示 workspace execution mode，而不是 `ready/degraded`
 
 目前仍未收斂的部分：
 
-- Telegram 尚未提供直接切換 execution mode 的 command surface
 - v1 仍只支持 `full_auto` / `yolo` 兩種高階 mode
 - mode 與更完整 observability / audit retention 的關聯仍未 formalize
 - mode 是否允許未來出現 session-level override，仍是開放問題
 
 目前新增記錄的產品想法是：
 
-- Telegram 之後應能直接設定 Codex 的 execution mode
+- Telegram 雖然已能直接設定 execution mode，但這條 control surface 的 naming / owner 邊界仍需更正式定義
 - 但 Telegram user-facing execution mode 文案是否沿用 `full_auto / yolo`，目前仍未定案
 - `execution mode` 與 `Codex 工作模型` 應明確視為兩個不同控制面，不應混成同一個切換器
 - 另外要明確記錄：Telegram 的 `Plan mode / 普通模式` 切換已作為 collaboration mode command surface 落地，不屬於 execution mode
@@ -84,7 +87,7 @@
 - workspace mode 是 sticky default
 - 既有 session 不強制重建；在下一次 turn 或 resume 時原地覆蓋到 workspace mode
 - `hcodex` 與 Telegram 走同一套 mode 收斂語義
-- mode 對外暴露在 management API / owner-facing surface，而不是先做 Telegram slash command
+- mode 已對外暴露在 management API / owner-facing surface，Telegram 也已有 adapter command，但它寫回的仍是同一份 workspace/runtime contract
 
 換句話說，現在的正式模型是：
 
@@ -94,9 +97,9 @@
 
 但近期也新增一個需要在後續規格中明確處理的方向：
 
-- Telegram 不應永遠只做 mode consumer
-- 當 core runtime / protocol 對這個控制面收斂後，Telegram 應能成為同一套 mode control action 的一個 adapter surface
-- 也就是說，未來若 Telegram 可切 mode，它應寫回同一份 workspace/runtime contract，而不是私下帶 CLI flag
+- Telegram 已不再只是 mode consumer
+- 但 Telegram 這條 control surface 仍應被理解為 owner/runtime 已授權的 adapter surface
+- 也就是說，現有 Telegram mode 切換已寫回同一份 workspace/runtime contract，而不是私下帶 CLI flag
 
 ## v1 資料模型
 
@@ -154,7 +157,7 @@ v1 沒有正式落地 `mode_source` 或 arbitrary launch override。
 
 1. execution mode 先進入 core runtime 型別與 repository/session model
 2. 再進入 management API、launch-config、web UI 與 tray 表達
-3. Telegram 目前只消費與收斂 workspace mode，不直接暴露切 mode 的 adapter command
+3. Telegram 已提供 mode command surface，但它操作的仍是同一份 workspace-level contract，而不是 Telegram 私有狀態
 
 這裡要再補一個近期產品方向：
 
@@ -220,7 +223,7 @@ web 管理面現在也已提供：
 - [runtime-transport-abstraction.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-transport-abstraction.md)
   - execution mode 仍屬於 core runtime 語義，不應回退成 Telegram-only 開關
 - [telegram-adapter-migration.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-adapter-migration.md)
-  - Telegram 目前仍只是 mode consumer，而不是 mode authority
+  - Telegram 已有 mode control surface，但仍不應把 execution mode 退化成 Telegram-only authority
 
 ## 開放問題
 
@@ -235,8 +238,8 @@ web 管理面現在也已提供：
 
 ## 建議的下一步
 
-1. 更新其餘 plan 文檔，把 execution mode 從「純草稿」改成「部分落地的正式 runtime 語義」。
-2. 在 `runtime-protocol` 補齊 execution mode 相關 view / action / endpoint。
-3. 決定 Telegram adapter 是否只做 mode 展示，還是進一步提供 mode 切換；若提供，也要先固定 user-facing naming。
+1. 更新其餘 plan 文檔，反映 execution mode 已是部分落地的正式 runtime 語義，且 Telegram 已有 `/execution_mode` surface。
+2. 在 `runtime-protocol` 補齊 execution mode control 的正式命名，避免目前仍同時存在 management API route 與 Telegram slash command 的雙重表述。
+3. 固定 Telegram user-facing naming，決定是否繼續沿用 `full_auto / yolo`，或提供更穩定的高階文案。
 4. 另外補一份與 execution mode 分離的 `Codex 工作模型` control 規格，不要把 model 與 mode 混在同一份開關語意裡。
 5. 若未來真的引入更多 profile，再決定是否需要 `mode_source`、launch override 或更細的 audit policy。

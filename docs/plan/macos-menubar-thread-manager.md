@@ -453,8 +453,8 @@ v1 明確限制：
 
 ## 建議的下一步
 
-1. 先把 [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md) 補成可支撐這份管理面的最小 view / action 草稿。
-2. 先把 [session-level-mirror-and-readiness.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-mirror-and-readiness.md) 補上 desktop runtime owner 的最新責任邊界。
-3. 先在 runtime 裡補齊 local query / control API 與 managed Codex update 能力。
-4. 在 API 穩定後，再持續收斂 tray-icon UI 與 workspace-first 瀏覽器管理頁。
+1. 先把已存在的 local query / control API、typed SSE、session observability pane、與 execution mode controls 視為管理面 v1 的既有骨架，不再把它們當成前置待辦。
+2. 讓 [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md) 與這份文檔一起收斂 naming，特別是 workspace/thread/session/control 的 user-facing vocabulary。
+3. 繼續收斂 tray-icon UI 與 workspace-first 瀏覽器管理頁，特別是 `workspace = thread` 主模型、desktop-only 啟動、以及移除暫不可用 onboarding 後的資訊架構。
+4. 持續把 managed Codex update/install UX 從目前可用骨架收斂成更正式的產品面，而不是只停在 raw build / refresh action。
 5. 若要正式重構 web 管理面，可評估以 HeroUI 作為前端組件庫基礎。

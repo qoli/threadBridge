@@ -45,8 +45,8 @@
 目前新增確認的近期落地方向是：
 
 - 不先做完整 observability 頁面，也不先擴大 thread-level transcript feed
-- 先把 `runtime-protocol` 與這份文檔接起來，補出 session-first 的正式 query surface
-- 先讓 management API / web 管理面可以直接打開 `session_id`，而不是讓前端自行從 thread transcript 分組
+- session-first 的正式 query surface 已先落地，近期應把它穩定為管理面的 canonical 入口
+- 先讓 management API / web 管理面持續以 `session_id` 為主，而不是回退成前端自行從 thread transcript 分組
 
 ## 問題
 
@@ -433,8 +433,8 @@ web UI 不應直接讀這些檔案。
 
 ## 建議的下一步
 
-1. 先把 `session_id` 從 transcript/mirror 提升為 management API 可直接查詢的一級實體。
-2. 在 `runtime_protocol` 中新增 `WorkingSessionSummaryView` 與 `WorkingSessionRecordView`，避免 UI 自行從 thread feed 分組。
-3. 下一步再決定是否需要 `GET /api/threads/:thread_key/sessions/:session_id` 單獨 summary route。
-4. 繼續保留 timeline 裡的 `origin` / `delivery` / `phase`，不要過早把 process/final 差異抹平。
-5. 之後再把 tool request/result/outbox 與 transcript mirror 建立最小 artifact 關聯，評估是否需要更完整的 session detail、live stream 或 terminal replay。
+1. 先把目前已落地的 session-first API 與 workspace-card `Sessions` pane 視為正式 v1 入口，不再把 thread transcript feed 當成主要 session 觀測面。
+2. 下一步決定是否需要 `GET /api/threads/:thread_key/sessions/:session_id` 單獨 summary route，以及是否補 `artifacts` route。
+3. 繼續保留 timeline 裡的 `origin` / `delivery` / `phase`，不要過早把 process/final 差異抹平。
+4. 把 tool request/result/outbox 與 transcript mirror 建立最小 artifact 關聯，評估是否需要更完整的 session detail、live stream 或 terminal replay。
+5. 規範 retention、redaction、以及 mode-aware observability 邊界，避免 observability surface 先膨脹再回頭收口。

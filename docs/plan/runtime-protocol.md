@@ -508,6 +508,6 @@ v1 至少保留：
 
 ## 建議的下一步
 
-1. 先把上面的 view / action 名稱同步到本地 management API。
-2. 讓 tray/web 管理面逐步直接消費 typed event payload，而不是只把它們當 refresh signal。
-3. 之後再補 `managed_codex_changed`、更細的 process transcript event，並決定是否需要第二種 transport，例如 WebSocket。
+1. 把已落地的 management API / typed SSE / Telegram control surface 再往同一套 transport-neutral naming 收斂，避免同一能力同時以 route、slash command、內部 view 名稱各說各話。
+2. 擴大 tray/web 管理面直接消費 typed event payload 的覆蓋率，並決定哪些 query surface 仍保留 targeted refetch、哪些值得做更細的 incremental event。
+3. 補 `managed_codex_changed`、更細的 process transcript event，並再決定是否需要第二種 transport，例如 WebSocket。

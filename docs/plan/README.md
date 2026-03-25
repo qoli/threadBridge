@@ -89,7 +89,7 @@
   - workspace-local `workspace-config.json`、`ExecutionMode` enum、session execution snapshot 已落地
   - management API / launch-config / web UI 已開始暴露 workspace mode、current session mode 與 `mode_drift`
   - `hcodex` 與 Telegram turn/resume 已開始按 workspace mode 收斂到 `full_auto` 或 `yolo`
-  - 但 Telegram 是否允許直接切 mode、user-facing naming 是否應是 `Plan / Normal`、以及 `Codex 工作模型` 是否與 mode 分離對外暴露，仍未收斂
+  - Telegram 已補上 `/execution_mode` command surface，但 user-facing naming、owner vocabulary、以及 `Codex 工作模型` 是否與 mode 分離對外暴露，仍未收斂
 - [runtime-state-machine.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-state-machine.md)
   - canonical `lifecycle_status` / `binding_status` / `run_status` 已開始透過 shared resolver 進入代碼
   - ordinary Telegram gate、圖片分析、stale busy reconciliation、management API、topic title 已開始共用同一套 canonical state axes
