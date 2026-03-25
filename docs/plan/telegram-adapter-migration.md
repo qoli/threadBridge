@@ -122,6 +122,10 @@
   - 本地 / TUI session 產生的 `request_user_input` 可用同一種 Telegram surface mirror 回來
   - plan-only turn 可送出 `Implement this plan?` callback
 - 這代表 Telegram 已不再只承接普通文字 turn、preview、final reply、plan/tool process transcript，也開始具備最小互動式 session adapter 能力
+- 新增確認的一條 Telegram UX 決策是：
+  - `request_user_input` 在完成或收到 upstream `serverRequest/resolved` 時，不應再額外輸出可見的系統訊息
+  - 像 `Questions completed.`、`Info: Questions resolved.` 這類 completion 文案應視為 adapter 內部 UI cleanup 訊號，而不是 user-facing delivery
+  - 也就是說，resolved 後應偏向靜默收斂現有 prompt surface，而不是再送一條新的「已完成」文本
 - 目前仍未完成的部分包括：
   - secret input 仍不支持
   - 更一般的 interrupt / questionnaire surface 仍未 formalize
