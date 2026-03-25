@@ -4,10 +4,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::Value;
-use teloxide::Bot;
-use teloxide::payloads::SendMessageSetters;
-use teloxide::requests::Requester;
-use teloxide::types::{MessageId, ThreadId};
 use tokio::sync::Mutex;
 use tokio::task::AbortHandle;
 use tracing::warn;
@@ -16,32 +12,23 @@ use crate::codex::{
     CodexServerNotification, CodexServerRequest, CodexThreadEvent, observe_thread_with_handlers,
 };
 use crate::collaboration_mode::CollaborationMode;
-use crate::interactive::{
-    InteractiveRequestRegistry, ServerRequestResolvedNotification, ToolRequestUserInputParams,
-};
 use crate::process_transcript::process_entry_from_codex_event;
-use crate::repository::{ThreadRepository, TranscriptMirrorOrigin, TranscriptMirrorPhase};
-use crate::telegram_runtime::{
-    final_reply::compose_visible_final_reply, render_request_user_input_prompt,
-    request_user_input_markup, send_plan_implementation_prompt,
+use crate::repository::{TranscriptMirrorOrigin, TranscriptMirrorPhase};
+use crate::runtime_interaction::{
+    RuntimeInteractionEvent, RuntimeInteractionRequest, RuntimeInteractionResolved,
+    RuntimeInteractionSender, TurnCompletionSummary,
 };
+use crate::telegram_runtime::final_reply::compose_visible_final_reply;
 use crate::workspace_status::{
     record_hcodex_ingress_completed, record_hcodex_ingress_preview_text,
     record_hcodex_ingress_process_event, record_hcodex_ingress_prompt,
 };
 
 #[derive(Debug, Clone)]
-pub(crate) struct TelegramInteractiveBridge {
-    pub(crate) bot: Bot,
-    pub(crate) registry: InteractiveRequestRegistry,
-}
-
-#[derive(Debug, Clone)]
 pub struct AppServerMirrorObserverManager {
-    repository: ThreadRepository,
     turn_modes: Arc<Mutex<HashMap<String, CollaborationMode>>>,
     inner: Arc<Mutex<HashMap<String, RunningObserver>>>,
-    telegram_bridge: Arc<Mutex<Option<TelegramInteractiveBridge>>>,
+    interaction_sender: Arc<Mutex<Option<RuntimeInteractionSender>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,17 +44,16 @@ struct ObserverState {
 }
 
 impl AppServerMirrorObserverManager {
-    pub(crate) fn new(
-        repository: ThreadRepository,
-        turn_modes: Arc<Mutex<HashMap<String, CollaborationMode>>>,
-        telegram_bridge: Arc<Mutex<Option<TelegramInteractiveBridge>>>,
-    ) -> Self {
+    pub(crate) fn new(turn_modes: Arc<Mutex<HashMap<String, CollaborationMode>>>) -> Self {
         Self {
-            repository,
             turn_modes,
             inner: Arc::new(Mutex::new(HashMap::new())),
-            telegram_bridge,
+            interaction_sender: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub async fn set_interaction_sender(&self, sender: Option<RuntimeInteractionSender>) {
+        self.interaction_sender.lock().await.clone_from(&sender);
     }
 
     pub async fn ensure_thread_observer(
@@ -86,7 +72,6 @@ impl AppServerMirrorObserverManager {
             existing.abort_handle.abort();
         }
 
-        let repository = self.repository.clone();
         let workspace_path = workspace_path
             .canonicalize()
             .unwrap_or_else(|_| workspace_path.to_path_buf());
@@ -95,12 +80,11 @@ impl AppServerMirrorObserverManager {
         let thread_id = thread_id.to_owned();
         let observer_thread_id = thread_id.clone();
         let turn_modes = self.turn_modes.clone();
-        let telegram_bridge = self.telegram_bridge.clone();
+        let interaction_sender = self.interaction_sender.clone();
         let task = tokio::spawn(async move {
             if let Err(error) = run_thread_observer(
-                repository,
                 turn_modes,
-                telegram_bridge,
+                interaction_sender,
                 workspace_path,
                 daemon_ws_url,
                 thread_key,
@@ -147,9 +131,8 @@ fn observer_key(workspace_path: &Path, thread_key: &str) -> String {
 }
 
 async fn run_thread_observer(
-    repository: ThreadRepository,
     turn_modes: Arc<Mutex<HashMap<String, CollaborationMode>>>,
-    telegram_bridge: Arc<Mutex<Option<TelegramInteractiveBridge>>>,
+    interaction_sender: Arc<Mutex<Option<RuntimeInteractionSender>>>,
     workspace_path: PathBuf,
     daemon_ws_url: String,
     thread_key: String,
@@ -160,29 +143,26 @@ async fn run_thread_observer(
         &daemon_ws_url,
         &thread_id,
         {
-            let repository = repository.clone();
             let workspace_path = workspace_path.clone();
             let thread_key = thread_key.clone();
             let observer_thread_id = thread_id.clone();
             let turn_modes = turn_modes.clone();
-            let telegram_bridge = telegram_bridge.clone();
+            let interaction_sender = interaction_sender.clone();
             let state = state.clone();
             move |event| {
-                let repository = repository.clone();
                 let workspace_path = workspace_path.clone();
                 let thread_key = thread_key.clone();
                 let observer_thread_id = observer_thread_id.clone();
                 let turn_modes = turn_modes.clone();
-                let telegram_bridge = telegram_bridge.clone();
+                let interaction_sender = interaction_sender.clone();
                 let state = state.clone();
                 async move {
                     handle_observer_event(
-                        &repository,
                         &workspace_path,
                         &thread_key,
                         &observer_thread_id,
                         &turn_modes,
-                        &telegram_bridge,
+                        &interaction_sender,
                         &state,
                         event,
                     )
@@ -191,23 +171,21 @@ async fn run_thread_observer(
             }
         },
         {
-            let repository = repository.clone();
             let thread_key = thread_key.clone();
-            let telegram_bridge = telegram_bridge.clone();
+            let interaction_sender = interaction_sender.clone();
             move |request| {
-                let repository = repository.clone();
                 let thread_key = thread_key.clone();
-                let telegram_bridge = telegram_bridge.clone();
+                let interaction_sender = interaction_sender.clone();
                 async move {
-                    handle_server_request(&repository, &thread_key, &telegram_bridge, request).await
+                    handle_server_request(&thread_key, &interaction_sender, request).await
                 }
             }
         },
         {
-            let telegram_bridge = telegram_bridge.clone();
+            let interaction_sender = interaction_sender.clone();
             move |notification| {
-                let telegram_bridge = telegram_bridge.clone();
-                async move { handle_server_notification(&telegram_bridge, notification).await }
+                let interaction_sender = interaction_sender.clone();
+                async move { handle_server_notification(&interaction_sender, notification).await }
             }
         },
     )
@@ -215,12 +193,11 @@ async fn run_thread_observer(
 }
 
 async fn handle_observer_event(
-    repository: &ThreadRepository,
     workspace_path: &Path,
     thread_key: &str,
     thread_id: &str,
     turn_modes: &Arc<Mutex<HashMap<String, CollaborationMode>>>,
-    telegram_bridge: &Arc<Mutex<Option<TelegramInteractiveBridge>>>,
+    interaction_sender: &Arc<Mutex<Option<RuntimeInteractionSender>>>,
     state: &Arc<Mutex<ObserverState>>,
     event: CodexThreadEvent,
 ) -> Result<()> {
@@ -254,13 +231,12 @@ async fn handle_observer_event(
     match event {
         CodexThreadEvent::TurnCompleted { turn_id, .. } => {
             finalize_turn(
-                repository,
                 workspace_path,
                 thread_key,
                 thread_id,
                 turn_id.as_deref(),
                 turn_modes,
-                telegram_bridge,
+                interaction_sender,
                 state,
                 None,
             )
@@ -268,13 +244,12 @@ async fn handle_observer_event(
         }
         CodexThreadEvent::TurnFailed { turn_id, error } => {
             finalize_turn(
-                repository,
                 workspace_path,
                 thread_key,
                 thread_id,
                 turn_id.as_deref(),
                 turn_modes,
-                telegram_bridge,
+                interaction_sender,
                 state,
                 Some(error.to_string()),
             )
@@ -291,13 +266,12 @@ async fn handle_observer_event(
 }
 
 async fn finalize_turn(
-    repository: &ThreadRepository,
     workspace_path: &Path,
     thread_key: &str,
     thread_id: &str,
     turn_id: Option<&str>,
     turn_modes: &Arc<Mutex<HashMap<String, CollaborationMode>>>,
-    telegram_bridge: &Arc<Mutex<Option<TelegramInteractiveBridge>>>,
+    interaction_sender: &Arc<Mutex<Option<RuntimeInteractionSender>>>,
     state: &Arc<Mutex<ObserverState>>,
     fallback_error: Option<String>,
 ) -> Result<()> {
@@ -309,134 +283,68 @@ async fn finalize_turn(
     .or_else(|| fallback_error.as_deref().map(str::to_owned));
     record_hcodex_ingress_completed(workspace_path, thread_id, turn_id, final_text.as_deref())
         .await?;
-    let plan_mode = match turn_id {
+    let collaboration_mode = match turn_id {
         Some(turn_id) => turn_modes.lock().await.remove(turn_id),
         None => None,
-    };
-    if plan_mode == Some(CollaborationMode::Plan)
-        && state_guard.latest_completed_plan_text.is_some()
-    {
-        maybe_send_plan_prompt_from_bridge(repository, thread_key, telegram_bridge).await?;
     }
+    .unwrap_or(CollaborationMode::Default);
+    emit_runtime_interaction(
+        interaction_sender,
+        RuntimeInteractionEvent::TurnCompleted(TurnCompletionSummary {
+            thread_key: thread_key.to_owned(),
+            collaboration_mode,
+            final_text: final_text.clone(),
+            has_plan: state_guard.latest_completed_plan_text.is_some(),
+        }),
+    )
+    .await;
     state_guard.latest_assistant_message.clear();
     state_guard.latest_completed_plan_text = None;
     Ok(())
 }
 
 async fn handle_server_request(
-    repository: &ThreadRepository,
     thread_key: &str,
-    telegram_bridge: &Arc<Mutex<Option<TelegramInteractiveBridge>>>,
+    interaction_sender: &Arc<Mutex<Option<RuntimeInteractionSender>>>,
     request: CodexServerRequest,
 ) -> Result<()> {
     let CodexServerRequest::RequestUserInput { request_id, params } = request;
-    maybe_bridge_request_user_input(repository, thread_key, telegram_bridge, request_id, params)
-        .await
+    emit_runtime_interaction(
+        interaction_sender,
+        RuntimeInteractionEvent::RequestUserInput(RuntimeInteractionRequest {
+            thread_key: thread_key.to_owned(),
+            request_id,
+            params,
+        }),
+    )
+    .await;
+    Ok(())
 }
 
 async fn handle_server_notification(
-    telegram_bridge: &Arc<Mutex<Option<TelegramInteractiveBridge>>>,
+    interaction_sender: &Arc<Mutex<Option<RuntimeInteractionSender>>>,
     notification: CodexServerNotification,
 ) -> Result<()> {
     let CodexServerNotification::ServerRequestResolved(resolved) = notification;
-    maybe_bridge_resolved_request(telegram_bridge, resolved).await
-}
-
-async fn maybe_bridge_request_user_input(
-    repository: &ThreadRepository,
-    thread_key: &str,
-    telegram_bridge: &Arc<Mutex<Option<TelegramInteractiveBridge>>>,
-    request_id: i64,
-    params: ToolRequestUserInputParams,
-) -> Result<()> {
-    let Some(bridge) = telegram_bridge.lock().await.clone() else {
-        return Ok(());
-    };
-    let Some(record) = repository.find_active_thread_by_key(thread_key).await? else {
-        return Ok(());
-    };
-    let Some(telegram_thread_id) = record.metadata.message_thread_id else {
-        return Ok(());
-    };
-    if params.questions.iter().any(|question| question.is_secret) {
-        return Ok(());
-    }
-    let snapshot = bridge
-        .registry
-        .register_tui(
-            record.metadata.chat_id,
-            telegram_thread_id,
-            thread_key.to_owned(),
-            request_id,
-            params,
-        )
-        .await?;
-    let text = render_request_user_input_prompt(&snapshot);
-    let request = bridge
-        .bot
-        .send_message(teloxide::types::ChatId(record.metadata.chat_id), text)
-        .message_thread_id(ThreadId(MessageId(telegram_thread_id)));
-    let sent =
-        if let Some(markup) = request_user_input_markup(snapshot.request_id, &snapshot.question) {
-            request.reply_markup(markup).await?
-        } else {
-            request.await?
-        };
-    bridge
-        .registry
-        .set_prompt_message_id(record.metadata.chat_id, telegram_thread_id, sent.id.0)
-        .await;
-    Ok(())
-}
-
-async fn maybe_bridge_resolved_request(
-    telegram_bridge: &Arc<Mutex<Option<TelegramInteractiveBridge>>>,
-    resolved: ServerRequestResolvedNotification,
-) -> Result<()> {
-    let Some(bridge) = telegram_bridge.lock().await.clone() else {
-        return Ok(());
-    };
-    let Some(resolved_request) = bridge
-        .registry
-        .resolve_request_id(&resolved.thread_id, &resolved.request_id)
-        .await
-    else {
-        return Ok(());
-    };
-    if let Some(message_id) = resolved_request.prompt_message_id {
-        let _ = bridge
-            .bot
-            .edit_message_text(
-                teloxide::types::ChatId(resolved_request.chat_id),
-                MessageId(message_id),
-                "Info: Questions resolved.",
-            )
-            .await;
-    }
-    Ok(())
-}
-
-async fn maybe_send_plan_prompt_from_bridge(
-    repository: &ThreadRepository,
-    thread_key: &str,
-    telegram_bridge: &Arc<Mutex<Option<TelegramInteractiveBridge>>>,
-) -> Result<()> {
-    let Some(bridge) = telegram_bridge.lock().await.clone() else {
-        return Ok(());
-    };
-    let Some(record) = repository.find_active_thread_by_key(thread_key).await? else {
-        return Ok(());
-    };
-    let Some(telegram_thread_id) = record.metadata.message_thread_id else {
-        return Ok(());
-    };
-    send_plan_implementation_prompt(
-        &bridge.bot,
-        teloxide::types::ChatId(record.metadata.chat_id),
-        ThreadId(MessageId(telegram_thread_id)),
+    emit_runtime_interaction(
+        interaction_sender,
+        RuntimeInteractionEvent::RequestResolved(RuntimeInteractionResolved {
+            thread_id: resolved.thread_id,
+            request_id: resolved.request_id,
+        }),
     )
-    .await?;
+    .await;
     Ok(())
+}
+
+async fn emit_runtime_interaction(
+    interaction_sender: &Arc<Mutex<Option<RuntimeInteractionSender>>>,
+    event: RuntimeInteractionEvent,
+) {
+    let Some(sender) = interaction_sender.lock().await.as_ref().cloned() else {
+        return;
+    };
+    let _ = sender.send(event);
 }
 
 fn extract_agent_message_text(event: &CodexThreadEvent) -> Option<String> {

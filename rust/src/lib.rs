@@ -14,6 +14,7 @@ pub mod logging;
 pub mod management_api;
 pub mod process_transcript;
 pub mod repository;
+pub mod runtime_interaction;
 pub mod runtime_owner;
 pub mod runtime_protocol;
 pub mod telegram_probe;

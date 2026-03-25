@@ -32,11 +32,12 @@ use crate::thread_state::{
 pub(crate) use crate::tool_results::{TelegramOutboxItem, parse_telegram_outbox};
 pub(crate) use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 pub(crate) use crate::workspace_status::{
-    SessionCurrentStatus, WorkspaceStatusCache, read_local_tui_session_claim,
-    read_session_status, record_bot_status_event,
+    SessionCurrentStatus, WorkspaceStatusCache, read_local_tui_session_claim, read_session_status,
+    record_bot_status_event,
 };
 
 pub mod final_reply;
+mod interaction_bridge;
 mod media;
 pub mod preview;
 mod restore;
@@ -137,11 +138,13 @@ impl AppState {
                 .join("AGENTS.md"),
         )?;
         let interactive_requests = InteractiveRequestRegistry::new();
+        let interaction_sender = interaction_bridge::spawn_telegram_interaction_bridge(
+            config.telegram.telegram_token.clone(),
+            repository.clone(),
+            interactive_requests.clone(),
+        );
         hcodex_ingress
-            .configure_telegram_bridge(
-                config.telegram.telegram_token.clone(),
-                interactive_requests.clone(),
-            )
+            .configure_interaction_sender(interaction_sender)
             .await;
         Ok(Self {
             codex: CodexRunner::new(config.runtime.codex_model.clone()),

@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex as StdMutex};
 use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use teloxide::Bot;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::AbortHandle;
@@ -16,15 +15,15 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tracing::{debug, info, warn};
 
-use crate::app_server_observer::{AppServerMirrorObserverManager, TelegramInteractiveBridge};
+use crate::app_server_observer::AppServerMirrorObserverManager;
 use crate::app_server_runtime::{
     WorkspaceRuntimeState, consume_hcodex_launch_ticket, write_workspace_runtime_state_file,
 };
 use crate::collaboration_mode::CollaborationMode;
-use crate::interactive::InteractiveRequestRegistry;
 #[cfg(test)]
 use crate::process_transcript::workspace_item_diagnostic;
 use crate::repository::ThreadRepository;
+use crate::runtime_interaction::RuntimeInteractionSender;
 use crate::workspace_status::{
     record_hcodex_ingress_connected, record_hcodex_ingress_disconnected,
 };
@@ -44,7 +43,6 @@ pub struct HcodexIngressManager {
     inner: Arc<Mutex<HashMap<String, WorkspaceHcodexIngress>>>,
     daemon_request_channels: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<WsMessage>>>>,
     observer_runtime: AppServerMirrorObserverManager,
-    telegram_bridge: Arc<Mutex<Option<TelegramInteractiveBridge>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,33 +55,19 @@ struct WorkspaceHcodexIngress {
 
 impl HcodexIngressManager {
     pub fn new(repository: ThreadRepository) -> Self {
-        let telegram_bridge = Arc::new(Mutex::new(None));
         let turn_modes = Arc::new(Mutex::new(HashMap::new()));
         Self {
-            observer_runtime: AppServerMirrorObserverManager::new(
-                repository.clone(),
-                turn_modes,
-                telegram_bridge.clone(),
-            ),
+            observer_runtime: AppServerMirrorObserverManager::new(turn_modes),
             repository,
             inner: Arc::new(Mutex::new(HashMap::new())),
             daemon_request_channels: Arc::new(Mutex::new(HashMap::new())),
-            telegram_bridge,
         }
     }
 
-    pub async fn configure_telegram_bridge(
-        &self,
-        bot_token: String,
-        registry: InteractiveRequestRegistry,
-    ) {
-        self.telegram_bridge
-            .lock()
-            .await
-            .replace(TelegramInteractiveBridge {
-                bot: Bot::new(bot_token),
-                registry,
-            });
+    pub async fn configure_interaction_sender(&self, sender: RuntimeInteractionSender) {
+        self.observer_runtime
+            .set_interaction_sender(Some(sender))
+            .await;
     }
 
     pub async fn submit_request_user_input_response<T: serde::Serialize>(
@@ -166,7 +150,6 @@ impl HcodexIngressManager {
         let repository = self.repository.clone();
         let daemon_request_channels = self.daemon_request_channels.clone();
         let observer_runtime = self.observer_runtime.clone();
-        let telegram_bridge = self.telegram_bridge.clone();
         let workspace_for_task = workspace_path.clone();
         let daemon_ws_url_for_task = daemon_ws_url.clone();
 
@@ -176,7 +159,6 @@ impl HcodexIngressManager {
                 repository,
                 daemon_request_channels,
                 observer_runtime,
-                telegram_bridge,
                 workspace_for_task,
                 daemon_ws_url_for_task,
             )
@@ -231,7 +213,6 @@ async fn run_ingress_listener(
     repository: ThreadRepository,
     daemon_request_channels: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<WsMessage>>>>,
     observer_runtime: AppServerMirrorObserverManager,
-    telegram_bridge: Arc<Mutex<Option<TelegramInteractiveBridge>>>,
     workspace_path: PathBuf,
     daemon_ws_url: String,
 ) -> Result<()> {
@@ -240,7 +221,6 @@ async fn run_ingress_listener(
         let repository = repository.clone();
         let daemon_request_channels = daemon_request_channels.clone();
         let observer_runtime = observer_runtime.clone();
-        let telegram_bridge = telegram_bridge.clone();
         let workspace_path = workspace_path.clone();
         let daemon_ws_url = daemon_ws_url.clone();
         tokio::spawn(async move {
@@ -250,7 +230,6 @@ async fn run_ingress_listener(
                 repository,
                 daemon_request_channels,
                 observer_runtime,
-                telegram_bridge,
                 workspace_path,
                 daemon_ws_url,
             )
@@ -268,7 +247,6 @@ async fn handle_ingress_connection(
     repository: ThreadRepository,
     daemon_request_channels: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<WsMessage>>>>,
     observer_runtime: AppServerMirrorObserverManager,
-    _telegram_bridge: Arc<Mutex<Option<TelegramInteractiveBridge>>>,
     workspace_path: PathBuf,
     daemon_ws_url: String,
 ) -> Result<()> {
