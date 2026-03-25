@@ -26,7 +26,7 @@ pub struct RuntimeHealthView {
     pub unavailable_workspaces: usize,
     pub app_server_status: &'static str,
     pub tui_proxy_status: &'static str,
-    pub handoff_readiness: &'static str,
+    pub runtime_readiness: &'static str,
     pub recovery_hint: Option<String>,
     pub runtime_owner: RuntimeOwnerStatus,
     pub managed_codex: ManagedCodexView,
@@ -127,7 +127,7 @@ pub struct ManagedWorkspaceView {
     pub conflict: bool,
     pub app_server_status: &'static str,
     pub tui_proxy_status: &'static str,
-    pub handoff_readiness: &'static str,
+    pub runtime_readiness: &'static str,
     pub runtime_health_source: &'static str,
     pub heartbeat_last_checked_at: Option<String>,
     pub heartbeat_last_error: Option<String>,
@@ -234,7 +234,7 @@ struct WorkingSessionError {
 pub struct WorkspaceRuntimeHealth {
     pub app_server_status: &'static str,
     pub tui_proxy_status: &'static str,
-    pub handoff_readiness: &'static str,
+    pub runtime_readiness: &'static str,
     pub source: &'static str,
     pub last_checked_at: Option<String>,
     pub last_error: Option<String>,
@@ -245,7 +245,7 @@ impl WorkspaceRuntimeHealth {
         Self {
             app_server_status: heartbeat.app_server_status,
             tui_proxy_status: heartbeat.tui_proxy_status,
-            handoff_readiness: heartbeat.handoff_readiness,
+            runtime_readiness: heartbeat.runtime_readiness,
             source: "owner_heartbeat",
             last_checked_at: Some(heartbeat.last_checked_at),
             last_error: heartbeat.last_error,
@@ -306,8 +306,8 @@ pub async fn build_workspace_views(
             .join("bin")
             .join("hcodex");
         let mut runtime_status = read_workspace_runtime_health(workspace_path, runtime_owner).await;
-        if binding.tui_session_adoption_pending && runtime_status.handoff_readiness == "ready" {
-            runtime_status.handoff_readiness = "pending_adoption";
+        if binding.tui_session_adoption_pending && runtime_status.runtime_readiness == "ready" {
+            runtime_status.runtime_readiness = "pending_adoption";
         }
         let recent_sessions = repository
             .read_recent_workspace_sessions(&workspace_cwd)
@@ -342,7 +342,7 @@ pub async fn build_workspace_views(
             conflict: false,
             app_server_status: runtime_status.app_server_status,
             tui_proxy_status: runtime_status.tui_proxy_status,
-            handoff_readiness: runtime_status.handoff_readiness,
+            runtime_readiness: runtime_status.runtime_readiness,
             runtime_health_source: runtime_status.source,
             heartbeat_last_checked_at: runtime_status.last_checked_at,
             heartbeat_last_error: runtime_status.last_error,
@@ -367,7 +367,7 @@ pub async fn build_workspace_views(
                     &WorkspaceRuntimeHealth {
                         app_server_status: item.app_server_status,
                         tui_proxy_status: item.tui_proxy_status,
-                        handoff_readiness: item.handoff_readiness,
+                        runtime_readiness: item.runtime_readiness,
                         source: item.runtime_health_source,
                         last_checked_at: item.heartbeat_last_checked_at.clone(),
                         last_error: item.heartbeat_last_error.clone(),
@@ -717,10 +717,10 @@ pub fn build_runtime_health(
             .iter()
             .map(|workspace| workspace.tui_proxy_status),
     );
-    let handoff_readiness = aggregate_handoff_status(
+    let runtime_readiness = aggregate_runtime_readiness(
         workspaces
             .iter()
-            .map(|workspace| workspace.handoff_readiness),
+            .map(|workspace| workspace.runtime_readiness),
     );
     let recovery_hint = runtime_recovery_hint(
         &runtime_owner,
@@ -745,26 +745,26 @@ pub fn build_runtime_health(
             .count(),
         ready_workspaces: workspaces
             .iter()
-            .filter(|workspace| workspace.handoff_readiness == "ready")
+            .filter(|workspace| workspace.runtime_readiness == "ready")
             .count(),
         degraded_workspaces: workspaces
             .iter()
             .filter(|workspace| {
-                matches!(workspace.handoff_readiness, "degraded" | "pending_adoption")
+                matches!(workspace.runtime_readiness, "degraded" | "pending_adoption")
             })
             .count(),
         unavailable_workspaces: workspaces
             .iter()
             .filter(|workspace| {
                 !matches!(
-                    workspace.handoff_readiness,
+                    workspace.runtime_readiness,
                     "ready" | "degraded" | "pending_adoption"
                 )
             })
             .count(),
         app_server_status,
         tui_proxy_status,
-        handoff_readiness,
+        runtime_readiness,
         recovery_hint,
         runtime_owner,
         managed_codex,
@@ -783,7 +783,7 @@ pub async fn read_workspace_runtime_health(
             WorkspaceRuntimeHealth {
                 app_server_status: "missing",
                 tui_proxy_status: "missing",
-                handoff_readiness: "unavailable",
+                runtime_readiness: "unavailable",
                 source: "owner_pending",
                 last_checked_at: None,
                 last_error: Some(format!(
@@ -795,7 +795,7 @@ pub async fn read_workspace_runtime_health(
         None => WorkspaceRuntimeHealth {
             app_server_status: "missing",
             tui_proxy_status: "missing",
-            handoff_readiness: "unavailable",
+            runtime_readiness: "unavailable",
             source: "owner_required",
             last_checked_at: None,
             last_error: Some(
@@ -837,7 +837,7 @@ pub fn workspace_recovery_hint(
                 .to_owned(),
         );
     }
-    if adoption_pending || runtime_status.handoff_readiness == "pending_adoption" {
+    if adoption_pending || runtime_status.runtime_readiness == "pending_adoption" {
         return Some(
             "A live TUI session is waiting for adoption. Adopt TUI from Active Threads, or reject it to keep the original binding."
                 .to_owned(),
@@ -869,9 +869,9 @@ pub fn workspace_recovery_hint(
                 .to_owned(),
         );
     }
-    if runtime_status.handoff_readiness == "degraded" {
+    if runtime_status.runtime_readiness == "degraded" {
         return Some(
-            "Handoff is degraded. Reconcile Runtime Owner or Repair Runtime to restore app-server and proxy continuity."
+            "Runtime readiness is degraded. Reconcile Runtime Owner or Repair Runtime to restore app-server and proxy continuity."
                 .to_owned(),
         );
     }
@@ -924,7 +924,7 @@ pub fn aggregate_running_status<'a>(statuses: impl Iterator<Item = &'a str>) -> 
     "running"
 }
 
-pub fn aggregate_handoff_status<'a>(statuses: impl Iterator<Item = &'a str>) -> &'static str {
+pub fn aggregate_runtime_readiness<'a>(statuses: impl Iterator<Item = &'a str>) -> &'static str {
     let mut saw_any = false;
     let mut has_unavailable = false;
     let mut has_degraded = false;
@@ -961,7 +961,7 @@ pub fn workspace_mode_drift(
 mod tests {
     use super::{
         ManagedCodexBuildDefaultsView, ManagedCodexView, ManagedWorkspaceView, ThreadStateView,
-        WorkingSessionRecordKind, aggregate_handoff_status, build_runtime_health,
+        WorkingSessionRecordKind, aggregate_runtime_readiness, build_runtime_health,
         build_thread_views, build_working_session_records, build_working_session_summaries,
     };
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
@@ -987,13 +987,13 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_handoff_status_treats_pending_adoption_as_degraded() {
+    fn aggregate_runtime_readiness_treats_pending_adoption_as_degraded() {
         assert_eq!(
-            aggregate_handoff_status(["ready", "pending_adoption"].into_iter()),
+            aggregate_runtime_readiness(["ready", "pending_adoption"].into_iter()),
             "degraded"
         );
         assert_eq!(
-            aggregate_handoff_status(["pending_adoption"].into_iter()),
+            aggregate_runtime_readiness(["pending_adoption"].into_iter()),
             "degraded"
         );
     }
@@ -1055,7 +1055,7 @@ mod tests {
             conflict: false,
             app_server_status: "running",
             tui_proxy_status: "running",
-            handoff_readiness: "ready",
+            runtime_readiness: "ready",
             runtime_health_source: "owner_heartbeat",
             heartbeat_last_checked_at: Some("2026-03-24T10:00:00.000Z".to_owned()),
             heartbeat_last_error: None,
@@ -1134,7 +1134,7 @@ mod tests {
                 conflict: true,
                 app_server_status: "running",
                 tui_proxy_status: "running",
-                handoff_readiness: "ready",
+                runtime_readiness: "ready",
                 runtime_health_source: "owner_heartbeat",
                 heartbeat_last_checked_at: None,
                 heartbeat_last_error: None,
@@ -1162,7 +1162,7 @@ mod tests {
                 conflict: false,
                 app_server_status: "missing",
                 tui_proxy_status: "missing",
-                handoff_readiness: "unavailable",
+                runtime_readiness: "unavailable",
                 runtime_health_source: "owner_pending",
                 heartbeat_last_checked_at: None,
                 heartbeat_last_error: Some("missing".to_owned()),
@@ -1198,7 +1198,7 @@ mod tests {
         assert_eq!(view.broken_threads, 1);
         assert_eq!(view.conflicted_workspaces, 1);
         assert_eq!(view.app_server_status, "unavailable");
-        assert_eq!(view.handoff_readiness, "unavailable");
+        assert_eq!(view.runtime_readiness, "unavailable");
     }
 
     #[tokio::test]

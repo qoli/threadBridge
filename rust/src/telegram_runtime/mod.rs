@@ -993,7 +993,8 @@ async fn should_route_telegram_input_to_live_tui_session(
     }
     let snapshot = read_session_status(&workspace_path, tui_session_id).await?;
     Ok(snapshot.as_ref().is_some_and(|snapshot| {
-        snapshot.owner == crate::workspace_status::SessionStatusOwner::Local && snapshot.live
+        snapshot.activity_source == crate::workspace_status::SessionActivitySource::Tui
+            && snapshot.live
     }))
 }
 
@@ -1138,7 +1139,7 @@ mod tests {
     use crate::thread_state::{BindingStatus, LifecycleStatus, ResolvedThreadState, RunStatus};
     use crate::tui_proxy::TuiProxyManager;
     use crate::workspace_status::{
-        SessionStatusOwner, WorkspaceStatusCache, WorkspaceStatusPhase, read_session_status,
+        SessionActivitySource, WorkspaceStatusCache, WorkspaceStatusPhase, read_session_status,
         record_hcodex_launcher_started, record_tui_proxy_connected,
     };
     use anyhow::Context;
@@ -1505,7 +1506,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(live_snapshot.owner, SessionStatusOwner::Local);
+        assert_eq!(live_snapshot.activity_source, SessionActivitySource::Tui);
         assert_eq!(live_snapshot.phase, WorkspaceStatusPhase::ShellActive);
     }
 

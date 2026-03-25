@@ -49,7 +49,7 @@ pub struct WorkspaceRuntimeHeartbeat {
     pub workspace_cwd: String,
     pub app_server_status: &'static str,
     pub tui_proxy_status: &'static str,
-    pub handoff_readiness: &'static str,
+    pub runtime_readiness: &'static str,
     pub last_checked_at: String,
     pub last_error: Option<String>,
 }
@@ -182,7 +182,7 @@ impl DesktopRuntimeOwner {
                         workspace_cwd: workspace.clone(),
                         app_server_status: "unavailable",
                         tui_proxy_status: "unavailable",
-                        handoff_readiness: "unavailable",
+                        runtime_readiness: "unavailable",
                         last_checked_at: now_iso(),
                         last_error: Some(error.to_string()),
                     },
@@ -262,7 +262,7 @@ async fn heartbeat_for_workspace(workspace_path: &Path) -> WorkspaceRuntimeHeart
                 workspace_cwd,
                 app_server_status: "missing",
                 tui_proxy_status: "missing",
-                handoff_readiness: "unavailable",
+                runtime_readiness: "unavailable",
                 last_checked_at,
                 last_error: Some(format!("failed to read {}: {error}", state_path.display())),
             };
@@ -276,7 +276,7 @@ async fn heartbeat_for_workspace(workspace_path: &Path) -> WorkspaceRuntimeHeart
                     workspace_cwd,
                     app_server_status: "invalid",
                     tui_proxy_status: "invalid",
-                    handoff_readiness: "unavailable",
+                    runtime_readiness: "unavailable",
                     last_checked_at,
                     last_error: Some(format!("invalid {}: {error}", state_path.display())),
                 };
@@ -298,7 +298,7 @@ async fn heartbeat_for_workspace(workspace_path: &Path) -> WorkspaceRuntimeHeart
         Some(_) => "stale",
         None => "missing",
     };
-    let handoff_readiness = if app_server_running && proxy_running {
+    let runtime_readiness = if app_server_running && proxy_running {
         "ready"
     } else if app_server_running {
         "degraded"
@@ -310,7 +310,7 @@ async fn heartbeat_for_workspace(workspace_path: &Path) -> WorkspaceRuntimeHeart
         workspace_cwd,
         app_server_status,
         tui_proxy_status,
-        handoff_readiness,
+        runtime_readiness,
         last_checked_at,
         last_error: None,
     }

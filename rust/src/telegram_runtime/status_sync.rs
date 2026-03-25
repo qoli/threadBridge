@@ -18,7 +18,7 @@ use crate::thread_state::{
     BindingStatus, LifecycleStatus, resolve_binding_status, resolve_lifecycle_status,
 };
 use crate::workspace_status::{
-    LocalSessionClaim, SessionCurrentStatus, SessionStatusOwner, WorkspaceAggregateStatus,
+    LocalSessionClaim, SessionActivitySource, SessionCurrentStatus, WorkspaceAggregateStatus,
     WorkspaceStatusEventRecord, events_path, read_local_session_claim, read_session_status,
     record_bot_status_event,
 };
@@ -78,20 +78,20 @@ fn workspace_local_conflict(
     let Some(aggregate) = aggregate else {
         return false;
     };
-    if aggregate.live_local_session_ids.is_empty() {
+    if aggregate.live_tui_session_ids.is_empty() {
         return false;
     }
     let Some(owner_claim) = owner_claim else {
         return true;
     };
-    if aggregate.live_local_session_ids.len() > 1 {
+    if aggregate.live_tui_session_ids.len() > 1 {
         return true;
     }
     let Some(expected_session_id) = owner_claim.session_id.as_deref() else {
         return false;
     };
     aggregate
-        .live_local_session_ids
+        .live_tui_session_ids
         .iter()
         .all(|item| item != expected_session_id)
 }
@@ -214,25 +214,25 @@ pub(crate) fn busy_text_message(
     snapshot: &SessionCurrentStatus,
     image_saved: bool,
 ) -> &'static str {
-    match snapshot.owner {
-        SessionStatusOwner::Local if image_saved => {
+    match snapshot.activity_source {
+        SessionActivitySource::Tui if image_saved => {
             "Image saved. Analysis will stay pending until the shared TUI session finishes its current turn."
         }
-        SessionStatusOwner::Local => {
+        SessionActivitySource::Tui => {
             "The shared TUI session is already running a turn. Wait for it to finish before sending a new Telegram request."
         }
-        SessionStatusOwner::Bot => {
+        SessionActivitySource::ManagedRuntime => {
             "This thread's current Codex session is already handling another Telegram request. Wait for it to finish before sending a new one."
         }
     }
 }
 
 pub(crate) fn busy_command_message(snapshot: &SessionCurrentStatus) -> &'static str {
-    match snapshot.owner {
-        SessionStatusOwner::Local => {
+    match snapshot.activity_source {
+        SessionActivitySource::Tui => {
             "The shared TUI session is already running a turn. Wait for it to finish before changing this thread's session state."
         }
-        SessionStatusOwner::Bot => {
+        SessionActivitySource::ManagedRuntime => {
             "This thread's current Codex session is already handling another Telegram request. Wait for it to finish before changing session state."
         }
     }
@@ -248,7 +248,8 @@ fn session_reconciliation_key(workspace_path: &Path, session_id: &str) -> String
 }
 
 fn should_recover_stale_bot_busy(snapshot: &SessionCurrentStatus) -> bool {
-    snapshot.owner == SessionStatusOwner::Bot && snapshot.phase.is_turn_busy()
+    snapshot.activity_source == SessionActivitySource::ManagedRuntime
+        && snapshot.phase.is_turn_busy()
 }
 
 pub async fn reconcile_stale_bot_busy_sessions(
@@ -861,7 +862,7 @@ mod tests {
     };
     use crate::thread_state::effective_busy_snapshot_for_binding;
     use crate::workspace_status::{
-        LocalSessionClaim, SessionCurrentStatus, SessionStatusOwner, WorkspaceStatusEventRecord,
+        LocalSessionClaim, SessionActivitySource, SessionCurrentStatus, WorkspaceStatusEventRecord,
         WorkspaceStatusPhase, ensure_workspace_status_surface, read_session_status,
         record_bot_status_event, session_status_path,
     };
@@ -977,7 +978,7 @@ mod tests {
         let event = WorkspaceStatusEventRecord {
             schema_version: 2,
             event: "user_prompt_submitted".to_owned(),
-            source: crate::workspace_status::SessionStatusOwner::Local,
+            source: crate::workspace_status::SessionActivitySource::Tui,
             workspace_cwd: "/tmp/workspace".to_owned(),
             occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
             payload: json!({
@@ -997,7 +998,7 @@ mod tests {
         let event = WorkspaceStatusEventRecord {
             schema_version: 2,
             event: "user_prompt_submitted".to_owned(),
-            source: crate::workspace_status::SessionStatusOwner::Local,
+            source: crate::workspace_status::SessionActivitySource::Tui,
             workspace_cwd: "/tmp/workspace".to_owned(),
             occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
             payload: json!({
@@ -1030,7 +1031,7 @@ mod tests {
             serde_json::to_string(&WorkspaceStatusEventRecord {
                 schema_version: 2,
                 event: "user_prompt_submitted".to_owned(),
-                source: crate::workspace_status::SessionStatusOwner::Local,
+                source: crate::workspace_status::SessionActivitySource::Tui,
                 workspace_cwd: "/tmp/workspace".to_owned(),
                 occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
                 payload: json!({"session_id": "thr_old", "prompt": "old"}),
@@ -1039,7 +1040,7 @@ mod tests {
             serde_json::to_string(&WorkspaceStatusEventRecord {
                 schema_version: 2,
                 event: "user_prompt_submitted".to_owned(),
-                source: crate::workspace_status::SessionStatusOwner::Local,
+                source: crate::workspace_status::SessionActivitySource::Tui,
                 workspace_cwd: "/tmp/workspace".to_owned(),
                 occurred_at: "2026-03-19T00:00:11.000Z".to_owned(),
                 payload: json!({"session_id": "thr_tui", "prompt": "new"}),
@@ -1055,7 +1056,7 @@ mod tests {
         let event = WorkspaceStatusEventRecord {
             schema_version: 2,
             event: "user_prompt_submitted".to_owned(),
-            source: crate::workspace_status::SessionStatusOwner::Local,
+            source: crate::workspace_status::SessionActivitySource::Tui,
             workspace_cwd: "/tmp/workspace".to_owned(),
             occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
             payload: json!({
@@ -1070,7 +1071,7 @@ mod tests {
         let event = WorkspaceStatusEventRecord {
             schema_version: 2,
             event: "turn_completed".to_owned(),
-            source: crate::workspace_status::SessionStatusOwner::Local,
+            source: crate::workspace_status::SessionActivitySource::Tui,
             workspace_cwd: "/tmp/workspace".to_owned(),
             occurred_at: "2026-03-19T00:00:00.000Z".to_owned(),
             payload: json!({
@@ -1107,7 +1108,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(session.owner, SessionStatusOwner::Bot);
+        assert_eq!(session.activity_source, SessionActivitySource::ManagedRuntime);
         assert_eq!(session.phase, WorkspaceStatusPhase::Idle);
         assert_eq!(session.turn_id, None);
 
@@ -1125,7 +1126,7 @@ mod tests {
             schema_version: 2,
             workspace_cwd: workspace.display().to_string(),
             session_id: "thr_test".to_owned(),
-            owner: SessionStatusOwner::Local,
+            activity_source: SessionActivitySource::Tui,
             live: true,
             phase: WorkspaceStatusPhase::TurnRunning,
             shell_pid: Some(42),
@@ -1158,7 +1159,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(session.owner, SessionStatusOwner::Local);
+        assert_eq!(session.activity_source, SessionActivitySource::Tui);
         assert_eq!(session.phase, WorkspaceStatusPhase::TurnRunning);
 
         let log = fs::read_to_string(&record.log_path)
@@ -1237,7 +1238,7 @@ mod tests {
             schema_version: 2,
             workspace_cwd: workspace.display().to_string(),
             session_id: "thr_current".to_owned(),
-            owner: SessionStatusOwner::Bot,
+            activity_source: SessionActivitySource::ManagedRuntime,
             live: false,
             phase: WorkspaceStatusPhase::Idle,
             shell_pid: None,
@@ -1253,7 +1254,7 @@ mod tests {
             schema_version: 2,
             workspace_cwd: workspace.display().to_string(),
             session_id: "thr_tui".to_owned(),
-            owner: SessionStatusOwner::Local,
+            activity_source: SessionActivitySource::Tui,
             live: true,
             phase: WorkspaceStatusPhase::TurnRunning,
             shell_pid: Some(0),

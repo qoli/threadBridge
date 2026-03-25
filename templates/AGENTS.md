@@ -25,6 +25,8 @@ This managed block is appended by threadBridge to a real project workspace `AGEN
   - `./.threadbridge/tool_requests/`
   - `./.threadbridge/tool_results/`
 - Keep these wrapper names and paths stable.
+- `./.threadbridge/state/shared-runtime/*` is a workspace-local observation and activity surface.
+- Treat desktop owner heartbeat and management/runtime protocol views as the canonical runtime-health authority, not `shared-runtime/*` by itself.
 
 ### Local Codex TUI
 
@@ -152,6 +154,7 @@ The request file must look like this:
   - `.threadbridge/state/shared-runtime/`
   - `.threadbridge/tool_requests/`
   - `.threadbridge/tool_results/`
+- `shared-runtime/` remains a workspace-local observability/activity lane; it is not the machine-level owner authority.
 - Workspace/project artifacts produced by the tools:
   - `concept.json`
   - `prompts/*.json`

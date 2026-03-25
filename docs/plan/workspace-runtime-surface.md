@@ -20,6 +20,9 @@
   - `./.threadbridge/tool_results/*`
 - workspace bootstrap 與 surface materialization 已由 `rust/src/workspace.rs` 負責
 - appendix wording 與 surface 使用方式已由 `templates/AGENTS.md` 描述
+- Phase 1 已新增一個明確定位：
+  - `./.threadbridge/state/shared-runtime/*` 是 workspace-local observation / activity surface
+  - desktop owner heartbeat 才是 managed runtime health 的 canonical authority
 
 目前尚未完成：
 
@@ -86,7 +89,7 @@ threadBridge 的一個重要特徵是：
 - local `hcodex`
 - tool request / result lane
 - workspace execution mode
-- shared runtime state
+- workspace-local runtime observation
 - Telegram outbox
 
 這類能力如果都退回 bot-local `data/` 或 Telegram handler，會讓 runtime 邊界重新變模糊。
@@ -126,6 +129,15 @@ threadBridge 的一個重要特徵是：
 - `./.threadbridge/state/workspace-config.json`
 - `./.threadbridge/state/app-server/*`
 - `./.threadbridge/state/shared-runtime/*`
+
+這裡需要固定一個 Phase 1 已確認的語義：
+
+- `app-server/*`
+  - workspace 受管 daemon / proxy endpoint 的當前連線資訊
+- `shared-runtime/*`
+  - local TUI / managed runtime 活動與 mirror 相關的 observation / activity surface
+  - 不是 machine-level runtime health 的 canonical authority
+  - 不應再被文檔描述成「誰擁有 runtime」的 ownership surface
 
 ### 3. Tool request / result lane
 
@@ -215,6 +227,7 @@ threadBridge 的一個重要特徵是：
 原因是：
 
 - 這些已經接近 workspace runtime surface 的基礎 contract
+- 其中 `shared-runtime/*` 的角色應固定為 observability/activity contract，而不是 owner authority
 
 ### 可選 capability
 
@@ -241,7 +254,11 @@ threadBridge 的一個重要特徵是：
 - [optional-agents-injection.md](/Volumes/Data/Github/threadBridge/docs/plan/optional-agents-injection.md)
   - 描述 appendix 是否必須 inline 注入，但不取代 surface 本身
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
+  - workspace runtime health 的 public surface 已改成 `runtime_readiness`
   - 後續若 surface profile 要對外可見，應掛進正式 view / action 命名
+- [post-cli-runtime-cleanup.md](/Volumes/Data/Github/threadBridge/docs/plan/post-cli-runtime-cleanup.md)
+  - Phase 1 已先把 `shared-runtime/*` 的文檔定位收斂成 observation surface
+  - 檔名、artifact rename、與 `local-session.json` 的存廢仍屬後續 cleanup 範圍
 
 ## 開放問題
 

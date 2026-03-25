@@ -116,7 +116,8 @@
   - git 歷史支持目前 proxy 承接 mirror 高概率是 CLI 時代遺留，在 shared app-server ws 模型落地後尚未清理完畢
 - [post-cli-runtime-cleanup.md](/Volumes/Data/Github/threadBridge/docs/plan/post-cli-runtime-cleanup.md)
   - 記錄 shared app-server / desktop owner 模型落地後，仍殘留在狀態面、管理詞彙與 `hcodex` 啟動鏈中的 CLI / handoff 時代架構債
-  - 範圍包含 `workspace_status` vocabulary、`handoff_readiness`、`local-session.json`、`hcodex-ws-bridge` 與 legacy attachment compatibility 邊界
+  - Phase 1 已開始把 public/runtime-facing vocabulary 從 `handoff_readiness` 收斂到 `runtime_readiness`
+  - 範圍包含 `workspace_status` vocabulary、`runtime_readiness` migration、`local-session.json`、`hcodex-ws-bridge` 與 legacy attachment compatibility 邊界
 - [telegram-webapp-observability.md](/Volumes/Data/Github/threadBridge/docs/plan/telegram-webapp-observability.md)
   - Telegram Web App 觀測面草稿
   - 本地 session-first observability API 與 workspace-card Sessions pane 已落地，但 Telegram Web App 本身仍未開始

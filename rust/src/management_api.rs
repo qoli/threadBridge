@@ -2453,7 +2453,7 @@ mod tests {
     fn diff_management_event_snapshots_emits_typed_changes() {
         let previous = ManagementEventSnapshot {
             setup: json!({"telegram_polling_state": "active"}),
-            runtime: json!({"handoff_readiness": "ready"}),
+            runtime: json!({"runtime_readiness": "ready"}),
             threads: std::iter::once((
                 "thread-1".to_owned(),
                 json!({"thread_key": "thread-1", "run_status": "idle"}),
@@ -2478,7 +2478,7 @@ mod tests {
         };
         let current = ManagementEventSnapshot {
             setup: json!({"telegram_polling_state": "active"}),
-            runtime: json!({"handoff_readiness": "degraded"}),
+            runtime: json!({"runtime_readiness": "degraded"}),
             threads: std::iter::once((
                 "thread-1".to_owned(),
                 json!({"thread_key": "thread-1", "run_status": "running"}),

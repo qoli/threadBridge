@@ -127,7 +127,7 @@ async fn render_thread_info(state: &AppState, record: &ThreadRecord) -> Result<S
         .unwrap_or_else(|| "none".to_owned());
     let current_owner = current_snapshot
         .as_ref()
-        .map(|snapshot| format!("{:?}", snapshot.owner))
+        .map(|snapshot| format!("{:?}", snapshot.activity_source))
         .unwrap_or_else(|| "none".to_owned());
     let gate_session_id = blocking_snapshot
         .as_ref()
@@ -139,7 +139,7 @@ async fn render_thread_info(state: &AppState, record: &ThreadRecord) -> Result<S
         .unwrap_or_else(|| "none".to_owned());
     let gate_owner = blocking_snapshot
         .as_ref()
-        .map(|snapshot| format!("{:?}", snapshot.owner))
+        .map(|snapshot| format!("{:?}", snapshot.activity_source))
         .unwrap_or_else(|| "none".to_owned());
 
     Ok(format!(

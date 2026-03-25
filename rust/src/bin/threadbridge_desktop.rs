@@ -392,13 +392,13 @@ mod macos_app {
         let ready_workspaces = snapshot
             .workspaces
             .iter()
-            .filter(|workspace| workspace.handoff_readiness == "ready")
+            .filter(|workspace| workspace.runtime_readiness == "ready")
             .count();
         let degraded_workspaces = snapshot
             .workspaces
             .iter()
             .filter(|workspace| {
-                matches!(workspace.handoff_readiness, "degraded" | "pending_adoption")
+                matches!(workspace.runtime_readiness, "degraded" | "pending_adoption")
             })
             .count();
         let unavailable_workspaces = snapshot
@@ -406,7 +406,7 @@ mod macos_app {
             .iter()
             .filter(|workspace| {
                 !matches!(
-                    workspace.handoff_readiness,
+                    workspace.runtime_readiness,
                     "ready" | "degraded" | "pending_adoption"
                 )
             })
@@ -448,7 +448,7 @@ mod macos_app {
     fn workspace_launch_ready(workspace: &ManagedWorkspaceView) -> bool {
         workspace.hcodex_available
             && workspace.app_server_status == "running"
-            && !matches!(workspace.handoff_readiness, "unavailable")
+            && !matches!(workspace.runtime_readiness, "unavailable")
     }
 
     fn workspace_continue_current_ready(workspace: &ManagedWorkspaceView) -> bool {
@@ -747,7 +747,7 @@ mod macos_app {
                 conflict: false,
                 app_server_status: "running",
                 tui_proxy_status: "running",
-                handoff_readiness: "ready",
+                runtime_readiness: "ready",
                 runtime_health_source: "owner",
                 heartbeat_last_checked_at: None,
                 heartbeat_last_error: None,

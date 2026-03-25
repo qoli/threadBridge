@@ -357,7 +357,7 @@ function renderHealthSummary(health) {
   const metrics = [
     ['Global App Server', health.app_server_status || 'unknown'],
     ['Global TUI Proxy', health.tui_proxy_status || 'unknown'],
-    ['Global Handoff', health.handoff_readiness || 'unknown'],
+    ['Global Runtime', health.runtime_readiness || 'unknown'],
     ['Owner State', owner.state || 'inactive'],
     ['Owner Last Success', owner.last_successful_reconcile_at || 'never'],
     ['Running Workspaces', String(health.running_workspaces ?? 0)],
@@ -603,7 +603,7 @@ function renderWorkspaceCards(items) {
           ${item.conflict ? badge('conflict', 'conflict') : ''}
           ${badge('app', item.app_server_status)}
           ${badge('proxy', item.tui_proxy_status)}
-          ${badge('handoff', item.handoff_readiness)}
+          ${badge('runtime', item.runtime_readiness)}
         </div>
       </div>
 

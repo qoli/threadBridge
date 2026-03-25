@@ -238,6 +238,7 @@ fn conversation_key_for(scope: &ThreadScope, thread_key: &str) -> String {
 }
 
 impl SessionBinding {
+    // Read legacy session-binding fields when present, but never write them back out.
     fn normalize_legacy_fields(mut self) -> Self {
         if self.current_codex_thread_id.is_none() {
             self.current_codex_thread_id = self
@@ -1279,6 +1280,7 @@ impl ThreadRepository {
         session: &SessionBinding,
     ) -> Result<()> {
         let path = self.session_binding_path(record);
+        // Normalize before writing so the persisted shape stays on the canonical schema.
         let session = session.clone().normalize_legacy_fields();
         fs::write(
             path,
@@ -1552,6 +1554,19 @@ mod tests {
         assert_eq!(binding.current_codex_thread_id.as_deref(), Some("thr_123"));
         assert_eq!(binding.workspace_cwd.as_deref(), Some("/tmp/workspace"));
         assert!(!binding.tui_session_adoption_pending);
+    }
+
+    #[test]
+    fn session_binding_serialization_omits_legacy_session_fields() {
+        let binding = SessionBinding::fresh(
+            Some("/tmp/workspace".to_owned()),
+            Some("thr_123".to_owned()),
+            full_auto_snapshot(),
+        );
+
+        let value = serde_json::to_value(binding).unwrap();
+        assert!(value.get("codex_thread_id").is_none());
+        assert!(value.get("selected_session_id").is_none());
     }
 
     #[tokio::test]

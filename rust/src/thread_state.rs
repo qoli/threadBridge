@@ -251,7 +251,7 @@ mod tests {
     };
     use crate::repository::{SessionBinding, ThreadMetadata, ThreadScope, ThreadStatus};
     use crate::workspace_status::{
-        SessionCurrentStatus, SessionStatusOwner, WorkspaceStatusPhase,
+        SessionActivitySource, SessionCurrentStatus, WorkspaceStatusPhase,
         ensure_workspace_status_surface, session_status_path,
     };
     use tokio::fs;
@@ -307,15 +307,15 @@ mod tests {
     async fn write_session(
         workspace_path: &Path,
         session_id: &str,
-        owner: SessionStatusOwner,
+        activity_source: SessionActivitySource,
         phase: WorkspaceStatusPhase,
     ) {
         let session = SessionCurrentStatus {
             schema_version: 2,
             workspace_cwd: workspace_path.display().to_string(),
             session_id: session_id.to_owned(),
-            owner,
-            live: owner == SessionStatusOwner::Local,
+            activity_source,
+            live: activity_source == SessionActivitySource::Tui,
             phase,
             shell_pid: None,
             child_pid: None,
@@ -351,7 +351,7 @@ mod tests {
         write_session(
             &workspace,
             "thr_current",
-            SessionStatusOwner::Bot,
+            SessionActivitySource::ManagedRuntime,
             WorkspaceStatusPhase::TurnRunning,
         )
         .await;
@@ -376,14 +376,14 @@ mod tests {
         write_session(
             &workspace,
             "thr_current",
-            SessionStatusOwner::Bot,
+            SessionActivitySource::ManagedRuntime,
             WorkspaceStatusPhase::Idle,
         )
         .await;
         write_session(
             &workspace,
             "thr_tui",
-            SessionStatusOwner::Local,
+            SessionActivitySource::Tui,
             WorkspaceStatusPhase::TurnRunning,
         )
         .await;
