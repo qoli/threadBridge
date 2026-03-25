@@ -93,6 +93,12 @@
 
 這一步是唯一允許做 launch URL -> Codex remote URL 適配的 compatibility boundary。
 
+但這個 boundary 只解決 transport contract，不取代 lifecycle supervision：
+
+- upstream Codex 只要求 `--remote` 拿到合法 websocket endpoint
+- `hcodex` 仍必須自己承擔本地 `codex --remote` child 的 spawn / signal forwarding / teardown / final reconciliation
+- 不能因為 upstream Codex 已處理 websocket initialize 與 `thread/resume`，就把 `hcodex` 做薄成只剩 launch adapter
+
 ### 3. `hcodex-ws-bridge`
 
 bridge 的責任有兩個，而且兩個都不能少：

@@ -128,6 +128,12 @@ observer 已不是純構想，而是已存在的 read-side runtime。
 - local session claim / launcher lifecycle 記錄
 - live request-response injection
 
+需要明確固定的一條約束是：
+
+- `hcodex` 雖不是 runtime owner，但仍必須是自己啟動之本地 `codex --remote` child 的 process owner / lifecycle supervisor
+
+也就是說，`desktop runtime owner` 擁有 machine-level runtime authority，而 `hcodex` 擁有 local TUI child lifecycle authority。這兩種 ownership 不能混為一談，但也不能把後者錯誤刪薄。
+
 目前仍屬於 ingress / compatibility 邊界的一部分：
 
 - websocket ingress listener / relay
@@ -195,6 +201,7 @@ adoption 在 today 的代碼裡已是 runtime state / control 的一部分，而
 
 - 收斂成受管本地入口
 - 保留 binary selection、launch lifecycle、local session claim、必要 compatibility shim
+- 正式保留 local `codex --remote` child supervision，而不是退化成單次 launch shim
 - 避免再次承擔 mirror canonical projection 或 runtime authority
 
 ### 5. Telegram / management surface
