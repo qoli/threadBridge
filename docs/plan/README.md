@@ -17,6 +17,9 @@
   - 已完成 v1
   - Bash wrapper、Codex hooks、notify、workspace shared status、topic title watcher、busy gate 都曾落地
   - 現在已退役，只保留作為舊模型參考
+- [hcodex-pre-refactor-history.md](/Volumes/Data/Github/threadBridge/docs/plan/hcodex-pre-refactor-history.md)
+  - 記錄重構前 `hcodex` / shell wrapper / `codex_sync.py` 的歷史模型
+  - 固定「舊模型雖髒，但本地 `codex` child lifecycle 閉環較強」這個背景結論
 - [session-level-mirror-and-readiness.md](/Volumes/Data/Github/threadBridge/docs/plan/session-level-mirror-and-readiness.md)
 - shared app-server daemon、`./.threadbridge/bin/hcodex`、hcodex ingress、mirror、adoption、auto-adopt 已落地
   - desktop runtime 已成為正式 owner 啟動模型，headless 啟動路徑已退場
@@ -179,6 +182,8 @@
   - 描述 local/TUI mirror、adoption、與 idle/free readiness 的現行模型
 - `owner-runtime-contract`
   - 固定 owner authority、observer、`hcodex` 與 adapter 的高層責任邊界
+- `hcodex-pre-refactor-history`
+  - 記錄重構前 `hcodex` 的 shell / Python lifecycle 閉環背景
 - `post-cli-runtime-cleanup`
   - 記錄 app-server / desktop owner 主模型成立後，剩餘 vocabulary、status surface 與 `hcodex` launch shim 的收尾工作
 - `hcodex-lifecycle-supervision`
