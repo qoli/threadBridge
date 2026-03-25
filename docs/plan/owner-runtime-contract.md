@@ -28,14 +28,13 @@
 - `desktop runtime owner`
 - `app-server ws observer`
 - `hcodex` / ingress
-- shared runtime / protocol semantics
 - Telegram / management surface
 
 現在真正的問題不是功能缺失，而是：
 
 - 某些邊界已經在代碼裡成立，但文檔仍停留在較舊的抽象
 - 某些理想分層還沒完全落地，但文檔已經把它寫成現在式
-- observer、ingress、Telegram bridge、adoption state、與 management control 的責任面仍有過渡性重疊
+- observer、ingress、Telegram bridge、adoption state、與 management control 的責任面仍有暫時兼容性的重疊
 
 如果不先把 owner/runtime contract 收斂清楚，後續不論是 observer 收尾、`hcodex` launch cleanup、還是 transport abstraction，都很容易重新把 authority、projection、與 adapter UX 黏回一起。
 
@@ -88,13 +87,13 @@ observer 已不是純構想，而是已存在的 read-side runtime。
 - session observability feed
 - mirror intake contract
 
-目前仍額外承擔的過渡責任：
+目前仍額外承擔的暫時兼容責任：
 
 - Telegram `request_user_input` prompt bridging
 - resolved request UI 更新
 - plan mode follow-up prompt 發送
 
-也就是說，observer 在 today 的代碼裡還不是完全純化的 read-side projection；它仍含少量 adapter glue。
+也就是說，observer 在 today 的代碼裡還不是完全純化的 read-side projection；它仍含少量暫時兼容的 adapter glue。
 
 ### 3. `hcodex` / ingress
 
@@ -117,21 +116,22 @@ observer 已不是純構想，而是已存在的 read-side runtime。
 
 這表示 `hcodex` / ingress 的主路徑其實已經很明確，但「哪些能力屬於長期入口契約、哪些只是過渡結構」仍未完全寫死。
 
-### 4. shared runtime / protocol semantics
+### 4. Telegram / management surface
 
-`runtime protocol` 在 today 的代碼裡已不只是概念。
+這兩個 surface 在 today 的代碼裡，已開始共享同一套 runtime semantics，但仍未完全脫離過渡接線。
 
 目前已存在：
 
+- management API 已透過 shared `runtime_protocol` view / action / event naming 對外暴露 runtime semantics
 - shared view model，例如 `RuntimeHealthView`、`ManagedWorkspaceView`、`ThreadStateView`
 - typed SSE event，例如 `RuntimeEventKind`
 - management API 上的 query / control / event stream
-- canonical `runtime_readiness`、`binding_status`、`run_status` 等 shared naming
+- Telegram 已開始依賴 shared transcript / control semantics，而不是完全走歷史上的獨立 adapter state
 
 目前尚未完全成立的是：
 
-- transport-neutral 的完整 public contract
-- Telegram 完全退回純 protocol consumer，而不再透過 observer bridge 接到少量 direct path
+- Telegram 完全退回純 consumer，而不再透過 observer bridge 接到少量 direct path
+- `runtime protocol` 尚未收斂成完整 transport-neutral public contract
 
 ### 5. adoption
 
@@ -174,7 +174,7 @@ adoption 在 today 的代碼裡已是 runtime state / control 的一部分，而
 ### 4. Telegram / management surface
 
 - 更完整地透過 shared runtime semantics 工作
-- 對 mirror、control、state 的依賴固定在 shared protocol / state model
+- 對 mirror、control、state 的依賴固定在 shared semantic layer / state model
 - 減少對 ingress / observer 內部細節的直接耦合
 
 ### 5. adoption
@@ -190,7 +190,7 @@ adoption 在 today 的代碼裡已是 runtime state / control 的一部分，而
 - [post-cli-runtime-cleanup.md](/Volumes/Data/Github/threadBridge/docs/plan/post-cli-runtime-cleanup.md)
   - 處理 `hcodex` launch contract、legacy artifact、與 compatibility 命名收尾
 - [runtime-protocol.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-protocol.md)
-  - 承接 shared event / action / view naming 與 transport-facing contract
+  - 承接 shared event / action / view naming 與 transport-facing contract 細節
 - [session-lifecycle.md](/Volumes/Data/Github/threadBridge/docs/plan/session-lifecycle.md)
   - 承接 thread / workspace / Codex thread continuity 與 adoption lifecycle
 - [runtime-state-machine.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-state-machine.md)
@@ -202,11 +202,11 @@ adoption 在 today 的代碼裡已是 runtime state / control 的一部分，而
 
 ## 開放問題
 
-- observer 何時才算真正退出 adapter-specific bridge / rendering
+- observer 何時才算真正退出目前這層暫時兼容的 adapter-specific bridge / rendering
 - `hcodex` ingress 中哪些 compatibility shim 屬於長期入口能力，哪些應視為過渡結構
 - Telegram 何時才算完整退回 protocol consumer，而不再依賴 direct observer bridge path
 - adoption 最終是否保留這個對外命名，或改成更中性的 continuity switch 語言
-- `runtime protocol` 何時才算從 today 的 HTTP / SSE + shared views 收斂成更完整的 transport-neutral 契約
+- shared runtime semantics 何時才算從 today 的 HTTP / SSE + shared views 收斂成更完整的 transport-neutral 契約
 
 ## 建議的下一步
 
