@@ -19,6 +19,7 @@
   - workspace runtime state 已從 `tui_proxy_base_ws_url` 收斂到 `hcodex_ws_url`
   - `hcodex` launch contract 已改成 canonical ws endpoint + one-shot `launch_ticket`
   - local/TUI mirror intake 已開始從 proxy relay 熱路徑拆到獨立 app-server observer
+  - `workspace_status` tests 已明確驗證 legacy `shared-runtime/*` / `local-session.json` 只會被 migrate/read，不會重新成為 canonical write path
 
 目前尚未完成：
 

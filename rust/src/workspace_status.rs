@@ -957,12 +957,13 @@ mod tests {
     use super::{
         HCODEX_INGRESS_CLIENT, SessionActivitySource, SessionCurrentStatus,
         WorkspaceAggregateStatus, WorkspaceStatusCache, WorkspaceStatusPhase,
-        busy_selected_session_status, current_status_path, ensure_workspace_status_surface,
-        events_path, list_live_local_sessions, local_tui_session_claim_path,
-        read_local_tui_session_claim, read_session_status, read_workspace_aggregate_status,
-        record_bot_status_event, record_hcodex_ingress_completed,
-        record_hcodex_ingress_connected, record_hcodex_launcher_ended,
-        record_hcodex_launcher_started, session_status_path,
+        busy_selected_session_status, current_status_path, default_local_tui_session_claim,
+        ensure_workspace_status_surface, events_path, legacy_current_status_path,
+        legacy_events_path, legacy_local_tui_session_claim_path, legacy_session_status_path,
+        list_live_local_sessions, local_tui_session_claim_path, read_local_tui_session_claim,
+        read_session_status, read_workspace_aggregate_status, record_bot_status_event,
+        record_hcodex_ingress_completed, record_hcodex_ingress_connected,
+        record_hcodex_launcher_ended, record_hcodex_launcher_started, session_status_path,
     };
     use std::path::PathBuf;
     use tokio::fs;
@@ -987,6 +988,114 @@ mod tests {
         );
         assert!(
             fs::try_exists(workspace.join(".threadbridge/state/runtime-observer/sessions"))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_surface_migrates_legacy_status_artifacts() {
+        let workspace = temp_path();
+        fs::create_dir_all(legacy_session_status_path(&workspace, "thr_legacy").parent().unwrap())
+            .await
+            .unwrap();
+
+        let legacy_aggregate = WorkspaceAggregateStatus {
+            schema_version: 2,
+            workspace_cwd: workspace.display().to_string(),
+            live_tui_session_ids: vec!["thr_legacy".to_owned()],
+            active_shell_pids: vec![42],
+            updated_at: "2026-03-25T00:00:00.000Z".to_owned(),
+        };
+        fs::write(
+            legacy_current_status_path(&workspace),
+            format!("{}\n", serde_json::to_string_pretty(&legacy_aggregate).unwrap()),
+        )
+        .await
+        .unwrap();
+        fs::write(
+            legacy_events_path(&workspace),
+            "{\"schema_version\":2,\"event\":\"legacy\",\"source\":\"local_tui\",\"workspace_cwd\":\"/tmp\",\"occurred_at\":\"2026-03-25T00:00:00.000Z\",\"payload\":{}}\n",
+        )
+        .await
+        .unwrap();
+        fs::write(
+            legacy_session_status_path(&workspace, "thr_legacy"),
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&SessionCurrentStatus {
+                    schema_version: 2,
+                    workspace_cwd: workspace.display().to_string(),
+                    session_id: "thr_legacy".to_owned(),
+                    activity_source: SessionActivitySource::Tui,
+                    live: true,
+                    phase: WorkspaceStatusPhase::ShellActive,
+                    shell_pid: Some(42),
+                    child_pid: None,
+                    child_pgid: None,
+                    child_command: None,
+                    client: Some(HCODEX_INGRESS_CLIENT.to_owned()),
+                    turn_id: None,
+                    summary: Some("legacy".to_owned()),
+                    updated_at: "2026-03-25T00:00:00.000Z".to_owned(),
+                })
+                .unwrap()
+            ),
+        )
+        .await
+        .unwrap();
+        let legacy_claim = default_local_tui_session_claim(&workspace, "thread-key", 42);
+        fs::write(
+            legacy_local_tui_session_claim_path(&workspace),
+            format!("{}\n", serde_json::to_string_pretty(&legacy_claim).unwrap()),
+        )
+        .await
+        .unwrap();
+
+        ensure_workspace_status_surface(&workspace).await.unwrap();
+
+        assert!(fs::try_exists(current_status_path(&workspace)).await.unwrap());
+        assert!(fs::try_exists(events_path(&workspace)).await.unwrap());
+        assert!(
+            fs::try_exists(session_status_path(&workspace, "thr_legacy"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            fs::try_exists(local_tui_session_claim_path(&workspace))
+                .await
+                .unwrap()
+        );
+
+        let aggregate = read_workspace_aggregate_status(&workspace).await.unwrap();
+        let session = read_session_status(&workspace, "thr_legacy")
+            .await
+            .unwrap()
+            .unwrap();
+        let claim = read_local_tui_session_claim(&workspace).await.unwrap().unwrap();
+
+        assert_eq!(aggregate.live_tui_session_ids, vec!["thr_legacy".to_owned()]);
+        assert_eq!(session.session_id, "thr_legacy");
+        assert_eq!(claim.thread_key, "thread-key");
+    }
+
+    #[tokio::test]
+    async fn canonical_claim_writes_do_not_recreate_legacy_file() {
+        let workspace = temp_path();
+        ensure_workspace_status_surface(&workspace).await.unwrap();
+
+        let claim = default_local_tui_session_claim(&workspace, "thread-key", 42);
+        super::write_local_tui_session_claim(&workspace, &claim)
+            .await
+            .unwrap();
+
+        assert!(
+            fs::try_exists(local_tui_session_claim_path(&workspace))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !fs::try_exists(legacy_local_tui_session_claim_path(&workspace))
                 .await
                 .unwrap()
         );
