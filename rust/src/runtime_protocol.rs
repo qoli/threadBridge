@@ -25,7 +25,7 @@ pub struct RuntimeHealthView {
     pub degraded_workspaces: usize,
     pub unavailable_workspaces: usize,
     pub app_server_status: &'static str,
-    pub tui_proxy_status: &'static str,
+    pub hcodex_ingress_status: &'static str,
     pub runtime_readiness: &'static str,
     pub recovery_hint: Option<String>,
     pub runtime_owner: RuntimeOwnerStatus,
@@ -126,7 +126,7 @@ pub struct ManagedWorkspaceView {
     pub last_used_at: Option<String>,
     pub conflict: bool,
     pub app_server_status: &'static str,
-    pub tui_proxy_status: &'static str,
+    pub hcodex_ingress_status: &'static str,
     pub runtime_readiness: &'static str,
     pub runtime_health_source: &'static str,
     pub heartbeat_last_checked_at: Option<String>,
@@ -233,7 +233,7 @@ struct WorkingSessionError {
 #[derive(Debug, Clone)]
 pub struct WorkspaceRuntimeHealth {
     pub app_server_status: &'static str,
-    pub tui_proxy_status: &'static str,
+    pub hcodex_ingress_status: &'static str,
     pub runtime_readiness: &'static str,
     pub source: &'static str,
     pub last_checked_at: Option<String>,
@@ -244,7 +244,7 @@ impl WorkspaceRuntimeHealth {
     fn from_heartbeat(heartbeat: WorkspaceRuntimeHeartbeat) -> Self {
         Self {
             app_server_status: heartbeat.app_server_status,
-            tui_proxy_status: heartbeat.tui_proxy_status,
+            hcodex_ingress_status: heartbeat.hcodex_ingress_status,
             runtime_readiness: heartbeat.runtime_readiness,
             source: "owner_heartbeat",
             last_checked_at: Some(heartbeat.last_checked_at),
@@ -341,7 +341,7 @@ pub async fn build_workspace_views(
             last_used_at: record.metadata.last_codex_turn_at.clone(),
             conflict: false,
             app_server_status: runtime_status.app_server_status,
-            tui_proxy_status: runtime_status.tui_proxy_status,
+            hcodex_ingress_status: runtime_status.hcodex_ingress_status,
             runtime_readiness: runtime_status.runtime_readiness,
             runtime_health_source: runtime_status.source,
             heartbeat_last_checked_at: runtime_status.last_checked_at,
@@ -366,7 +366,7 @@ pub async fn build_workspace_views(
                     item.session_broken_reason.as_deref(),
                     &WorkspaceRuntimeHealth {
                         app_server_status: item.app_server_status,
-                        tui_proxy_status: item.tui_proxy_status,
+                        hcodex_ingress_status: item.hcodex_ingress_status,
                         runtime_readiness: item.runtime_readiness,
                         source: item.runtime_health_source,
                         last_checked_at: item.heartbeat_last_checked_at.clone(),
@@ -712,10 +712,10 @@ pub fn build_runtime_health(
             .iter()
             .map(|workspace| workspace.app_server_status),
     );
-    let tui_proxy_status = aggregate_running_status(
+    let hcodex_ingress_status = aggregate_running_status(
         workspaces
             .iter()
-            .map(|workspace| workspace.tui_proxy_status),
+            .map(|workspace| workspace.hcodex_ingress_status),
     );
     let runtime_readiness = aggregate_runtime_readiness(
         workspaces
@@ -763,7 +763,7 @@ pub fn build_runtime_health(
             })
             .count(),
         app_server_status,
-        tui_proxy_status,
+        hcodex_ingress_status,
         runtime_readiness,
         recovery_hint,
         runtime_owner,
@@ -782,7 +782,7 @@ pub async fn read_workspace_runtime_health(
             }
             WorkspaceRuntimeHealth {
                 app_server_status: "missing",
-                tui_proxy_status: "missing",
+                hcodex_ingress_status: "missing",
                 runtime_readiness: "unavailable",
                 source: "owner_pending",
                 last_checked_at: None,
@@ -794,7 +794,7 @@ pub async fn read_workspace_runtime_health(
         }
         None => WorkspaceRuntimeHealth {
             app_server_status: "missing",
-            tui_proxy_status: "missing",
+            hcodex_ingress_status: "missing",
             runtime_readiness: "unavailable",
             source: "owner_required",
             last_checked_at: None,
@@ -831,9 +831,9 @@ pub fn workspace_recovery_hint(
                 .to_owned(),
         );
     }
-    if runtime_status.tui_proxy_status != "running" {
+    if runtime_status.hcodex_ingress_status != "running" {
         return Some(
-            "TUI proxy is not ready. Run Repair Runtime for this workspace, or Reconcile Runtime Owner to rebuild proxy state."
+            "hcodex ingress is not ready. Run Repair Runtime for this workspace, or Reconcile Runtime Owner to rebuild ingress state."
                 .to_owned(),
         );
     }
@@ -1054,7 +1054,7 @@ mod tests {
             last_used_at: Some("2026-03-24T10:00:00.000Z".to_owned()),
             conflict: false,
             app_server_status: "running",
-            tui_proxy_status: "running",
+            hcodex_ingress_status: "running",
             runtime_readiness: "ready",
             runtime_health_source: "owner_heartbeat",
             heartbeat_last_checked_at: Some("2026-03-24T10:00:00.000Z".to_owned()),
@@ -1070,6 +1070,8 @@ mod tests {
         assert_eq!(value["binding_status"], "broken");
         assert_eq!(value["run_status"], "idle");
         assert_eq!(value["current_codex_thread_id"], "thr_current");
+        assert_eq!(value["hcodex_ingress_status"], "running");
+        assert!(value.get("tui_proxy_status").is_none());
         assert!(value.get("session_broken").is_none());
     }
 
@@ -1133,7 +1135,7 @@ mod tests {
                 last_used_at: None,
                 conflict: true,
                 app_server_status: "running",
-                tui_proxy_status: "running",
+                hcodex_ingress_status: "running",
                 runtime_readiness: "ready",
                 runtime_health_source: "owner_heartbeat",
                 heartbeat_last_checked_at: None,
@@ -1161,7 +1163,7 @@ mod tests {
                 last_used_at: None,
                 conflict: false,
                 app_server_status: "missing",
-                tui_proxy_status: "missing",
+                hcodex_ingress_status: "missing",
                 runtime_readiness: "unavailable",
                 runtime_health_source: "owner_pending",
                 heartbeat_last_checked_at: None,

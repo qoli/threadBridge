@@ -282,7 +282,7 @@ web 管理面中的 v1 action 以既有 lifecycle/control 語義為主：
 `ManagedWorkspaceView` 應同時暴露 workspace runtime heartbeat 的來源與最近一次檢查結果，至少包含：
 
 - `app_server_status`
-- `tui_proxy_status`
+- `hcodex_ingress_status`
 - `handoff_readiness`
 - `runtime_health_source`
   - `owner_heartbeat`

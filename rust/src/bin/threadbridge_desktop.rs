@@ -742,7 +742,7 @@ mod macos_app {
                 last_used_at: None,
                 conflict: false,
                 app_server_status: "running",
-                tui_proxy_status: "running",
+                hcodex_ingress_status: "running",
                 runtime_readiness: "ready",
                 runtime_health_source: "owner",
                 heartbeat_last_checked_at: None,
