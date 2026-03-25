@@ -3,6 +3,7 @@ use serde::Serialize;
 use threadbridge_rust::codex::{CodexRunner, CodexWorkspace};
 use threadbridge_rust::config::load_runtime_config;
 use threadbridge_rust::hcodex_runtime;
+use threadbridge_rust::hcodex_ws_bridge;
 use threadbridge_rust::logging::init_json_logs;
 use threadbridge_rust::workspace::{ensure_workspace_runtime, validate_seed_template};
 use tokio::fs;
@@ -33,6 +34,9 @@ struct ProbeReport {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if hcodex_ws_bridge::maybe_run_from_args(std::env::args_os().skip(1).collect()).await? {
+        return Ok(());
+    }
     if hcodex_runtime::maybe_run_from_args(std::env::args_os().skip(1).collect()).await? {
         return Ok(());
     }

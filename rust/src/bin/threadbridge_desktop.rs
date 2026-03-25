@@ -22,6 +22,7 @@ mod macos_app {
     use threadbridge_rust::bot_runner::spawn_bot_runtime_from_env_with_runtimes;
     use threadbridge_rust::config::load_runtime_config;
     use threadbridge_rust::hcodex_runtime;
+    use threadbridge_rust::hcodex_ws_bridge;
     use threadbridge_rust::logging::init_json_logs;
     use threadbridge_rust::management_api::{
         ManagedWorkspaceView, ManagementApiHandle, RuntimeHealthView, SetupStateView,
@@ -95,6 +96,9 @@ mod macos_app {
                 .build()
                 .expect("tokio runtime"),
         );
+        if runtime.block_on(hcodex_ws_bridge::maybe_run_from_args(args.clone()))? {
+            return Ok(());
+        }
         if runtime.block_on(hcodex_runtime::maybe_run_from_args(args.clone()))? {
             return Ok(());
         }

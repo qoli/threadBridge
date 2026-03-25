@@ -10,9 +10,24 @@ use tokio::process::Command;
 use url::Url;
 
 use crate::app_server_runtime::{WorkspaceRuntimeState, issue_hcodex_launch_ticket};
-use crate::hcodex_ws_bridge::prepare_codex_remote_ws_url;
+use crate::hcodex_ws_bridge::is_codex_safe_remote_ws_url;
 use crate::repository::ThreadRepository;
 use crate::workspace_status::{record_hcodex_launcher_ended, record_hcodex_launcher_started};
+
+macro_rules! hcodex_debug {
+    ($($arg:tt)*) => {
+        if hcodex_debug_enabled() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
+fn hcodex_debug_enabled() -> bool {
+    matches!(
+        std::env::var("THREADBRIDGE_HCODEX_DEBUG").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+    )
+}
 
 pub async fn maybe_run_from_args(args: Vec<OsString>) -> Result<bool> {
     let Some(command) = args.first().and_then(|value| value.to_str()) else {
@@ -240,17 +255,44 @@ async fn ensure_hcodex_runtime_inner(
 async fn run_hcodex_session(config: &RunHcodexSessionCli) -> Result<()> {
     // resolve-hcodex-launch returns an ingress launch URL, which may carry
     // sideband state like launch_ticket in the query string. Upstream Codex
-    // only accepts bare ws://host:port endpoints for --remote, so we bridge
-    // non-canonical launch URLs to a local loopback websocket before spawning.
-    //
-    // The bridge is also responsible for keeping the first upstream ingress
-    // session alive across any short local reconnects. launch_ticket is
-    // intentionally single-use, so a reconnect must reattach to the same
-    // bridged upstream session instead of dialing launch_ws_url again.
-    // Do not "simplify" this by passing launch_ws_url directly to Codex.
-    let prepared_remote = prepare_codex_remote_ws_url(&config.launch_ws_url).await?;
-    let codex_remote_ws_url = prepared_remote.codex_remote_ws_url;
-    let bridge_abort_handle = prepared_remote.bridge_abort_handle;
+    // only accepts bare ws://host:port endpoints for --remote. Keep the
+    // compatibility boundary here: launch URLs must be adapted through the
+    // standalone hcodex-ws-bridge process before upstream Codex sees them.
+    let current_exe =
+        std::env::current_exe().context("failed to resolve current threadbridge executable")?;
+    let (codex_remote_ws_url, mut bridge_child, bridge_ready_file) =
+        if is_codex_safe_remote_ws_url(&config.launch_ws_url) {
+            (config.launch_ws_url.clone(), None, None)
+        } else {
+            let ready_file = bridge_ready_file_path();
+            let mut bridge_child = Command::new(&current_exe)
+                .arg("hcodex-ws-bridge")
+                .arg("--upstream")
+                .arg(&config.launch_ws_url)
+                .arg("--ready-file")
+                .arg(&ready_file)
+                .current_dir(&config.workspace)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .with_context(|| {
+                    format!("failed to spawn {} hcodex-ws-bridge", current_exe.display())
+                })?;
+            let codex_remote_ws_url =
+                wait_for_bridge_ready_file(&ready_file)
+                    .await
+                    .map_err(|error| {
+                        let _ = bridge_child.start_kill();
+                        error
+                    })?;
+            (codex_remote_ws_url, Some(bridge_child), Some(ready_file))
+        };
+    let codex_command_line =
+        format_codex_command_line(&config.codex_bin, &codex_remote_ws_url, &config.codex_args);
+    hcodex_debug!("hcodex: launch ws url {}", config.launch_ws_url);
+    hcodex_debug!("hcodex: codex remote ws url {}", codex_remote_ws_url);
+    hcodex_debug!("hcodex: exec {codex_command_line}");
     let mut command = Command::new(&config.codex_bin);
     command
         .current_dir(&config.workspace)
@@ -263,8 +305,8 @@ async fn run_hcodex_session(config: &RunHcodexSessionCli) -> Result<()> {
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            if let Some(abort_handle) = bridge_abort_handle.as_ref() {
-                abort_handle.abort();
+            if let Some(bridge_child) = bridge_child.as_mut() {
+                let _ = bridge_child.start_kill();
             }
             return Err(error)
                 .with_context(|| format!("failed to spawn {}", config.codex_bin.display()));
@@ -272,23 +314,21 @@ async fn run_hcodex_session(config: &RunHcodexSessionCli) -> Result<()> {
     };
     let child_pid = child.id().context("spawned codex child is missing pid")?;
     let shell_pid = std::process::id();
-    let child_command = format!(
-        "{} --remote {}",
-        config.codex_bin.display(),
-        codex_remote_ws_url
-    );
     record_hcodex_launcher_started(
         &config.workspace,
         &config.thread_key,
         shell_pid,
         child_pid,
-        &child_command,
+        &codex_command_line,
     )
     .await?;
 
     let status = child.wait().await.context("failed waiting for codex child");
-    if let Some(abort_handle) = bridge_abort_handle.as_ref() {
-        abort_handle.abort();
+    if let Some(bridge_child) = bridge_child.as_mut() {
+        let _ = bridge_child.start_kill();
+    }
+    if let Some(ready_file) = bridge_ready_file.as_deref() {
+        let _ = fs::remove_file(ready_file).await;
     }
     let status = status?;
     record_hcodex_launcher_ended(&config.workspace, &config.thread_key, shell_pid, child_pid)
@@ -300,6 +340,49 @@ async fn run_hcodex_session(config: &RunHcodexSessionCli) -> Result<()> {
         .await?;
 
     std::process::exit(status.code().unwrap_or(1));
+}
+
+fn bridge_ready_file_path() -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!("threadbridge-hcodex-ws-bridge-{nanos}.json"))
+}
+
+async fn wait_for_bridge_ready_file(path: &Path) -> Result<String> {
+    for _ in 0..40 {
+        if let Ok(contents) = fs::read_to_string(path).await {
+            let payload: Value = serde_json::from_str(&contents)
+                .with_context(|| format!("invalid bridge ready payload in {}", path.display()))?;
+            if let Some(ws_url) = payload.get("ws_url").and_then(Value::as_str) {
+                if !ws_url.trim().is_empty() {
+                    return Ok(ws_url.to_owned());
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    bail!("hcodex: local websocket bridge did not become ready")
+}
+
+fn format_codex_command_line(
+    codex_bin: &Path,
+    codex_remote_ws_url: &str,
+    codex_args: &[OsString],
+) -> String {
+    let mut parts = Vec::with_capacity(codex_args.len() + 3);
+    parts.push(shell_quote(&codex_bin.display().to_string()));
+    parts.push("--remote".to_owned());
+    parts.push(shell_quote(codex_remote_ws_url));
+    for arg in codex_args {
+        parts.push(shell_quote(&arg.to_string_lossy()));
+    }
+    parts.join(" ")
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 #[derive(Debug, Clone)]
@@ -324,9 +407,8 @@ async fn resolve_hcodex_launch(config: &ResolveHcodexLaunchCli) -> Result<()> {
         .context("hcodex: bound Telegram thread is missing current_codex_thread_id")?;
     let ticket = issue_hcodex_launch_ticket(&config.workspace, &selected.thread_key).await?;
     // This URL is for the hcodex ingress handshake, not a codex --remote URL.
-    // run-hcodex-session is responsible for bridging it to a bare ws://host:port
-    // endpoint before spawning upstream Codex and for preserving that first
-    // upstream ingress session across local reconnects.
+    // run-hcodex-session is responsible for bridging it to a local canonical
+    // ws://host:port/ endpoint before spawning upstream Codex.
     let launch_ws_url = build_launch_ws_url(hcodex_ws_url, &ticket)?;
     println!(
         "{}\t{}\t{}",

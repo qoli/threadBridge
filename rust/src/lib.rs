@@ -7,7 +7,7 @@ pub mod config;
 pub mod execution_mode;
 pub mod hcodex_ingress;
 pub mod hcodex_runtime;
-mod hcodex_ws_bridge;
+pub mod hcodex_ws_bridge;
 pub mod image_artifacts;
 pub mod interactive;
 pub mod local_control;

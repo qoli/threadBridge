@@ -122,7 +122,8 @@ observer 已不是純構想，而是已存在的 read-side runtime。
 
 - `ensure-hcodex-runtime`
 - `resolve-hcodex-launch`
-- `hcodex_ws_url + launch_ticket` 主路徑
+- `hcodex_ws_url + launch_ticket` ingress launch path
+- local `hcodex-ws-bridge` compatibility boundary
 - `run-hcodex-session`
 - local session claim / launcher lifecycle 記錄
 - live request-response injection

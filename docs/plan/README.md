@@ -119,10 +119,13 @@
   - observer 已不再直接做 Telegram interactive glue，而是發出 shared runtime interaction event
   - 但 public vocabulary、transport-neutral observer contract、以及 broader observability 收斂仍未完成
 - [post-cli-runtime-cleanup.md](/Volumes/Data/Github/threadBridge/docs/plan/post-cli-runtime-cleanup.md)
-  - `hcodex` launch contract 已開始從 Python resolver + path sideband + ws bridge 收斂到 canonical `hcodex_ws_url + launch_ticket`
-  - `resolve_hcodex_launch.py` 與 `hcodex-ws-bridge` 已退出 runtime surface
+  - CLI 時代的大部分 launch / vocabulary cleanup 已開始落地
+  - 但 `hcodex` launch contract 仍保留 `launch_ticket + local hcodex-ws-bridge` compatibility boundary，不能再被誤判成可直接刪除
   - `workspace_status` 已補上 legacy `shared-runtime/*` / `local-session.json` migrate-read 與 canonical write-path 測試
   - 但 `workspace_status` / public naming / legacy compatibility policy 的 broader 收尾仍未完成
+- [hcodex-launch-contract.md](/Volumes/Data/Github/threadBridge/docs/plan/hcodex-launch-contract.md)
+  - 記錄 `hcodex` launch URL、local bridge、upstream Codex `--remote` 的實際契約
+  - 明確固定兩個已修回歸：`invalid remote address ...?launch_ticket=...` 與 `failed to connect to remote app server`
 
 ## 純草稿
 
