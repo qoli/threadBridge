@@ -46,6 +46,8 @@
 
 角色與責任邊界現在以 [runtime-architecture.md](../runtime-control/runtime-architecture.md) 為 current architecture 主文檔；本文件保留高層 owner/runtime contract 的背景、方向、與收斂脈絡。
 
+owner 所管理的 backend plane today reality，則由 [app-server-ws-backend.md](app-server-ws-backend.md) 補充說明；本文件不重複展開 backend 子系統的完整 current-state 描述。
+
 它處理：
 
 - runtime authority 目前固定在哪一層
