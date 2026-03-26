@@ -250,6 +250,8 @@
   - 作為 owner/runtime boundary 的高層背景與收斂歷程，不再作為角色邊界的唯一主文檔
 - `docs/plan/README.md`
   - 回答 repo 今天有哪些責任面、各自掛在哪個 canonical role、以及哪些文檔屬於 shared spec 或歷史架構
+- `runtime-responsibility-drift-audit`
+  - 記錄 current code 已確認的 responsibility drift hotspots，不取代本文件的 normative role boundary
 - `runtime-transport-abstraction`
   - 記錄遠期 core / adapter 抽象化方向，不取代 current architecture
 - `app-server-ws-mirror-observer`

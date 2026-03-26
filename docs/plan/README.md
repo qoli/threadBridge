@@ -66,6 +66,12 @@
   - current architecture 的角色與責任主文檔
   - 固定 `desktop runtime owner`、shared `runtime_control`、observer、`hcodex`、Telegram adapter、management / desktop surface 的邊界
   - 明確列出目前仍存在的 temporary exception，避免未來修 bug 又回到 CLI 時代的止血式修法
+- [runtime-responsibility-drift-audit.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-responsibility-drift-audit.md)
+  - owner role: `runtime_control`
+  - doc kind: `plan`
+  - depends_on: [runtime-architecture.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-architecture.md)
+  - 以 `runtime-architecture` 為中心的 current-code drift audit
+  - 目前已確認 4 個 responsibility drift 功能點，其中 1 個尚未被主文檔列進 temporary exception
 - [runtime-state-machine.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-state-machine.md)
   - owner role: `runtime_control`
   - doc kind: `spec`
