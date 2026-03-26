@@ -18,6 +18,7 @@
 - today code 中與它相關的責任仍散落在 `codex.rs`、`app_server_runtime.rs`、`app_server_observer.rs`、`hcodex_ingress.rs`、`runtime_owner.rs`、`runtime_control.rs`
 - `observer` attach 仍建立在 `thread/resume` attach 語義上，而不是正式 upstream subscribe API
 - backend plane 與 shared runtime semantics 的長期 API 形狀仍未收斂成獨立 contract
+- 原生 busy truth 雖然天然屬於 backend，但 `threadBridge` today 仍未完全透過 backend API 取得 busy authority
 
 ## 問題
 
@@ -59,6 +60,12 @@
 - Telegram / management UI 的完整產品規格
 - `session-lifecycle`、`runtime-state-machine`、`runtime-protocol` 的完整語義重寫
 - 立即展開 backend process 抽離或跨進程重構步驟
+
+這份文檔新增固定一條收斂方向：
+
+- `app-server-ws-backend` 應擁有 Codex 原生 busy truth
+- `threadBridge` 應只翻譯這個 truth 到自己的產品層 gate
+- current code 尚未完全如此，但後續不應再把 derived snapshot 當成 Codex native busy authority
 
 ## 當前代碼狀態
 
@@ -157,6 +164,40 @@ observer 消費 backend，但不是 backend owner。
 
 這一層是在 backend plane 之上表達 `threadBridge` product/runtime semantics，不是 backend plane 本身。
 
+### 7. backend native busy truth
+
+原生 `codex app-server ws` 下，busy truth 應只關心 thread-scoped execution truth，而不是 Telegram 或 `threadBridge` 自己的產品層 gate。
+
+應固定的 backend native truth 最小集合是：
+
+- `thread_id`
+- `is_busy`
+- `active_turn_id`
+- `interruptible`
+- `phase`
+
+這裡的 `phase` 只應描述 Codex 原生 turn lifecycle，例如：
+
+- 是否有 active turn
+- turn 是否仍在執行
+- 是否已進入可終止或不可終止的末段
+
+它不應直接承擔：
+
+- Telegram thread busy reject
+- 圖片先保存但不分析
+- `STOP 並插入發言`
+- `序列發言`
+- adoption pending
+
+比較合理的長期 contract 是：
+
+- backend 提供 thread-scoped busy 查詢
+- backend 也提供 busy / idle / active-turn 變化事件
+- `threadBridge` 再把這個 truth 翻譯成各 surface 的產品層 gate
+
+若 backend busy API 不可用，應視為 backend lifecycle / runtime error；這不是 `threadBridge` 退回 derived snapshot 自行判斷 busy truth 的場景。
+
 ## 責任邊界
 
 ### `app-server-ws-backend` today 應被理解成什麼
@@ -164,6 +205,7 @@ observer 消費 backend，但不是 backend owner。
 - `threadBridge` 當前實際依賴的核心 Codex runtime backend plane
 - 所有 Codex client communication 共同匯入的 backend contract
 - workspace-scoped runtime substrate，而不是單次 turn helper
+- Codex native busy truth 的長期 authority
 
 ### `desktop runtime owner` 與它的關係
 
@@ -176,6 +218,7 @@ observer 消費 backend，但不是 backend owner。
 - `runtime_control` 不擁有 backend plane
 - 它消費 backend plane，來承接 `threadBridge` 自己的 shared control semantics
 - session bind / verify / repair 屬於 shared runtime semantics，不等於 backend plane 本體
+- busy gate 若屬於產品層控制，也應建立在 backend native truth 之上，而不是重新發明 Codex running truth
 
 ### observer / ingress 與它的關係
 

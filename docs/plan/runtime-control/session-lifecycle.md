@@ -79,6 +79,8 @@
 - Telegram 在已綁定 thread 收到文字或圖片分析請求
 - 使用 `current_codex_thread_id`
 - 但只有在 canonical `binding_status=healthy` 且存在可用 current session id 時，才能把它視為可直接 resume 的 continuity
+- Telegram Busy Gate 也只應翻譯 `current_codex_thread_id` 的 backend busy truth
+- `tui_active_codex_thread_id` 不應自動混進 Telegram gate；它屬於 TUI runtime state，而不是 Telegram canonical continuity
 - 透過共享 workspace daemon 對同一個 Codex thread 發 turn
 
 ### `/new_session`

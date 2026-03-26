@@ -34,6 +34,12 @@
 - pending image batch 的顯式取消 control
   - 使用者若誤傳圖片，目前只能放著待分析，缺少直接丟棄這批圖片的 Telegram 動作
 
+目前新增固定的一條收斂方向是：
+
+- Codex native busy truth 應回到 `app-server-ws-backend`
+- `threadBridge` 不應再把 workspace snapshot / shared status / continuity 狀態拼成單一 Codex busy authority
+- Telegram Busy Gate 應只翻譯 backend truth 到產品層 reject / control / prompt
+
 目前已知邊界：
 
 - `teloxide` 預設仍按 `ChatId` 分發 update；在 forum topic 場景下，同一個 supergroup 內的 topic 共享同一個 chat id
@@ -43,6 +49,12 @@
   - `bot_turn_started` 會把 session 狀態寫成 `turn_running`
   - 雖然目前已補上 startup reconciliation，但仍沒有完整的 lease / heartbeat owner 模型
   - 也就是說，「bot crash 後永久卡死」這個最糟情況已開始有修復路徑，但 stale busy recovery 的語義仍未完全收斂
+
+也要明確承認一個 today 問題：
+
+- 目前 Busy Gate 仍是 CLI 架構遷移後逐步拼接出的 composite gate
+- 它混合了 app-server active turn、workspace snapshot、continuity pointer、與 Telegram 產品層行為
+- 長期不應繼續把這些混成同一個 Codex busy source of truth
 
 ## 背景
 
@@ -76,9 +88,24 @@
 
 這裡的「顯示 thread 的 busy 狀態」不再包含 title suffix。
 
+這份文檔新增固定一條分層：
+
+- backend native truth
+  - 只回答 `thread_id` 是否 busy、目前 active `turn_id` 是誰、是否可 interrupt、目前 turn phase 是什麼
+- `threadBridge` product gate
+  - 決定 Telegram 要不要 reject
+  - 決定圖片是暫存還是立即分析
+  - 決定 `/stop`、queue、或其他 follow-up control 如何呈現
+
 ## 建議方向
 
 第一階段不做排隊，先做硬性阻止。
+
+但 Busy Gate 的 authority 應改成：
+
+- 先以 `current_codex_thread_id` 查 backend native busy truth
+- 再由 Telegram adapter / shared runtime 把這個 truth 翻譯成 reject / control / prompt
+- 而不是先看 workspace snapshot，再倒推出 Codex 應該正在跑
 
 建議語義：
 
@@ -93,6 +120,19 @@
 - busy gate 與 title status 應明確分層：
   - busy gate 負責 runtime blocking
   - title 只承載相對穩定的 durable state
+
+也要固定以下幾條約束：
+
+- Telegram Busy Gate 只翻譯 `current_codex_thread_id` 的 backend busy truth
+- `tui_active_codex_thread_id` 不應自動混進 Telegram Busy Gate 的 truth source
+- workspace shared status / session snapshot 仍可作 observability、debug、兼容資料
+- 但它們不應再被描述成 Codex native busy authority
+
+如果 backend busy API 不可用，語義應是：
+
+- 這代表 `app-server-ws-backend` 已發生 lifecycle / runtime 問題
+- Telegram 不應假裝知道 busy 或 idle
+- 這時應回 runtime error / degraded / unavailable，而不是 fallback 到 derived snapshot 猜測 truth
 
 同時，busy gate 不能只考慮「正常完成時如何釋放」，也要定義 crash recovery。
 
