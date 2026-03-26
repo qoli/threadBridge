@@ -37,6 +37,8 @@ Still in progress at the plan level:
 
 If docs and implementation differ, treat the code as authoritative. Plan maturity is tracked in [docs/plan/README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md).
 
+For the maintainer-facing plan registry, grouped by maturity status and annotated with owner-role metadata, see [docs/plan/README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md).
+
 ## Runtime Model
 
 The current runtime is organized like this:
@@ -147,6 +149,8 @@ The intended user flow is:
 
 The maintained slash-command reference lives in [docs/telegram-slash-commands.md](/Volumes/Data/Github/threadBridge/docs/telegram-slash-commands.md).
 
+For the maintainer-facing registry of current responsibility areas across Telegram, management, `hcodex`, and shared runtime specs, see [docs/plan/README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md).
+
 Current command groups:
 
 - control chat: `/start`, `/add_workspace <absolute-path>`, `/restore_workspace`
@@ -243,6 +247,8 @@ The local management API and browser UI currently provide:
 - transcript inspection
 - workspace execution mode changes
 
+For the full maintainer-facing design registry, including current ownership, partial specs, and historical architecture, see [docs/plan/README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md).
+
 On macOS, the tray menu also exposes:
 
 - one submenu per managed workspace
@@ -271,7 +277,7 @@ cargo run --bin threadbridge_desktop
 
 ## Plans And Docs
 
-- plan index: [docs/plan/README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md)
+- plan registry with status groups and owner-role metadata: [docs/plan/README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md)
 - maintainer guide: [AGENTS.md](/Volumes/Data/Github/threadBridge/AGENTS.md)
 - workspace runtime appendix source: [templates/AGENTS.md](/Volumes/Data/Github/threadBridge/templates/AGENTS.md)
 
