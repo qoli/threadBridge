@@ -61,6 +61,8 @@
 
 目前可以沿用的切法：
 
+- `runtime-architecture`
+  - current architecture 的 canonical role boundary 與 temporary exception
 - `session-lifecycle`
   - thread / workspace / Codex thread 的生命週期與控制操作
 - `runtime-state-machine`
@@ -76,6 +78,7 @@
 
 新增文檔前，先問自己：
 
+- 是在定義 canonical role boundary，還是在補某個子系統細節？
 - 這份 plan 是在定義 thread state，還是在定義 UI 呈現？
 - 是在定義 lifecycle，還是在定義 delivery？
 - 是在定義 runtime core，還是在定義 Telegram adapter？
@@ -245,9 +248,31 @@
 
 例如：
 
+- `runtime-architecture` 應定義 canonical role boundary 與 temporary exception
 - `runtime-state-machine` 應定義 canonical state axes
 - `message-queue-and-status-delivery` 應定義 outbound lane
 - `topic-title-status` 不應再自創另一套 thread 主狀態 enum
+
+若新文檔涉及：
+
+- 哪個模組是 owner
+- 哪個 surface 只是 adapter
+- 哪些跨層依賴是 temporary exception
+
+應先引用 `runtime-architecture.md`，不要在新文檔內重複發明另一套角色名稱。
+
+## Temporary Exception 規則
+
+若 current code 仍暫時違反主文檔，不應只把理由留在 commit 訊息、PR 描述或零散 plan。
+
+應優先採用：
+
+- 在主文檔列出 `暫時例外`
+- 說明現況
+- 說明為什麼它不是 canonical architecture
+- 說明退出方向
+
+這樣後續遇到回歸時，維護者才不會把 temporary exception 誤當成新的正常模式。
 
 ## 術語與命名要求
 

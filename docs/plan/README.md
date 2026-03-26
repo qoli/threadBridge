@@ -9,6 +9,7 @@
 
 - 先看「已落地 / 部分落地 / 純草稿」區分，不要把所有文件都當成同一成熟度。
 - 再看「主規格」與「依賴關係」。
+- 若是在判斷角色邊界、ownership、或某個 bug 應該落在哪一層，先看 [runtime-architecture.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-architecture.md)。
 - 單篇文檔內的 `目前進度` 是這次整理後的最新狀態註記。
 
 ## 已落地
@@ -32,6 +33,10 @@
 
 ## 部分落地
 
+- [runtime-architecture.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-architecture.md)
+  - current architecture 的角色與責任主文檔
+  - 固定 `desktop runtime owner`、shared `runtime_control`、observer、`hcodex`、Telegram adapter、management / desktop surface 的邊界
+  - 明確列出目前仍存在的 temporary exception，避免未來修 bug 又回到 CLI 時代的止血式修法
 - [codex-plan-mirror.md](/Volumes/Data/Github/threadBridge/docs/plan/codex-plan-mirror.md)
   - `codex plan` mirror 子規格
   - upstream `item/plan/delta` / finalized `plan` item 已確認存在
@@ -114,8 +119,8 @@
   - 已補記一個明確缺口：`codex mirror -> Telegram` 的 draft message 尚未實作 heartbeat，因此長時間 draft 仍會自動消失
   - 但 outbound queue、完整 control lifecycle、artifact 類型與集中化 config 仍未收斂
 - [owner-runtime-contract.md](/Volumes/Data/Github/threadBridge/docs/plan/owner-runtime-contract.md)
-  - owner/runtime boundary 的總草稿
-  - `desktop runtime owner`、shared `runtime_control`、observer projection、`hcodex`、Telegram / management surface 的責任邊界已在代碼中成立
+  - owner/runtime boundary 的高層背景與收斂草稿
+  - 角色與責任邊界現在以 `runtime-architecture.md` 為主文檔
   - 但 `hcodex` 長期 contract、observer attach contract、與 transport-neutral protocol 仍未完全收斂
 - [app-server-ws-mirror-observer.md](/Volumes/Data/Github/threadBridge/docs/plan/app-server-ws-mirror-observer.md)
   - local/TUI mirror intake 已從 `hcodex ingress` 拆到獨立 app-server ws observer
@@ -164,14 +169,16 @@
 
 ## 主規格
 
+- [runtime-architecture.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-architecture.md)
+  - 目標是當前架構的角色與責任主文檔
 - [runtime-state-machine.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-state-machine.md)
   - 目標是未來的狀態語義主規格
 - [message-queue-and-status-delivery.md](/Volumes/Data/Github/threadBridge/docs/plan/message-queue-and-status-delivery.md)
   - 目標是 Telegram delivery 主規格
 
-目前這兩份都還沒有完全變成實際代碼的唯一 source of truth。
+目前這三份都還沒有完全變成實際代碼的唯一 source of truth。
 
-其中 `runtime-state-machine` 已開始同時影響 read-side state axes 與 repository 內部的 canonical transition path，但對外 event coverage / observability / full surface adoption 仍未完全收斂。
+其中 `runtime-architecture` 先固定 current architecture 的角色邊界與 temporary exception；`runtime-state-machine` 已開始同時影響 read-side state axes 與 repository 內部的 canonical transition path，但對外 event coverage / observability / full surface adoption 仍未完全收斂。
 
 ## 依賴關係
 
@@ -183,8 +190,10 @@
   - 把舊的本地 CLI 狀態接到同一份 busy / title 模型
 - `session-level-mirror-and-readiness`
   - 描述 local/TUI mirror、adoption、與 idle/free readiness 的現行模型
+- `runtime-architecture`
+  - 固定 current architecture 的角色與責任邊界
 - `owner-runtime-contract`
-  - 固定 owner authority、observer、`hcodex` 與 adapter 的高層責任邊界
+  - 提供 owner/runtime boundary 的高層背景與收斂脈絡
 - `hcodex-pre-refactor-history`
   - 記錄重構前 `hcodex` 的 shell / Python lifecycle 閉環背景
 - `post-cli-runtime-cleanup`

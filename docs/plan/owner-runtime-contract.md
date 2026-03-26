@@ -44,6 +44,8 @@
 
 這份文檔是 owner/runtime boundary 的總草稿，採用「描述現在 + 指出未來應如何演化」的寫法。
 
+角色與責任邊界現在以 [runtime-architecture.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-architecture.md) 為 current architecture 主文檔；本文件保留高層 owner/runtime contract 的背景、方向、與收斂脈絡。
+
 它處理：
 
 - runtime authority 目前固定在哪一層
