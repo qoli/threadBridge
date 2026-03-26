@@ -14,7 +14,7 @@
 
 目前尚未完成的部分：
 
-- 少量跨層捷徑仍存在，尚未完全退出 current code path
+- 少量跨層捷徑仍存在，但 `management / desktop control` 對 Telegram runtime 的硬依賴，以及 Telegram 對 `management_api` launch/view helper 的反向依賴，已在 2026-03-26 收斂完成
 - `runtime_protocol` 雖已形成共享 view / event 語言，但仍未成為所有 control surface 的完整唯一 vocabulary
 - 舊 CLI / hook 時代遺留的止血式修法心智，仍可能在 bugfix 時重新長回 codebase
 
@@ -219,24 +219,6 @@
   - observer 仍碰到 adapter-specific final reply 組裝語言
 - 退出方向：
   - 將 final text composition 收斂到 shared projection helper，或讓 adapter 在消費 observer 結果時自行組裝
-
-### 2. Telegram thread flow 仍直接依賴 management API 的 launch/view 型別與 helper
-
-- 現況：
-  - `rust/src/telegram_runtime/thread_flow.rs` 直接使用 `management_api::{HcodexLaunchConfigView, WorkspaceExecutionModeView, hcodex_launch_command, launch_hcodex_via_terminal}`
-- 問題：
-  - Telegram adapter 直接吃 management surface 的 transport-facing model 與 desktop helper
-- 退出方向：
-  - 將共享 launch / mode model 抽回 shared runtime semantics，讓 Telegram 與 management surface 各自做最薄 mapping
-
-### 3. local control 仍直接依賴 Telegram runtime helper
-
-- 現況：
-  - `rust/src/local_control.rs` 直接使用 `telegram_runtime::{AppState, send_scoped_message, status_sync, thread_id_to_i32}`
-- 問題：
-  - local management path 仍透過 Telegram adapter helper 完成部分 side effect
-- 退出方向：
-  - 將 Telegram side effect 收斂為明確 bridge / adapter interface，避免 local control 直接拿 Telegram runtime 當內部工具箱
 
 ## 與其他計劃的關係
 

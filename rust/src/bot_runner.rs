@@ -7,7 +7,7 @@ use tracing::{info, warn};
 use crate::app_server_runtime::WorkspaceRuntimeManager;
 use crate::config::{AppConfig, load_app_config, load_optional_telegram_config};
 use crate::hcodex_ingress::HcodexIngressManager;
-use crate::local_control::LocalControlHandle;
+use crate::local_control::TelegramControlBridgeHandle;
 use crate::management_api::{ManagementApiHandle, TelegramPollingState};
 use crate::runtime_control::RuntimeOwnershipMode;
 use crate::telegram_runtime::{
@@ -55,7 +55,10 @@ async fn spawn_bot_runtime_from_state(
         .set_telegram_polling_state(TelegramPollingState::Active)
         .await;
     management_api
-        .set_local_control(Some(LocalControlHandle::new(bot.clone(), state.clone())))
+        .set_telegram_bridge(Some(TelegramControlBridgeHandle::new(
+            bot.clone(),
+            state.repository.clone(),
+        )))
         .await;
 
     match reconcile_stale_bot_busy_sessions(&state).await {
@@ -107,7 +110,7 @@ async fn spawn_bot_runtime_from_state(
         dispatcher_management_api
             .set_telegram_polling_state(TelegramPollingState::Disconnected)
             .await;
-        dispatcher_management_api.set_local_control(None).await;
+        dispatcher_management_api.set_telegram_bridge(None).await;
     });
 
     Ok(BotRuntimeHandle { bot, state })

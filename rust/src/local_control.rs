@@ -1,83 +1,49 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use teloxide::prelude::*;
 use teloxide::types::{MessageId, ThreadId};
 
-use crate::repository::{LogDirection, ThreadRecord};
-use crate::runtime_control::{RuntimeControlContext, WorkspaceAddResolution};
-use crate::telegram_runtime::{AppState, send_scoped_message, status_sync, thread_id_to_i32};
+use crate::repository::{ThreadRecord, ThreadRepository, ThreadStatus};
+use crate::telegram_runtime::{send_scoped_message, status_sync, thread_id_to_i32};
 
 #[derive(Clone)]
-pub struct LocalControlHandle {
+pub struct TelegramControlBridgeHandle {
     bot: Bot,
-    control: RuntimeControlContext,
+    repository: ThreadRepository,
 }
 
 #[derive(Debug, Clone)]
-pub struct CreatedThread {
-    pub record: ThreadRecord,
+pub struct CreatedTelegramThread {
+    pub chat_id: i64,
+    pub message_thread_id: i32,
     pub title: String,
 }
 
-#[derive(Debug, Clone)]
-pub enum AddWorkspaceOutcome {
-    Created(ThreadRecord),
-    Existing(ThreadRecord),
-}
-
-impl AddWorkspaceOutcome {
-    pub fn record(&self) -> &ThreadRecord {
-        match self {
-            Self::Created(record) | Self::Existing(record) => record,
-        }
+impl TelegramControlBridgeHandle {
+    pub fn new(bot: Bot, repository: ThreadRepository) -> Self {
+        Self { bot, repository }
     }
 
-    pub fn created(&self) -> bool {
-        matches!(self, Self::Created(_))
-    }
-}
-
-impl LocalControlHandle {
-    pub fn new(bot: Bot, state: AppState) -> Self {
-        Self {
-            bot,
-            control: state.control.clone(),
-        }
-    }
-
-    pub async fn create_thread(&self, title: Option<String>) -> Result<CreatedThread> {
+    pub async fn create_workspace_thread(
+        &self,
+        title: Option<String>,
+        origin: &str,
+    ) -> Result<CreatedTelegramThread> {
         let main_thread = self
-            .control
             .repository
             .find_main_thread()
             .await?
-            .context("Control chat is not ready yet. Send /start to the bot from the target Telegram chat first.")?;
+            .context(
+                "Control chat is not ready yet. Send /start to the bot from the target Telegram chat first.",
+            )?;
         let title = title
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| format!("Thread {}", chrono::Local::now().format("%m-%d %H:%M")));
         let topic = self
             .bot
-            .create_forum_topic(ChatId(main_thread.metadata.chat_id), title.clone())
-            .await?;
-        let record = self
-            .control
-            .repository
-            .create_thread(
-                main_thread.metadata.chat_id,
-                thread_id_to_i32(topic.thread_id),
-                topic.name.clone(),
-            )
-            .await?;
-        self.control
-            .repository
-            .append_log(
-                &record,
-                LogDirection::System,
-                "Telegram thread created from local management UI.",
-                None,
-            )
+            .create_forum_topic(ChatId(main_thread.metadata.chat_id), title)
             .await?;
         send_scoped_message(
             &self.bot,
@@ -90,242 +56,66 @@ impl LocalControlHandle {
             &self.bot,
             ChatId(main_thread.metadata.chat_id),
             Some(topic.thread_id),
-            "Thread created from local management UI.",
+            format!("Thread created from {origin}."),
         )
         .await?;
-        Ok(CreatedThread {
-            record,
+        Ok(CreatedTelegramThread {
+            chat_id: main_thread.metadata.chat_id,
+            message_thread_id: thread_id_to_i32(topic.thread_id),
             title: topic.name,
         })
     }
 
-    pub async fn create_thread_and_bind(
+    pub async fn notify_workspace_bound(
         &self,
-        title: Option<String>,
-        workspace_cwd: &str,
-    ) -> Result<ThreadRecord> {
-        let created = self.create_thread(title).await?;
-        self.bind_workspace(&created.record.metadata.thread_key, workspace_cwd)
-            .await
+        record: &ThreadRecord,
+        workspace_path: &Path,
+        source: &'static str,
+    ) -> Result<()> {
+        let Some(message_thread_id) = record.metadata.message_thread_id else {
+            return Ok(());
+        };
+        send_scoped_message(
+            &self.bot,
+            ChatId(record.metadata.chat_id),
+            Some(ThreadId(MessageId(message_thread_id))),
+            format!(
+                "Bound workspace: `{}`\n\nFor the managed local TUI path in this workspace, run:\n`{}/.threadbridge/bin/hcodex`",
+                workspace_path.display(),
+                workspace_path.display()
+            ),
+        )
+        .await?;
+        let _ = status_sync::refresh_thread_topic_title(&self.bot, &self.repository, record, source)
+            .await;
+        Ok(())
     }
 
-    pub async fn add_workspace(&self, workspace_cwd: &str) -> Result<AddWorkspaceOutcome> {
-        let workspace_path = resolve_workspace_argument(workspace_cwd).await?;
-        match self
-            .control
-            .workspace_session_service()
-            .resolve_workspace_add(&workspace_path)
-            .await?
-        {
-            WorkspaceAddResolution::Existing(record) => Ok(AddWorkspaceOutcome::Existing(record)),
-            WorkspaceAddResolution::Create {
-                canonical_workspace_cwd,
-                suggested_title,
-            } => {
-                let record = self
-                    .create_thread_and_bind(Some(suggested_title), &canonical_workspace_cwd)
-                    .await?;
-                Ok(AddWorkspaceOutcome::Created(record))
-            }
-        }
+    pub async fn refresh_thread_title(
+        &self,
+        record: &ThreadRecord,
+        source: &'static str,
+    ) -> Result<()> {
+        let _ = status_sync::refresh_thread_topic_title(&self.bot, &self.repository, record, source)
+            .await;
+        Ok(())
     }
 
-    pub async fn bind_workspace(
-        &self,
-        thread_key: &str,
-        workspace_cwd: &str,
-    ) -> Result<ThreadRecord> {
-        let record = self
-            .control
-            .repository
-            .find_active_thread_by_key(thread_key)
-            .await?
-            .context("thread_key is not an active thread")?;
-        let workspace_path = resolve_workspace_argument(workspace_cwd).await?;
-        let updated = self
-            .control
-            .workspace_session_service()
-            .bind_workspace_record(record, &workspace_path)
-            .await?;
-        self.control
-            .repository
-            .append_log(
-                &updated,
-                LogDirection::System,
-                format!(
-                    "Bound Telegram thread to workspace {} from local management UI.",
-                    workspace_path.display()
-                ),
-                None,
-            )
-            .await?;
-        if let Some(message_thread_id) = updated.metadata.message_thread_id {
-            send_scoped_message(
-                &self.bot,
-                ChatId(updated.metadata.chat_id),
-                Some(ThreadId(MessageId(message_thread_id))),
-                format!(
-                    "Bound workspace: `{}`\n\nFor the managed local TUI path in this workspace, run:\n`{}/.threadbridge/bin/hcodex`",
-                    workspace_path.display(),
-                    workspace_path.display()
-                ),
-            )
-            .await?;
-            let _ = status_sync::refresh_thread_topic_title(
-                &self.bot,
-                &self.control.repository,
-                &updated,
-                "local_bind_workspace",
+    pub async fn delete_thread_topic(&self, record: &ThreadRecord) -> Result<()> {
+        let Some(thread_id) = record.metadata.message_thread_id else {
+            return Ok(());
+        };
+        let _ = self
+            .bot
+            .delete_forum_topic(
+                ChatId(record.metadata.chat_id),
+                ThreadId(MessageId(thread_id)),
             )
             .await;
-        }
-        Ok(updated)
+        Ok(())
     }
 
-    pub async fn repair_session_binding(&self, thread_key: &str) -> Result<ThreadRecord> {
-        let record = self
-            .control
-            .repository
-            .find_active_thread_by_key(thread_key)
-            .await?
-            .context("thread_key is not an active thread")?;
-        let session = self
-            .control
-            .repository
-            .read_session_binding(&record)
-            .await?;
-        let Some(binding) = session.as_ref() else {
-            bail!("This thread is not bound to a workspace yet.");
-        };
-        let result = self
-            .control
-            .workspace_session_service()
-            .repair_session_binding(record, binding)
-            .await?;
-        self.control
-            .repository
-            .append_log(
-                &result.record,
-                LogDirection::System,
-                if result.verified {
-                    "Codex session revalidated from local management UI."
-                } else {
-                    "Codex session revalidation failed from local management UI."
-                },
-                None,
-            )
-            .await?;
-        if result.verified {
-            Ok(result.record)
-        } else {
-            bail!("Codex session repair failed. Use New Session first.")
-        }
-    }
-
-    pub async fn archive_thread(&self, thread_key: &str) -> Result<ThreadRecord> {
-        let record = self
-            .control
-            .repository
-            .find_active_thread_by_key(thread_key)
-            .await?
-            .context("thread_key is not an active thread")?;
-        if let Some(thread_id) = record.metadata.message_thread_id {
-            let _ = self
-                .bot
-                .delete_forum_topic(
-                    ChatId(record.metadata.chat_id),
-                    ThreadId(MessageId(thread_id)),
-                )
-                .await;
-        }
-        let archived = self.control.repository.archive_thread(record).await?;
-        self.control
-            .repository
-            .append_log(
-                &archived,
-                LogDirection::System,
-                "Thread archived from local management UI.",
-                None,
-            )
-            .await?;
-        Ok(archived)
-    }
-
-    pub async fn adopt_tui_session(&self, thread_key: &str) -> Result<ThreadRecord> {
-        let record = self
-            .control
-            .repository
-            .find_active_thread_by_key(thread_key)
-            .await?
-            .context("thread_key is not an active thread")?;
-        let updated = self
-            .control
-            .repository
-            .adopt_tui_active_session(record)
-            .await?;
-        self.control
-            .repository
-            .append_log(
-                &updated,
-                LogDirection::System,
-                "Adopted the active TUI session from local management UI.",
-                None,
-            )
-            .await?;
-        let _ = status_sync::refresh_thread_topic_title(
-            &self.bot,
-            &self.control.repository,
-            &updated,
-            "local_tui_adopt_accept",
-        )
-        .await;
-        Ok(updated)
-    }
-
-    pub async fn reject_tui_session(&self, thread_key: &str) -> Result<ThreadRecord> {
-        let record = self
-            .control
-            .repository
-            .find_active_thread_by_key(thread_key)
-            .await?
-            .context("thread_key is not an active thread")?;
-        let updated = self
-            .control
-            .repository
-            .clear_tui_adoption_state(record)
-            .await?;
-        self.control
-            .repository
-            .append_log(
-                &updated,
-                LogDirection::System,
-                "Rejected the active TUI session from local management UI.",
-                None,
-            )
-            .await?;
-        let _ = status_sync::refresh_thread_topic_title(
-            &self.bot,
-            &self.control.repository,
-            &updated,
-            "local_tui_adopt_reject",
-        )
-        .await;
-        Ok(updated)
-    }
-
-    pub async fn restore_thread(&self, thread_key: &str) -> Result<ThreadRecord> {
-        let archived = self
-            .control
-            .repository
-            .get_thread_by_key(self.control_chat_id().await?, thread_key)
-            .await?
-            .context("thread_key is not a known thread")?;
-        if !matches!(
-            archived.metadata.status,
-            crate::repository::ThreadStatus::Archived
-        ) {
-            bail!("thread_key is not archived");
-        }
+    pub async fn create_restored_thread(&self, archived: &ThreadRecord) -> Result<CreatedTelegramThread> {
         let topic = self
             .bot
             .create_forum_topic(
@@ -336,65 +126,51 @@ impl LocalControlHandle {
                 ),
             )
             .await?;
-        let restored = self
-            .control
-            .repository
-            .restore_thread(
-                archived,
-                thread_id_to_i32(topic.thread_id),
-                topic.name.clone(),
-            )
-            .await?;
-        self.control
-            .repository
-            .append_log(
-                &restored,
-                LogDirection::System,
-                format!(
-                    "Thread restored from local management UI into Telegram thread \"{}\" (message_thread_id {}).",
-                    topic.name,
-                    thread_id_to_i32(topic.thread_id)
-                ),
-                None,
-            )
-            .await?;
+        Ok(CreatedTelegramThread {
+            chat_id: archived.metadata.chat_id,
+            message_thread_id: thread_id_to_i32(topic.thread_id),
+            title: topic.name,
+        })
+    }
+
+    pub async fn notify_restored(&self, restored: &ThreadRecord, title: &str) -> Result<()> {
+        let Some(message_thread_id) = restored.metadata.message_thread_id else {
+            return Ok(());
+        };
         send_scoped_message(
             &self.bot,
             ChatId(restored.metadata.chat_id),
             None,
-            format!("Restored into \"{}\". Continue there.", topic.name),
+            format!("Restored into \"{}\". Continue there.", title),
         )
         .await?;
         send_scoped_message(
             &self.bot,
             ChatId(restored.metadata.chat_id),
-            Some(topic.thread_id),
+            Some(ThreadId(MessageId(message_thread_id))),
             "This thread has been restored from archive.",
         )
         .await?;
-        let _ = status_sync::refresh_thread_topic_title(
-            &self.bot,
-            &self.control.repository,
-            &restored,
-            "local_restore",
-        )
-        .await;
-        Ok(restored)
+        let _ =
+            status_sync::refresh_thread_topic_title(&self.bot, &self.repository, restored, "restore")
+                .await;
+        Ok(())
     }
 
-    async fn control_chat_id(&self) -> Result<i64> {
+    pub async fn control_chat_id(&self) -> Result<i64> {
         Ok(self
-            .control
             .repository
             .find_main_thread()
             .await?
-            .context("Control chat is not ready yet. Send /start to the bot from the target Telegram chat first.")?
+            .context(
+                "Control chat is not ready yet. Send /start to the bot from the target Telegram chat first.",
+            )?
             .metadata
             .chat_id)
     }
 }
 
-async fn resolve_workspace_argument(raw: &str) -> Result<PathBuf> {
+pub async fn resolve_workspace_argument(raw: &str) -> Result<PathBuf> {
     let input = PathBuf::from(raw.trim());
     if !input.is_absolute() {
         bail!("Workspace path must be absolute.");
@@ -408,13 +184,20 @@ async fn resolve_workspace_argument(raw: &str) -> Result<PathBuf> {
     Ok(input.canonicalize().unwrap_or(input))
 }
 
-fn restored_thread_title(title: Option<&str>, fallback_thread_id: Option<i32>) -> String {
+pub fn restored_thread_title(title: Option<&str>, fallback_thread_id: Option<i32>) -> String {
     let base = title
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("Thread {}", fallback_thread_id.unwrap_or_default()));
     format!("{base} · 已恢復")
+}
+
+pub fn ensure_archived_thread(record: ThreadRecord) -> Result<ThreadRecord> {
+    if !matches!(record.metadata.status, ThreadStatus::Archived) {
+        bail!("thread_key is not archived");
+    }
+    Ok(record)
 }
 
 #[cfg(test)]

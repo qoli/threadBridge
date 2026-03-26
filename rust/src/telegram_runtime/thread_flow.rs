@@ -18,10 +18,11 @@ use crate::collaboration_mode::CollaborationMode;
 use crate::execution_mode::{
     ExecutionMode, workspace_execution_mode, write_workspace_execution_config,
 };
-use crate::local_control::LocalControlHandle;
-use crate::management_api::{
+use crate::local_control::{TelegramControlBridgeHandle, resolve_workspace_argument};
+use crate::runtime_control::{
     HcodexLaunchConfigView, WorkspaceExecutionModeView, hcodex_launch_command,
-    launch_hcodex_via_terminal,
+    launch_hcodex_via_terminal, workspace_execution_mode_view_for_record,
+    workspace_launch_config_for_record as shared_workspace_launch_config_for_record,
 };
 use crate::process_transcript::process_entry_from_codex_event;
 use crate::runtime_protocol::{
@@ -179,79 +180,12 @@ fn parse_execution_mode_argument(argument: &str) -> Option<ExecutionMode> {
     }
 }
 
-async fn workspace_execution_mode_view_for_record(
-    record: &ThreadRecord,
-    binding: &SessionBinding,
-) -> Result<WorkspaceExecutionModeView> {
-    let workspace_cwd = binding
-        .workspace_cwd
-        .clone()
-        .context("managed workspace is missing workspace_cwd")?;
-    let workspace_execution_mode = workspace_execution_mode(Path::new(&workspace_cwd)).await?;
-    Ok(WorkspaceExecutionModeView {
-        thread_key: record.metadata.thread_key.clone(),
-        workspace_cwd,
-        workspace_execution_mode,
-        current_execution_mode: binding.current_execution_mode,
-        current_approval_policy: binding.current_approval_policy.clone(),
-        current_sandbox_policy: binding.current_sandbox_policy.clone(),
-        mode_drift: binding.current_execution_mode != Some(workspace_execution_mode),
-    })
-}
-
-async fn workspace_launch_config_for_record(
+async fn build_workspace_launch_config(
     state: &AppState,
     record: &ThreadRecord,
     binding: &SessionBinding,
 ) -> Result<HcodexLaunchConfigView> {
-    let view = workspace_execution_mode_view_for_record(record, binding).await?;
-    let hcodex_path = Path::new(&view.workspace_cwd)
-        .join(".threadbridge")
-        .join("bin")
-        .join("hcodex");
-    let recent_codex_sessions = state
-        .repository
-        .read_recent_workspace_sessions(&view.workspace_cwd)
-        .await
-        .unwrap_or_default();
-    Ok(HcodexLaunchConfigView {
-        workspace_cwd: view.workspace_cwd,
-        thread_key: record.metadata.thread_key.clone(),
-        hcodex_path: hcodex_path.display().to_string(),
-        hcodex_available: hcodex_path.exists(),
-        workspace_execution_mode: view.workspace_execution_mode,
-        current_execution_mode: view.current_execution_mode,
-        current_approval_policy: view.current_approval_policy,
-        current_sandbox_policy: view.current_sandbox_policy,
-        mode_drift: view.mode_drift,
-        current_codex_thread_id: binding.current_codex_thread_id.clone(),
-        launch_new_command: hcodex_launch_command(
-            &hcodex_path,
-            &record.metadata.thread_key,
-            view.workspace_execution_mode,
-            None,
-        ),
-        launch_current_command: binding.current_codex_thread_id.as_ref().map(|session_id| {
-            hcodex_launch_command(
-                &hcodex_path,
-                &record.metadata.thread_key,
-                view.workspace_execution_mode,
-                Some(session_id),
-            )
-        }),
-        launch_resume_commands: recent_codex_sessions
-            .iter()
-            .map(|entry| {
-                hcodex_launch_command(
-                    &hcodex_path,
-                    &record.metadata.thread_key,
-                    view.workspace_execution_mode,
-                    Some(&entry.session_id),
-                )
-            })
-            .collect(),
-        recent_codex_sessions,
-    })
+    shared_workspace_launch_config_for_record(&state.repository, record, binding).await
 }
 
 fn render_workspace_execution_mode_view(view: &WorkspaceExecutionModeView) -> String {
@@ -417,9 +351,69 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             };
-            let control = LocalControlHandle::new(bot.clone(), state.clone());
-            match control.add_workspace(argument).await {
-                Ok(_) => {}
+            let workspace_path = resolve_workspace_argument(argument).await?;
+            let bridge = TelegramControlBridgeHandle::new(bot.clone(), state.repository.clone());
+            match state
+                .control
+                .workspace_session_service()
+                .resolve_workspace_add(&workspace_path)
+                .await
+            {
+                Ok(crate::runtime_control::WorkspaceAddResolution::Existing(record)) => {
+                    let binding = state.repository.read_session_binding(&record).await?;
+                    if let Some(workspace_cwd) =
+                        binding.as_ref().and_then(|binding| binding.workspace_cwd.as_deref())
+                    {
+                        let _ = bridge
+                            .notify_workspace_bound(
+                                &record,
+                                Path::new(workspace_cwd),
+                                "telegram_bind_workspace",
+                            )
+                            .await;
+                    }
+                }
+                Ok(crate::runtime_control::WorkspaceAddResolution::Create {
+                    canonical_workspace_cwd,
+                    suggested_title,
+                }) => {
+                    let created = bridge
+                        .create_workspace_thread(Some(suggested_title), "Telegram /add_workspace")
+                        .await?;
+                    let record = state
+                        .control
+                        .repository
+                        .create_thread(
+                            created.chat_id,
+                            created.message_thread_id,
+                            created.title.clone(),
+                        )
+                        .await?;
+                    let record = state
+                        .control
+                        .workspace_session_service()
+                        .bind_workspace_record(record, Path::new(&canonical_workspace_cwd))
+                        .await?;
+                    state
+                        .repository
+                        .append_log(
+                            &record,
+                            LogDirection::System,
+                            format!(
+                                "Bound Telegram thread to workspace {} from Telegram /add_workspace.",
+                                canonical_workspace_cwd
+                            ),
+                            None,
+                        )
+                        .await?;
+                    bridge
+                        .notify_workspace_bound(
+                            &record,
+                            Path::new(&canonical_workspace_cwd),
+                            "telegram_bind_workspace",
+                        )
+                        .await?;
+                }
                 Err(error) => {
                     send_scoped_warning_message(
                         bot,
@@ -700,7 +694,7 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             };
-            let config = workspace_launch_config_for_record(state, &record, binding).await?;
+            let config = build_workspace_launch_config(state, &record, binding).await?;
             let Some(argument) = command_argument_text(msg, "launch") else {
                 send_scoped_message(
                     bot,
@@ -1819,9 +1813,9 @@ pub(crate) async fn launch_plan_implementation_turn(
 #[cfg(test)]
 mod tests {
     use super::{
+        build_workspace_launch_config,
         LaunchCommandTarget, parse_execution_mode_argument, parse_launch_command_target,
         persist_collaboration_mode_change, render_working_session_records, render_working_sessions,
-        workspace_launch_config_for_record,
     };
     use crate::collaboration_mode::CollaborationMode;
     use crate::config::{AppConfig, RuntimeConfig, TelegramConfig};
@@ -2078,7 +2072,7 @@ mod tests {
             workspace_status_cache: WorkspaceStatusCache::new(),
         };
 
-        let config = workspace_launch_config_for_record(&state, &record, &binding)
+        let config = build_workspace_launch_config(&state, &record, &binding)
             .await
             .unwrap();
 

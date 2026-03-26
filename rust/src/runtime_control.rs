@@ -1,16 +1,21 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::anyhow;
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 use tokio::net::TcpStream;
+use tokio::process::Command;
 use tracing::info;
 
 use crate::app_server_runtime::{WorkspaceRuntimeManager, WorkspaceRuntimeState};
 use crate::codex::{CodexRunner, CodexWorkspace};
 use crate::config::RuntimeConfig;
-use crate::execution_mode::workspace_execution_mode;
+use crate::execution_mode::{ExecutionMode, workspace_execution_mode};
 use crate::hcodex_ingress::HcodexIngressManager;
-use crate::repository::{LogDirection, SessionBinding, ThreadRecord, ThreadRepository};
-use crate::workspace::ensure_workspace_runtime;
+use crate::repository::{
+    LogDirection, RecentCodexSessionEntry, SessionBinding, ThreadRecord, ThreadRepository,
+};
+use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 use crate::workspace_status::{
     SessionActivitySource, read_local_tui_session_claim, read_session_status,
 };
@@ -33,6 +38,30 @@ pub struct RuntimeControlContext {
 }
 
 impl RuntimeControlContext {
+    pub async fn new(
+        runtime: RuntimeConfig,
+        app_server_runtime: WorkspaceRuntimeManager,
+        hcodex_ingress: HcodexIngressManager,
+        runtime_ownership_mode: RuntimeOwnershipMode,
+    ) -> Result<Self> {
+        let repository = ThreadRepository::open(&runtime.data_root_path).await?;
+        let seed_template_path = validate_seed_template(
+            &runtime
+                .codex_working_directory
+                .join("templates")
+                .join("AGENTS.md"),
+        )?;
+        Ok(Self {
+            codex: CodexRunner::new(runtime.codex_model.clone()),
+            repository,
+            app_server_runtime,
+            hcodex_ingress,
+            seed_template_path,
+            runtime,
+            runtime_ownership_mode,
+        })
+    }
+
     pub fn workspace_runtime_service(&self) -> WorkspaceRuntimeService {
         WorkspaceRuntimeService { ctx: self.clone() }
     }
@@ -47,6 +76,239 @@ impl RuntimeControlContext {
 
     pub fn runtime_is_owner_managed(&self) -> bool {
         self.runtime_ownership_mode == RuntimeOwnershipMode::DesktopOwner
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HcodexLaunchConfigView {
+    pub workspace_cwd: String,
+    pub thread_key: String,
+    pub hcodex_path: String,
+    pub hcodex_available: bool,
+    pub workspace_execution_mode: ExecutionMode,
+    pub current_execution_mode: Option<ExecutionMode>,
+    pub current_approval_policy: Option<String>,
+    pub current_sandbox_policy: Option<String>,
+    pub mode_drift: bool,
+    pub current_codex_thread_id: Option<String>,
+    pub recent_codex_sessions: Vec<RecentCodexSessionEntry>,
+    pub launch_new_command: String,
+    pub launch_current_command: Option<String>,
+    pub launch_resume_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceExecutionModeView {
+    pub thread_key: String,
+    pub workspace_cwd: String,
+    pub workspace_execution_mode: ExecutionMode,
+    pub current_execution_mode: Option<ExecutionMode>,
+    pub current_approval_policy: Option<String>,
+    pub current_sandbox_policy: Option<String>,
+    pub mode_drift: bool,
+}
+
+#[derive(Clone)]
+pub struct SharedControlHandle {
+    ctx: RuntimeControlContext,
+}
+
+impl SharedControlHandle {
+    pub fn new(ctx: RuntimeControlContext) -> Self {
+        Self { ctx }
+    }
+
+    pub async fn resolve_workspace_add(
+        &self,
+        workspace_path: &Path,
+    ) -> Result<WorkspaceAddResolution> {
+        self.ctx
+            .workspace_session_service()
+            .resolve_workspace_add(workspace_path)
+            .await
+    }
+
+    pub async fn create_thread(
+        &self,
+        chat_id: i64,
+        message_thread_id: i32,
+        title: String,
+    ) -> Result<ThreadRecord> {
+        let record = self
+            .ctx
+            .repository
+            .create_thread(chat_id, message_thread_id, title)
+            .await?;
+        self.ctx
+            .repository
+            .append_log(
+                &record,
+                LogDirection::System,
+                "Telegram thread created from desktop or management control.",
+                None,
+            )
+            .await?;
+        Ok(record)
+    }
+
+    pub async fn bind_workspace_record(
+        &self,
+        record: ThreadRecord,
+        workspace_path: &Path,
+        origin: &str,
+    ) -> Result<ThreadRecord> {
+        let updated = self
+            .ctx
+            .workspace_session_service()
+            .bind_workspace_record(record, workspace_path)
+            .await?;
+        self.ctx
+            .repository
+            .append_log(
+                &updated,
+                LogDirection::System,
+                format!(
+                    "Bound Telegram thread to workspace {} from {origin}.",
+                    workspace_path.display()
+                ),
+                None,
+            )
+            .await?;
+        Ok(updated)
+    }
+
+    pub async fn adopt_tui_session(&self, thread_key: &str, origin: &str) -> Result<ThreadRecord> {
+        let record = self.active_thread(thread_key).await?;
+        let updated = self.ctx.repository.adopt_tui_active_session(record).await?;
+        self.ctx
+            .repository
+            .append_log(
+                &updated,
+                LogDirection::System,
+                format!("Adopted the active TUI session from {origin}."),
+                None,
+            )
+            .await?;
+        Ok(updated)
+    }
+
+    pub async fn reject_tui_session(
+        &self,
+        thread_key: &str,
+        origin: &str,
+    ) -> Result<ThreadRecord> {
+        let record = self.active_thread(thread_key).await?;
+        let updated = self.ctx.repository.clear_tui_adoption_state(record).await?;
+        self.ctx
+            .repository
+            .append_log(
+                &updated,
+                LogDirection::System,
+                format!("Rejected the active TUI session from {origin}."),
+                None,
+            )
+            .await?;
+        Ok(updated)
+    }
+
+    pub async fn archive_thread(&self, thread_key: &str, origin: &str) -> Result<ThreadRecord> {
+        let record = self.active_thread(thread_key).await?;
+        let archived = self.ctx.repository.archive_thread(record).await?;
+        self.ctx
+            .repository
+            .append_log(
+                &archived,
+                LogDirection::System,
+                format!("Thread archived from {origin}."),
+                None,
+            )
+            .await?;
+        Ok(archived)
+    }
+
+    pub async fn archived_thread(&self, chat_id: i64, thread_key: &str) -> Result<ThreadRecord> {
+        self.ctx
+            .repository
+            .get_thread_by_key(chat_id, thread_key)
+            .await?
+            .context("thread_key is not a known thread")
+    }
+
+    pub async fn restore_thread(
+        &self,
+        record: ThreadRecord,
+        message_thread_id: i32,
+        title: String,
+        origin: &str,
+    ) -> Result<ThreadRecord> {
+        let restored = self
+            .ctx
+            .repository
+            .restore_thread(record, message_thread_id, title.clone())
+            .await?;
+        self.ctx
+            .repository
+            .append_log(
+                &restored,
+                LogDirection::System,
+                format!(
+                    "Thread restored from {origin} into Telegram thread \"{}\" (message_thread_id {}).",
+                    title, message_thread_id
+                ),
+                None,
+            )
+            .await?;
+        Ok(restored)
+    }
+
+    pub async fn repair_session_binding(
+        &self,
+        thread_key: &str,
+        origin: &str,
+    ) -> Result<SessionRepairResult> {
+        let record = self.active_thread(thread_key).await?;
+        let session = self.ctx.repository.read_session_binding(&record).await?;
+        let Some(binding) = session.as_ref() else {
+            bail!("This thread is not bound to a workspace yet.");
+        };
+        let result = self
+            .ctx
+            .workspace_session_service()
+            .repair_session_binding(record, binding)
+            .await?;
+        self.ctx
+            .repository
+            .append_log(
+                &result.record,
+                LogDirection::System,
+                if result.verified {
+                    format!("Codex session revalidated from {origin}.")
+                } else {
+                    format!("Codex session revalidation failed from {origin}.")
+                },
+                None,
+            )
+            .await?;
+        Ok(result)
+    }
+
+    pub async fn workspace_execution_mode_view(
+        &self,
+        thread_key: &str,
+    ) -> Result<WorkspaceExecutionModeView> {
+        workspace_execution_mode_view_for_repository(&self.ctx.repository, thread_key).await
+    }
+
+    pub async fn workspace_launch_config(&self, thread_key: &str) -> Result<HcodexLaunchConfigView> {
+        workspace_launch_config_for_repository(&self.ctx.repository, thread_key).await
+    }
+
+    async fn active_thread(&self, thread_key: &str) -> Result<ThreadRecord> {
+        self.ctx
+            .repository
+            .find_active_thread_by_key(thread_key)
+            .await?
+            .context("thread_key is not an active thread")
     }
 }
 
@@ -498,6 +760,159 @@ enum SessionRoutingKind {
     LiveTui,
 }
 
+pub async fn workspace_execution_mode_view_for_repository(
+    repository: &ThreadRepository,
+    thread_key: &str,
+) -> Result<WorkspaceExecutionModeView> {
+    let record = repository
+        .find_active_thread_by_key(thread_key)
+        .await?
+        .context("thread_key is not an active managed workspace")?;
+    let binding = repository
+        .read_session_binding(&record)
+        .await?
+        .context("managed workspace is missing session binding")?;
+    workspace_execution_mode_view_for_record(&record, &binding).await
+}
+
+pub async fn workspace_execution_mode_view_for_record(
+    record: &ThreadRecord,
+    binding: &SessionBinding,
+) -> Result<WorkspaceExecutionModeView> {
+    let workspace_cwd = binding
+        .workspace_cwd
+        .clone()
+        .context("managed workspace is missing workspace_cwd")?;
+    let workspace_execution_mode = workspace_execution_mode(Path::new(&workspace_cwd)).await?;
+    Ok(WorkspaceExecutionModeView {
+        thread_key: record.metadata.thread_key.clone(),
+        workspace_cwd,
+        workspace_execution_mode,
+        current_execution_mode: binding.current_execution_mode,
+        current_approval_policy: binding.current_approval_policy.clone(),
+        current_sandbox_policy: binding.current_sandbox_policy.clone(),
+        mode_drift: binding.current_execution_mode != Some(workspace_execution_mode),
+    })
+}
+
+pub async fn workspace_launch_config_for_repository(
+    repository: &ThreadRepository,
+    thread_key: &str,
+) -> Result<HcodexLaunchConfigView> {
+    let record = repository
+        .find_active_thread_by_key(thread_key)
+        .await?
+        .context("thread_key is not an active managed workspace")?;
+    let binding = repository
+        .read_session_binding(&record)
+        .await?
+        .context("managed workspace is missing session binding")?;
+    workspace_launch_config_for_record(repository, &record, &binding).await
+}
+
+pub async fn workspace_launch_config_for_record(
+    repository: &ThreadRepository,
+    record: &ThreadRecord,
+    binding: &SessionBinding,
+) -> Result<HcodexLaunchConfigView> {
+    let view = workspace_execution_mode_view_for_record(record, binding).await?;
+    let hcodex_path = Path::new(&view.workspace_cwd)
+        .join(".threadbridge")
+        .join("bin")
+        .join("hcodex");
+    let recent_codex_sessions = repository
+        .read_recent_workspace_sessions(&view.workspace_cwd)
+        .await
+        .unwrap_or_default();
+    Ok(HcodexLaunchConfigView {
+        workspace_cwd: view.workspace_cwd,
+        thread_key: record.metadata.thread_key.clone(),
+        hcodex_path: hcodex_path.display().to_string(),
+        hcodex_available: hcodex_path.exists(),
+        workspace_execution_mode: view.workspace_execution_mode,
+        current_execution_mode: view.current_execution_mode,
+        current_approval_policy: view.current_approval_policy,
+        current_sandbox_policy: view.current_sandbox_policy,
+        mode_drift: view.mode_drift,
+        current_codex_thread_id: binding.current_codex_thread_id.clone(),
+        launch_new_command: hcodex_launch_command(
+            &hcodex_path,
+            &record.metadata.thread_key,
+            view.workspace_execution_mode,
+            None,
+        ),
+        launch_current_command: binding.current_codex_thread_id.as_ref().map(|session_id| {
+            hcodex_launch_command(
+                &hcodex_path,
+                &record.metadata.thread_key,
+                view.workspace_execution_mode,
+                Some(session_id),
+            )
+        }),
+        launch_resume_commands: recent_codex_sessions
+            .iter()
+            .map(|entry| {
+                hcodex_launch_command(
+                    &hcodex_path,
+                    &record.metadata.thread_key,
+                    view.workspace_execution_mode,
+                    Some(&entry.session_id),
+                )
+            })
+            .collect(),
+        recent_codex_sessions,
+    })
+}
+
+pub fn hcodex_launch_command(
+    hcodex_path: &Path,
+    thread_key: &str,
+    execution_mode: ExecutionMode,
+    session_id: Option<&str>,
+) -> String {
+    match session_id {
+        Some(session_id) => format!(
+            "{} --thread-key {} {} resume {}",
+            shell_quote_path(hcodex_path),
+            shell_quote(thread_key),
+            execution_mode.hcodex_flag(),
+            shell_quote(session_id)
+        ),
+        None => format!(
+            "{} --thread-key {} {}",
+            shell_quote_path(hcodex_path),
+            shell_quote(thread_key),
+            execution_mode.hcodex_flag()
+        ),
+    }
+}
+
+pub async fn launch_hcodex_via_terminal(command: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
+            apple_script_string(command)
+        );
+        let status = Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .status()
+            .await
+            .context("failed to launch Terminal via osascript")?;
+        if !status.success() {
+            return Err(anyhow!("osascript launch failed with status {status}"));
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = command;
+        Err(anyhow!("workspace launch is only implemented on macOS"))
+    }
+}
+
 fn current_bound_session_id(session: Option<&SessionBinding>) -> Option<&str> {
     session
         .and_then(|session| session.current_codex_thread_id.as_deref())
@@ -528,4 +943,16 @@ pub fn workspace_thread_title(workspace_path: &Path) -> String {
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| workspace_path.display().to_string())
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    shell_quote(&path.display().to_string())
+}
+
+fn apple_script_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }

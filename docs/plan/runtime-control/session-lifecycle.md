@@ -12,6 +12,7 @@
 - `session-binding.json` 持久化 Telegram thread / workspace / Codex thread 關聯
 - canonical pointer 已收斂到 `current_codex_thread_id`
 - 本地 management API / desktop runtime 已開始承接等價的 create-bind / reconnect control flow
+- management / desktop control plane 已不再依賴 Telegram polling 存活；只有 create / restore Telegram topic 這類 action 仍保留 Telegram-required 語義
 - `binding_status` / `run_status` 已開始透過 shared resolver 與 `runtime-state-machine` 對齊
 - Telegram thread 內的一般輸入、圖片分析、session-control gate、以及 stale busy reconciliation 已開始直接讀 canonical state，而不是各自重寫 archived / broken / running 判定
 - canonical continuity mutation 已開始透過 repository 內部共用 transition path 收斂
@@ -22,6 +23,7 @@
   - broken
   - archive
   - restore
+- Telegram `/launch` 與 `/execution_mode` 已改用 shared runtime helper，不再直接依賴 `management_api` 的 transport-facing view / helper
 
 目前尚未完成：
 
@@ -65,6 +67,12 @@
 - 將該 `thread.id` 寫進 `current_codex_thread_id`
 
 本地管理面上的 `pick_and_add_workspace` / 等價 control action，語義上也屬於同一條 lifecycle。
+
+補一條 current behavior：
+
+- `add_workspace` 先做 workspace resolution
+- 若命中既有 active binding，management surface 不需要 Telegram runtime 也能成功返回 existing
+- 只有在必須新建 Telegram workspace topic 時，才把 Telegram bridge 視為必要能力
 
 ### 一般延續對話
 

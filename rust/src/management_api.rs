@@ -23,22 +23,25 @@ use tracing::{info, warn};
 
 use crate::config::{RuntimeConfig, load_optional_telegram_config};
 use crate::execution_mode::{
-    ExecutionMode, workspace_execution_mode, write_workspace_execution_config,
+    ExecutionMode, write_workspace_execution_config,
 };
-use crate::local_control::LocalControlHandle;
-use crate::repository::{
-    RecentCodexSessionEntry, ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry,
+use crate::local_control::{
+    TelegramControlBridgeHandle, ensure_archived_thread, resolve_workspace_argument,
 };
+use crate::repository::{ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry};
 use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus};
 pub use crate::runtime_protocol::{
     ArchivedThreadView, ManagedCodexBuildDefaultsView, ManagedCodexBuildInfoView, ManagedCodexView,
     ManagedWorkspaceView, RuntimeEvent, RuntimeEventKind, RuntimeEventOperation, RuntimeHealthView,
     ThreadStateView, WorkingSessionRecordView, WorkingSessionSummaryView,
 };
+use crate::runtime_control::{
+    HcodexLaunchConfigView, SharedControlHandle, WorkspaceExecutionModeView,
+    hcodex_launch_command, launch_hcodex_via_terminal,
+};
 use crate::runtime_protocol::{
     build_archived_thread_views, build_runtime_health, build_thread_views,
     build_working_session_records, build_working_session_summaries, build_workspace_views,
-    workspace_mode_drift,
 };
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 
@@ -69,9 +72,14 @@ impl ManagementApiHandle {
         *current = state;
     }
 
-    pub async fn set_local_control(&self, control: Option<LocalControlHandle>) {
-        let mut current = self.state.local_control.write().await;
+    pub async fn set_shared_control(&self, control: Option<SharedControlHandle>) {
+        let mut current = self.state.shared_control.write().await;
         *current = control;
+    }
+
+    pub async fn set_telegram_bridge(&self, bridge: Option<TelegramControlBridgeHandle>) {
+        let mut current = self.state.telegram_bridge.write().await;
+        *current = bridge;
     }
 
     pub async fn set_runtime_owner(&self, owner: Option<DesktopRuntimeOwner>) {
@@ -177,7 +185,8 @@ struct ManagementApiState {
     runtime: RuntimeConfig,
     repository: ThreadRepository,
     telegram_polling_state: Arc<RwLock<TelegramPollingState>>,
-    local_control: Arc<RwLock<Option<LocalControlHandle>>>,
+    shared_control: Arc<RwLock<Option<SharedControlHandle>>>,
+    telegram_bridge: Arc<RwLock<Option<TelegramControlBridgeHandle>>>,
     runtime_owner: Arc<RwLock<Option<DesktopRuntimeOwner>>>,
     native_workspace_picker_available: Arc<RwLock<bool>>,
 }
@@ -193,35 +202,6 @@ pub struct SetupStateView {
     pub control_chat_ready: bool,
     pub control_chat_id: Option<i64>,
     pub native_workspace_picker_available: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct HcodexLaunchConfigView {
-    pub workspace_cwd: String,
-    pub thread_key: String,
-    pub hcodex_path: String,
-    pub hcodex_available: bool,
-    pub workspace_execution_mode: ExecutionMode,
-    pub current_execution_mode: Option<ExecutionMode>,
-    pub current_approval_policy: Option<String>,
-    pub current_sandbox_policy: Option<String>,
-    pub mode_drift: bool,
-    pub current_codex_thread_id: Option<String>,
-    pub recent_codex_sessions: Vec<RecentCodexSessionEntry>,
-    pub launch_new_command: String,
-    pub launch_current_command: Option<String>,
-    pub launch_resume_commands: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct WorkspaceExecutionModeView {
-    pub thread_key: String,
-    pub workspace_cwd: String,
-    pub workspace_execution_mode: ExecutionMode,
-    pub current_execution_mode: Option<ExecutionMode>,
-    pub current_approval_policy: Option<String>,
-    pub current_sandbox_policy: Option<String>,
-    pub mode_drift: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -374,7 +354,8 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         runtime: runtime.clone(),
         repository,
         telegram_polling_state: Arc::new(RwLock::new(TelegramPollingState::Disconnected)),
-        local_control: Arc::new(RwLock::new(None)),
+        shared_control: Arc::new(RwLock::new(None)),
+        telegram_bridge: Arc::new(RwLock::new(None)),
         runtime_owner: Arc::new(RwLock::new(None)),
         native_workspace_picker_available: Arc::new(RwLock::new(false)),
     });
@@ -954,12 +935,18 @@ async fn get_events(
 }
 
 impl ManagementApiState {
-    async fn local_control(&self) -> Result<LocalControlHandle> {
-        self.local_control
+    async fn shared_control(&self) -> Result<SharedControlHandle> {
+        self.shared_control
             .read()
             .await
             .clone()
-            .context("Telegram bot runtime is not active. Configure credentials and start the desktop runtime first.")
+            .context("Desktop runtime owner control is not active. Start threadBridge in desktop mode.")
+    }
+
+    async fn telegram_bridge(&self) -> Result<TelegramControlBridgeHandle> {
+        self.telegram_bridge.read().await.clone().context(
+            "Telegram bot runtime is unavailable. Reconnect Telegram polling before running this action.",
+        )
     }
 
     async fn restart_required_after_setup_save(&self) -> bool {
@@ -1403,19 +1390,53 @@ impl ManagementApiState {
     }
 
     async fn add_workspace(&self, workspace_cwd: &str) -> Result<AddWorkspaceResult> {
-        let control = self.local_control().await?;
-        let outcome = control.add_workspace(workspace_cwd).await?;
-        let record = outcome.record();
-        let binding = self.repository.read_session_binding(record).await?;
-        let bound_workspace_cwd = binding
-            .as_ref()
-            .and_then(|binding| binding.workspace_cwd.clone())
-            .or_else(|| Some(workspace_cwd.trim().to_owned()));
+        let control = self.shared_control().await?;
+        let workspace_path = resolve_workspace_argument(workspace_cwd).await?;
+        let (created, record, bound_workspace_cwd) = match control
+            .resolve_workspace_add(&workspace_path)
+            .await?
+        {
+            crate::runtime_control::WorkspaceAddResolution::Existing(record) => {
+                let binding = self.repository.read_session_binding(&record).await?;
+                let bound_workspace_cwd = binding
+                    .as_ref()
+                    .and_then(|binding| binding.workspace_cwd.clone())
+                    .or_else(|| Some(workspace_path.display().to_string()));
+                (false, record, bound_workspace_cwd)
+            }
+            crate::runtime_control::WorkspaceAddResolution::Create {
+                canonical_workspace_cwd,
+                suggested_title,
+            } => {
+                let bridge = self.telegram_bridge().await?;
+                let created_thread = bridge
+                    .create_workspace_thread(Some(suggested_title), "local management UI")
+                    .await?;
+                let record = control
+                    .create_thread(
+                        created_thread.chat_id,
+                        created_thread.message_thread_id,
+                        created_thread.title.clone(),
+                    )
+                    .await?;
+                let record = control
+                    .bind_workspace_record(
+                        record,
+                        Path::new(&canonical_workspace_cwd),
+                        "local management UI",
+                    )
+                    .await?;
+                bridge
+                    .notify_workspace_bound(&record, Path::new(&canonical_workspace_cwd), "local_bind_workspace")
+                    .await?;
+                (true, record, Some(canonical_workspace_cwd))
+            }
+        };
         if let Some(workspace_cwd) = bound_workspace_cwd.as_deref() {
             self.maybe_reconcile_owner_workspace(workspace_cwd).await?;
         }
         Ok(AddWorkspaceResult {
-            created: outcome.created(),
+            created,
             thread_key: record.metadata.thread_key.clone(),
             title: record.metadata.title.clone(),
             workspace_cwd: bound_workspace_cwd,
@@ -1426,14 +1447,6 @@ impl ManagementApiState {
         anyhow::ensure!(
             *self.native_workspace_picker_available.read().await,
             "Native workspace picker is unavailable. Start threadBridge in desktop mode."
-        );
-        anyhow::ensure!(
-            *self.telegram_polling_state.read().await == TelegramPollingState::Active,
-            "Telegram bot runtime is not active yet. Wait for desktop runtime to reconnect polling first."
-        );
-        anyhow::ensure!(
-            self.repository.find_main_thread().await?.is_some(),
-            "Control chat is not ready yet. Send /start to the bot from the target Telegram chat first."
         );
         let Some(workspace_cwd) = pick_workspace_folder().await? else {
             return Ok(PickAndAddWorkspaceResponse {
@@ -1457,8 +1470,15 @@ impl ManagementApiState {
     }
 
     async fn adopt_tui_session(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
-        let control = self.local_control().await?;
-        let record = control.adopt_tui_session(thread_key).await?;
+        let control = self.shared_control().await?;
+        let record = control
+            .adopt_tui_session(thread_key, "local management UI")
+            .await?;
+        if let Some(bridge) = self.telegram_bridge.read().await.clone() {
+            let _ = bridge
+                .refresh_thread_title(&record, "local_tui_adopt_accept")
+                .await;
+        }
         Ok(ThreadMutationResponse {
             ok: true,
             thread_key: record.metadata.thread_key,
@@ -1466,8 +1486,15 @@ impl ManagementApiState {
     }
 
     async fn reject_tui_session(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
-        let control = self.local_control().await?;
-        let record = control.reject_tui_session(thread_key).await?;
+        let control = self.shared_control().await?;
+        let record = control
+            .reject_tui_session(thread_key, "local management UI")
+            .await?;
+        if let Some(bridge) = self.telegram_bridge.read().await.clone() {
+            let _ = bridge
+                .refresh_thread_title(&record, "local_tui_adopt_reject")
+                .await;
+        }
         Ok(ThreadMutationResponse {
             ok: true,
             thread_key: record.metadata.thread_key,
@@ -1478,30 +1505,10 @@ impl ManagementApiState {
         &self,
         thread_key: &str,
     ) -> Result<WorkspaceExecutionModeView> {
-        let record = self
-            .repository
-            .find_active_thread_by_key(thread_key)
+        self.shared_control()
             .await?
-            .context("thread_key is not an active managed workspace")?;
-        let binding = self
-            .repository
-            .read_session_binding(&record)
-            .await?
-            .context("managed workspace is missing session binding")?;
-        let workspace_cwd = binding
-            .workspace_cwd
-            .clone()
-            .context("managed workspace is missing workspace_cwd")?;
-        let workspace_execution_mode = workspace_execution_mode(Path::new(&workspace_cwd)).await?;
-        Ok(WorkspaceExecutionModeView {
-            thread_key: record.metadata.thread_key,
-            workspace_cwd,
-            workspace_execution_mode,
-            current_execution_mode: binding.current_execution_mode,
-            current_approval_policy: binding.current_approval_policy.clone(),
-            current_sandbox_policy: binding.current_sandbox_policy.clone(),
-            mode_drift: workspace_mode_drift(workspace_execution_mode, &binding),
-        })
+            .workspace_execution_mode_view(thread_key)
+            .await
     }
 
     async fn update_workspace_execution_mode(
@@ -1515,82 +1522,18 @@ impl ManagementApiState {
     }
 
     async fn workspace_launch_config(&self, thread_key: &str) -> Result<HcodexLaunchConfigView> {
-        let record = self
-            .repository
-            .find_active_thread_by_key(thread_key)
+        self.shared_control()
             .await?
-            .context("thread_key is not an active managed workspace")?;
-        let binding = self
-            .repository
-            .read_session_binding(&record)
-            .await?
-            .context("managed workspace is missing session binding")?;
-        let workspace_cwd = binding
-            .workspace_cwd
-            .clone()
-            .context("managed workspace is missing workspace_cwd")?;
-        let hcodex_path = Path::new(&workspace_cwd)
-            .join(".threadbridge")
-            .join("bin")
-            .join("hcodex");
-        let workspace_execution_mode = workspace_execution_mode(Path::new(&workspace_cwd)).await?;
-        let recent_codex_sessions = self
-            .repository
-            .read_recent_workspace_sessions(&workspace_cwd)
+            .workspace_launch_config(thread_key)
             .await
-            .unwrap_or_default();
-        Ok(HcodexLaunchConfigView {
-            workspace_cwd: workspace_cwd.clone(),
-            thread_key: record.metadata.thread_key,
-            hcodex_path: hcodex_path.display().to_string(),
-            hcodex_available: hcodex_path.exists(),
-            workspace_execution_mode,
-            current_execution_mode: binding.current_execution_mode,
-            current_approval_policy: binding.current_approval_policy.clone(),
-            current_sandbox_policy: binding.current_sandbox_policy.clone(),
-            mode_drift: workspace_mode_drift(workspace_execution_mode, &binding),
-            current_codex_thread_id: binding.current_codex_thread_id.clone(),
-            launch_new_command: hcodex_launch_command(
-                &hcodex_path,
-                thread_key,
-                workspace_execution_mode,
-                None,
-            ),
-            launch_current_command: binding.current_codex_thread_id.as_ref().map(|session_id| {
-                hcodex_launch_command(
-                    &hcodex_path,
-                    thread_key,
-                    workspace_execution_mode,
-                    Some(session_id),
-                )
-            }),
-            launch_resume_commands: recent_codex_sessions
-                .iter()
-                .map(|entry| {
-                    hcodex_launch_command(
-                        &hcodex_path,
-                        thread_key,
-                        workspace_execution_mode,
-                        Some(&entry.session_id),
-                    )
-                })
-                .collect(),
-            recent_codex_sessions,
-        })
     }
 
     async fn archive_thread(&self, thread_key: &str) -> Result<ArchiveThreadResponse> {
-        let archived = match self.local_control.read().await.clone() {
-            Some(control) => control.archive_thread(thread_key).await?,
-            None => {
-                let record = self
-                    .repository
-                    .find_active_thread_by_key(thread_key)
-                    .await?
-                    .ok_or_else(|| anyhow::anyhow!("thread_key is not an active thread"))?;
-                self.repository.archive_thread(record).await?
-            }
-        };
+        let control = self.shared_control().await?;
+        let archived = control.archive_thread(thread_key, "local management UI").await?;
+        if let Some(bridge) = self.telegram_bridge.read().await.clone() {
+            let _ = bridge.delete_thread_topic(&archived).await;
+        }
         Ok(ArchiveThreadResponse {
             archived: true,
             thread_key: archived.metadata.thread_key,
@@ -1598,8 +1541,23 @@ impl ManagementApiState {
     }
 
     async fn restore_thread(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
-        let control = self.local_control().await?;
-        let restored = control.restore_thread(thread_key).await?;
+        let control = self.shared_control().await?;
+        let bridge = self.telegram_bridge().await?;
+        let archived = ensure_archived_thread(
+            control
+                .archived_thread(bridge.control_chat_id().await?, thread_key)
+                .await?,
+        )?;
+        let created = bridge.create_restored_thread(&archived).await?;
+        let restored = control
+            .restore_thread(
+                archived,
+                created.message_thread_id,
+                created.title.clone(),
+                "local management UI",
+            )
+            .await?;
+        bridge.notify_restored(&restored, &created.title).await?;
         Ok(ThreadMutationResponse {
             ok: true,
             thread_key: restored.metadata.thread_key,
@@ -1610,11 +1568,21 @@ impl ManagementApiState {
         let config = self.workspace_launch_config(thread_key).await?;
         self.maybe_reconcile_owner_workspace(&config.workspace_cwd)
             .await?;
-        let control = self.local_control().await?;
-        let record = control.repair_session_binding(thread_key).await?;
+        let control = self.shared_control().await?;
+        let result = control
+            .repair_session_binding(thread_key, "local management UI")
+            .await?;
+        if let Some(bridge) = self.telegram_bridge.read().await.clone() {
+            let source = if result.verified {
+                "reconnect_codex_verified"
+            } else {
+                "reconnect_codex_broken"
+            };
+            let _ = bridge.refresh_thread_title(&result.record, source).await;
+        }
         Ok(ThreadMutationResponse {
             ok: true,
-            thread_key: record.metadata.thread_key,
+            thread_key: result.record.metadata.thread_key,
         })
     }
 
@@ -1669,12 +1637,9 @@ impl ManagementApiState {
     }
 
     async fn maybe_reconcile_owner_workspace(&self, workspace_cwd: &str) -> Result<()> {
-        let owner = self
-            .runtime_owner
-            .read()
-            .await
-            .clone()
-            .context("desktop runtime owner is not active")?;
+        let Some(owner) = self.runtime_owner.read().await.clone() else {
+            return Ok(());
+        };
         let _ = owner.reconcile_managed_workspaces([workspace_cwd]).await?;
         Ok(())
     }
@@ -1839,63 +1804,6 @@ fn fallback_if_blank(value: &str, fallback: &str) -> String {
     }
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-fn shell_quote_path(path: &Path) -> String {
-    shell_quote(&path.display().to_string())
-}
-
-pub(crate) fn hcodex_launch_command(
-    hcodex_path: &Path,
-    thread_key: &str,
-    execution_mode: ExecutionMode,
-    session_id: Option<&str>,
-) -> String {
-    match session_id {
-        Some(session_id) => format!(
-            "{} --thread-key {} {} resume {}",
-            shell_quote_path(hcodex_path),
-            shell_quote(thread_key),
-            execution_mode.hcodex_flag(),
-            shell_quote(session_id)
-        ),
-        None => format!(
-            "{} --thread-key {} {}",
-            shell_quote_path(hcodex_path),
-            shell_quote(thread_key),
-            execution_mode.hcodex_flag()
-        ),
-    }
-}
-
-pub(crate) async fn launch_hcodex_via_terminal(command: &str) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let script = format!(
-            "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
-            apple_script_string(command)
-        );
-        let status = Command::new("/usr/bin/osascript")
-            .arg("-e")
-            .arg(script)
-            .status()
-            .await
-            .context("failed to launch Terminal via osascript")?;
-        if !status.success() {
-            return Err(anyhow!("osascript launch failed with status {status}"));
-        }
-        return Ok(());
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = command;
-        Err(anyhow!("workspace launch is only implemented on macOS"))
-    }
-}
-
 async fn open_workspace_path(path: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -1958,10 +1866,6 @@ async fn open_workspace_path(path: &Path) -> Result<()> {
             "open workspace is not implemented on this platform"
         ))
     }
-}
-
-fn apple_script_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2277,15 +2181,18 @@ impl IntoResponse for ManagementApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        MANAGEMENT_UI_JS, ManagementEventSnapshot, WorkingSessionRecordView,
+        MANAGEMENT_UI_JS, ManagementApiHandle, ManagementEventSnapshot, WorkingSessionRecordView,
         WorkingSessionSummaryView, diff_management_event_snapshots, spawn_management_api,
     };
+    use crate::app_server_runtime::WorkspaceRuntimeManager;
     use crate::config::RuntimeConfig;
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
+    use crate::hcodex_ingress::HcodexIngressManager;
     use crate::repository::{
         ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
         TranscriptMirrorRole,
     };
+    use crate::runtime_control::{RuntimeControlContext, RuntimeOwnershipMode, SharedControlHandle};
     use crate::runtime_protocol::{
         RuntimeEventKind, RuntimeEventOperation, WorkingSessionRecordKind,
     };
@@ -2314,6 +2221,25 @@ mod tests {
 
     fn full_auto_snapshot() -> SessionExecutionSnapshot {
         SessionExecutionSnapshot::from_mode(ExecutionMode::FullAuto)
+    }
+
+    async fn install_shared_control(handle: &ManagementApiHandle, root: &PathBuf) {
+        let template_dir = root.join("codex").join("templates");
+        fs::create_dir_all(&template_dir).await.unwrap();
+        fs::write(template_dir.join("AGENTS.md"), "test template")
+            .await
+            .unwrap();
+        let control = RuntimeControlContext::new(
+            runtime_config(root),
+            WorkspaceRuntimeManager::new(),
+            HcodexIngressManager::new(handle.state.repository.clone()),
+            RuntimeOwnershipMode::DesktopOwner,
+        )
+        .await
+        .unwrap();
+        handle
+            .set_shared_control(Some(SharedControlHandle::new(control)))
+            .await;
     }
 
     #[test]
@@ -2453,6 +2379,87 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(legacy_launch.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn existing_workspace_add_works_without_telegram_bridge() {
+        let root = temp_path();
+        fs::create_dir_all(&root).await.unwrap();
+        let handle = spawn_management_api(runtime_config(&root)).await.unwrap();
+        install_shared_control(&handle, &root).await;
+        let repo: ThreadRepository = handle.state.repository.clone();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).await.unwrap();
+        let record = repo
+            .create_thread(1, 7, "Workspace".to_owned())
+            .await
+            .unwrap();
+        let record = repo
+            .bind_workspace(
+                record,
+                workspace.display().to_string(),
+                "thr_current".to_owned(),
+                full_auto_snapshot(),
+            )
+            .await
+            .unwrap();
+
+        let result = handle.add_workspace(&workspace.display().to_string()).await.unwrap();
+        assert!(!result.created);
+        assert_eq!(result.thread_key, record.metadata.thread_key);
+        assert_eq!(result.workspace_cwd.as_deref(), Some(workspace.to_str().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn archive_thread_still_works_without_telegram_bridge() {
+        let root = temp_path();
+        fs::create_dir_all(&root).await.unwrap();
+        let handle = spawn_management_api(runtime_config(&root)).await.unwrap();
+        install_shared_control(&handle, &root).await;
+        let repo: ThreadRepository = handle.state.repository.clone();
+        let record = repo
+            .create_thread(1, 7, "Workspace".to_owned())
+            .await
+            .unwrap();
+
+        let response = handle
+            .state
+            .archive_thread(&record.metadata.thread_key)
+            .await
+            .unwrap();
+        assert!(response.archived);
+        let archived = repo
+            .get_thread_by_key(1, &record.metadata.thread_key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            archived.metadata.status,
+            crate::repository::ThreadStatus::Archived
+        ));
+    }
+
+    #[tokio::test]
+    async fn restore_thread_requires_telegram_bridge() {
+        let root = temp_path();
+        fs::create_dir_all(&root).await.unwrap();
+        let handle = spawn_management_api(runtime_config(&root)).await.unwrap();
+        install_shared_control(&handle, &root).await;
+        let repo: ThreadRepository = handle.state.repository.clone();
+        let record = repo
+            .create_thread(1, 7, "Workspace".to_owned())
+            .await
+            .unwrap();
+        let archived = repo.archive_thread(record).await.unwrap();
+
+        let error = handle
+            .state
+            .restore_thread(&archived.metadata.thread_key)
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Telegram bot runtime is unavailable"));
     }
 
     #[test]

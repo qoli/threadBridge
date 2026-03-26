@@ -28,6 +28,9 @@ mod macos_app {
         ManagedWorkspaceView, ManagementApiHandle, RuntimeHealthView, SetupStateView,
         spawn_management_api,
     };
+    use threadbridge_rust::runtime_control::{
+        RuntimeControlContext, RuntimeOwnershipMode, SharedControlHandle,
+    };
     use threadbridge_rust::runtime_owner::DesktopRuntimeOwner;
 
     const TRAY_ICON_SIZE: u32 = 32;
@@ -109,6 +112,15 @@ mod macos_app {
         runtime.block_on(management_api.set_native_workspace_picker_available(true));
         let owner = Arc::new(runtime.block_on(DesktopRuntimeOwner::new(runtime_config.clone()))?);
         runtime.block_on(management_api.set_runtime_owner(Some((*owner).clone())));
+        let shared_control = runtime.block_on(RuntimeControlContext::new(
+            runtime_config.clone(),
+            owner.app_server_runtime(),
+            owner.hcodex_ingress_runtime(),
+            RuntimeOwnershipMode::DesktopOwner,
+        ))?;
+        runtime.block_on(management_api.set_shared_control(Some(SharedControlHandle::new(
+            shared_control,
+        ))));
         runtime.block_on(reconcile_runtime_owner(&management_api, &owner));
 
         if runtime
