@@ -103,11 +103,15 @@ ENV_FILE="$APP_ROOT/.env.local"
 LOG_DIR="$APP_ROOT/logs"
 STDOUT_LOG="$LOG_DIR/threadbridge.stdout.log"
 STDERR_LOG="$LOG_DIR/threadbridge.stderr.log"
-EVENT_LOG="$APP_ROOT/data/debug/events.jsonl"
+EVENT_LOG_DIR="$APP_ROOT/data/debug"
 RUNTIME_PATH="$APP_ROOT/bin:$HOME/.local/mamba-envs/codex-tools/bin:$HOME/.local/bin:$PATH"
 
 log() {
   printf '[remote-threadBridge] %s\n' "$*"
+}
+
+latest_event_log() {
+  find "$EVENT_LOG_DIR" -maxdepth 1 -type f -name 'events-*.jsonl' -print 2>/dev/null | sort | tail -n 1
 }
 
 process_cwd() {
@@ -158,7 +162,7 @@ kill_bot_processes() {
 
 ensure_layout() {
   mkdir -p "$APP_ROOT/data/debug" "$LOG_DIR"
-  touch "$STDOUT_LOG" "$STDERR_LOG" "$EVENT_LOG"
+  touch "$STDOUT_LOG" "$STDERR_LOG"
 }
 
 ensure_env() {
@@ -227,9 +231,11 @@ status_bot() {
     log "threadbridge running with PID(s): $(echo "$pids" | tr '\n' ' ')"
   fi
 
-  if [[ -f "$EVENT_LOG" ]]; then
+  local event_log
+  event_log=$(latest_event_log)
+  if [[ -n "$event_log" ]]; then
     log "recent events"
-    tail -n 20 "$EVENT_LOG" || true
+    tail -n 20 "$event_log" || true
   fi
 }
 
@@ -239,15 +245,18 @@ logs_bot() {
   tail -n 40 "$STDOUT_LOG" || true
   log "stderr"
   tail -n 40 "$STDERR_LOG" || true
-  log "events"
-  tail -n 40 "$EVENT_LOG" || true
+  local event_log
+  event_log=$(latest_event_log)
+  if [[ -n "$event_log" ]]; then
+    log "events"
+    tail -n 40 "$event_log" || true
+  fi
 }
 
 wipe_data() {
   stop_bot
   rm -rf "$APP_ROOT/data"
   mkdir -p "$APP_ROOT/data/debug"
-  : > "$APP_ROOT/data/debug/events.jsonl"
   log "remote data directory wiped: $APP_ROOT/data"
 }
 

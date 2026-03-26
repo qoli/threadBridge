@@ -5,7 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd -P)
 ENV_FILE="$REPO_ROOT/.env.local"
 LOG_DIR="$REPO_ROOT/logs"
-EVENT_LOG="$REPO_ROOT/data/debug/events.jsonl"
+EVENT_LOG_DIR="$REPO_ROOT/data/debug"
 CARGO_HOME_DIR="${CARGO_HOME:-$REPO_ROOT/.cargo}"
 CARGO_TARGET_DIR_PATH="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 BUILD_PROFILE="${BUILD_PROFILE:-dev}"
@@ -219,6 +219,10 @@ tmux_session_name() {
   printf 'threadbridge-%s-desktop' "$hash"
 }
 
+latest_event_log() {
+  find "$EVENT_LOG_DIR" -maxdepth 1 -type f -name 'events-*.jsonl' -print 2>/dev/null | sort | tail -n 1
+}
+
 tmux_session_exists() {
   local session_name=$1
   tmux has-session -t "$session_name" 2>/dev/null
@@ -233,8 +237,7 @@ ensure_layout() {
   mkdir -p "$LOG_DIR" "$REPO_ROOT/data/debug" "$MANAGED_CODEX_DIR"
   touch \
     "$(stdout_log_path)" \
-    "$(stderr_log_path)" \
-    "$EVENT_LOG"
+    "$(stderr_log_path)"
 }
 
 build_runtime_binaries() {
@@ -373,9 +376,11 @@ status_runtime() {
     done < "$MANAGED_CODEX_BUILD_INFO_FILE"
   fi
 
-  if [[ -f "$EVENT_LOG" ]]; then
+  local event_log
+  event_log=$(latest_event_log)
+  if [[ -n "$event_log" ]]; then
     log "recent events"
-    tail -n 20 "$EVENT_LOG" || true
+    tail -n 20 "$event_log" || true
   fi
 }
 
@@ -397,8 +402,12 @@ logs_runtime() {
   tail -n 40 "$stdout_log" || true
   log "stderr"
   tail -n 40 "$stderr_log" || true
-  log "events"
-  tail -n 40 "$EVENT_LOG" || true
+  local event_log
+  event_log=$(latest_event_log)
+  if [[ -n "$event_log" ]]; then
+    log "events"
+    tail -n 40 "$event_log" || true
+  fi
 }
 
 main() {

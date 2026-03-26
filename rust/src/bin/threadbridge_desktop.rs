@@ -23,7 +23,7 @@ mod macos_app {
     use threadbridge_rust::config::load_runtime_config;
     use threadbridge_rust::hcodex_runtime;
     use threadbridge_rust::hcodex_ws_bridge;
-    use threadbridge_rust::logging::init_json_logs;
+    use threadbridge_rust::logging::init_runtime_json_logs;
     use threadbridge_rust::management_api::{
         ManagedWorkspaceView, ManagementApiHandle, RuntimeHealthView, SetupStateView,
         spawn_management_api,
@@ -104,7 +104,7 @@ mod macos_app {
         }
 
         let runtime_config = load_runtime_config()?;
-        let _guard = init_json_logs(&runtime_config.debug_log_path)?;
+        let _guard = init_runtime_json_logs(&runtime_config.debug_log_path)?;
         let management_api = runtime.block_on(spawn_management_api(runtime_config.clone()))?;
         runtime.block_on(management_api.set_native_workspace_picker_available(true));
         let owner = Arc::new(runtime.block_on(DesktopRuntimeOwner::new(runtime_config.clone()))?);
