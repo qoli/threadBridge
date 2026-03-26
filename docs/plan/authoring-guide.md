@@ -25,6 +25,14 @@
 - 已落地行為的補充說明
 - 尚未收斂的重構方向
 
+同時，它現在也被視為一份持續維護的 plan registry，而不是平鋪直敘的文檔清單。
+
+也就是說，除了寫好單篇 plan，本目錄還需要回答：
+
+- 這份文檔今天屬於哪個成熟度狀態
+- 責任主要歸給哪個 `owner role`
+- 它是 `spec`、`plan`，還是 `historical`
+
 因此新文檔不應只寫「想法」，而應該明確說明：
 
 - 它在解決什麼問題
@@ -84,6 +92,76 @@
 - 是在定義 runtime core，還是在定義 Telegram adapter？
 
 如果一份文檔同時想回答以上多個問題，通常切分還不夠清楚。
+
+## Plan Registry 與條目屬性
+
+[README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md) 現在是這個目錄的 canonical registry。
+
+它的唯一分組軸固定是 `status`：
+
+- `已落地`
+- `部分落地`
+- `已退役`
+- `純草稿`
+
+其他資訊都只能作為條目屬性，不再和 `status` 平行競爭成第二套分組：
+
+- `owner role`
+- `doc kind`
+- `primary spec`
+- `depends_on`
+- `current answer`
+
+新增或整理文檔時，至少要先決定：
+
+- 它屬於哪個 `status`
+- 它的責任主要歸給誰
+- 它是 `spec`、`plan`、還是 `historical`
+
+避免：
+
+- 同一份文檔同時被多個分組軸分類
+- 用 `Docs` 之類文件類型詞冒充 `owner role`
+- 因為它碰到 Telegram 或 management UI，就把 shared semantics 誤寫成 surface owner
+- 把已退役文檔留在 current registry 裡，只靠內文備註提示
+
+## `owner role` 規則
+
+`owner role` 只回答一件事：這份 plan 的責任主要歸給誰。
+
+它不是：
+
+- 文檔類型
+- 影響面清單
+- 第二套瀏覽導航
+
+預設應優先使用 [runtime-architecture.md](/Volumes/Data/Github/threadBridge/docs/plan/runtime-architecture.md) 裡的 canonical roles。
+
+若一份 shared spec 沒有更明顯的 owner，預設歸 `runtime_control`。
+
+若某份草稿目前真的無法自然落進現有 canonical role，可暫時標：
+
+- `owner role: 未定`
+
+但這應該是少數例外，而不是常態。
+
+## `doc kind` 規則
+
+建議固定使用：
+
+- `spec`
+  - 規格文檔，例如 `runtime-architecture`、`runtime-state-machine`、`runtime-protocol`
+- `plan`
+  - 子系統收斂草稿、能力面設計、或局部方案
+- `historical`
+  - 已退役模型、歷史參考、遷移背景
+
+`doc kind` 不替代 `status`。
+
+例如：
+
+- 一份 `spec` 仍然可以是 `部分落地`
+- 一份 `historical` 文檔的 `status` 仍然應是 `已退役`
 
 ## 檔名規範
 
@@ -216,11 +294,12 @@
 
 ## 成熟度標記規則
 
-目前 `README.md` 已經在用這三種成熟度，新增或更新文檔時應繼續沿用：
+目前 [README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md) 使用下面四種成熟度，新增或更新文檔時應繼續沿用：
 
 - `已落地`
 - `部分落地`
 - `純草稿`
+- `已退役`
 
 判斷原則：
 
@@ -230,6 +309,8 @@
   - 已有 v1 或部分能力進入代碼，但文檔中的完整目標尚未全部完成
 - `純草稿`
   - 主要仍是設計方向，沒有成為實際行為的穩定 source of truth
+- `已退役`
+  - 文檔保留的價值主要是歷史背景、遷移脈絡、或舊模型對照，不再代表 current architecture
 
 若某份文檔是跨多個版本演進的，`目前進度` 段應明說：
 
@@ -238,9 +319,15 @@
 
 不要只寫「已完成」或「待實作」而不交代範圍。
 
+若某份文檔已轉成歷史架構，除了在 `目前進度` 標示，也應在 registry 中移到 `已退役`，必要時補一個 `current answer` 指向新的主文檔或子規格。
+
 ## 主規格與從屬文檔
 
 不是每份 plan 都是主規格。
+
+在 registry 裡，`主規格` 不再是一個獨立分組，而是條目屬性：
+
+- `primary spec: yes/no`
 
 如果一份文檔在定義 canonical naming、唯一 state axes、唯一 delivery semantics，應直接寫明它是主規格，並要求其他文檔引用它。
 
@@ -385,8 +472,10 @@
 沿用目前目錄的做法：
 
 - 在 `README.md` 登記這份文檔
-- 說明它的成熟度與一句話摘要
-- 如有依賴關係，補進 `README.md` 的依賴關係段落
+- 補上它的 `status`、`owner role`、`doc kind`
+- 若它是主規格，補上 `primary spec: yes`
+- 若有依賴關係，補進該條目的 `depends_on`
+- 若它是已退役文檔，必要時補 `current answer`
 - 文檔內引用其他 plan 時，使用可點擊的 Markdown link
 
 如果新文檔會改變既有主線，至少要同步檢查：
@@ -404,8 +493,8 @@
 3. 決定是更新既有 plan，還是新增一份新 plan。
 4. 先寫 `目前進度`，明確區分已落地與未落地部分。
 5. 寫清楚 `問題`、`定位`、主體規格、`與其他計劃的關係`、`開放問題`。
-6. 更新 [README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md)，把它放進正確成熟度區段。
-7. 如果它是主規格，明確寫出哪些文檔之後應引用它。
+6. 更新 [README.md](/Volumes/Data/Github/threadBridge/docs/plan/README.md)，把它放進正確 `status` 區段，並補齊必要條目屬性。
+7. 如果它是主規格，明確寫出哪些文檔之後應引用它，並在 registry 裡標 `primary spec: yes`。
 
 ## 建議模板
 
