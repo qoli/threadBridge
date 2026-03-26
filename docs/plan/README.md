@@ -201,6 +201,10 @@
 
 ## 純草稿
 
+- [app-server-observer-upstream-capability-audit.md](app-server-observer/app-server-observer-upstream-capability-audit.md)
+  - doc kind: `plan`
+  - 盤點 `/Volumes/Data/Github/codex` 內 upstream app-server observer 相關原生能力
+  - 作為後續切分 `AppServerMirrorObserverManager` 前的 capability audit，而不是直接的重構方案
 - [telegram-webapp-observability.md](telegram-adapter/telegram-webapp-observability.md)
   - doc kind: `plan`
   - Telegram Web App 觀測面草稿

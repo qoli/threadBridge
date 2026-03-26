@@ -3,6 +3,7 @@
 補充維護說明：
 
 - [docs/mirror-function-notes.md](../../mirror-function-notes.md)
+- [app-server-observer-upstream-capability-audit.md](app-server-observer-upstream-capability-audit.md)
 
 ## 目前進度
 
