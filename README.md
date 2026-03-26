@@ -145,18 +145,12 @@ The intended user flow is:
 
 ## Telegram Commands
 
-The current workspace-thread flow uses these commands:
+The maintained slash-command reference lives in [docs/telegram-slash-commands.md](/Volumes/Data/Github/threadBridge/docs/telegram-slash-commands.md).
 
-- `/start`
-- `/add_workspace <absolute-path>`
-- `/new_session`
-- `/repair_session`
-- `/workspace_info`
-- `/archive_workspace`
-- `/restore_workspace`
-- `/rename_workspace`
-- `/plan_mode`
-- `/default_mode`
+Current command groups:
+
+- control chat: `/start`, `/add_workspace <absolute-path>`, `/restore_workspace`
+- workspace thread: `/start`, `/new_session`, `/repair_session`, `/workspace_info`, `/rename_workspace`, `/archive_workspace`, `/launch`, `/execution_mode`, `/sessions`, `/session_log <session_id>`, `/stop`, `/plan_mode`, `/default_mode`
 
 Operationally:
 
