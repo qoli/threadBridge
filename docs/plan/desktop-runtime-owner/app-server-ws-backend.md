@@ -8,8 +8,8 @@
 
 - `app-server-ws-backend` 已是 `threadBridge` today runtime 實際依賴的核心 backend plane
 - `desktop runtime owner` 已擁有它的 lifecycle authority，並負責 workspace-scoped ensure / repair / reconcile
-- workspace-scoped backend child worker 已開始落地為 `app_server_ws_worker`
-- control / execution client，以及 desktop-side observer attach 已開始改走 worker-first websocket，而不再由 desktop process 直接連 upstream daemon
+- workspace-scoped backend child worker 已落地為 `app_server_ws_worker`
+- control / execution client，以及 desktop-side observer attach 已改走 worker-first websocket，而不再由 desktop process 直接連 upstream daemon
 - shared workspace app-server daemon、workspace-local state file、與 `hcodex ingress` 上游 backend 已落地
 - `CodexRunner`、observer、`hcodex ingress`、session verify / repair 都已實際依賴同一條 app-server ws backend contract
 - `thread/start`、`thread/resume`、`thread/read`、`turn/start`、interrupt、server request / notification intake 都已走 app-server JSON-RPC / ws 路徑
@@ -19,7 +19,7 @@
 - today code 中與 backend 相關的責任仍散落在 `codex.rs`、`app_server_runtime.rs`、`app_server_observer.rs`、`hcodex_ingress.rs`、`runtime_owner.rs`、`runtime_control.rs`
 - `observer` attach 仍建立在 `thread/resume` attach 語義上，而不是正式 upstream subscribe API
 - backend plane 與 shared runtime semantics 的長期 API 形狀仍未收斂成獨立 contract
-- 原生 busy truth 雖然天然屬於 backend，但 `threadBridge` today 仍未完全透過 backend API 取得 busy authority
+- 原生 busy truth 雖已開始透過 backend API（worker run-state）提供 authority，但產品層 busy gate 與兼容衍生路徑仍未完全收斂
 
 ## 問題
 
@@ -99,10 +99,10 @@
 
 承擔下列能力：
 
-- spawn shared `codex app-server`
+- spawn workspace-scoped `app_server_ws_worker`，並由 worker 擁有 upstream `codex app-server`
 - health check 與 endpoint liveness probe
 - workspace-local state file `./.threadbridge/state/app-server/current.json`
-- `daemon_ws_url` 與 `hcodex_ws_url` 的 runtime surface
+- `daemon_ws_url` / `worker_ws_url` / `worker_pid` / `hcodex_ws_url` 的 runtime surface
 - launch ticket 發放 / 消耗
 
 這一層是 backend plane 的 process / endpoint substrate，不是 adapter。

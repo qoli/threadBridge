@@ -16,6 +16,7 @@
 
 ## 當日提交錨點（2026-03-27）
 
+- `63fbe5b` `📝 docs(plan): 新增 backend worker 進度報告並更新本地執行腳本`
 - `a71c48b` `feat(runtime): enforce worker-first run authority`
 - `3ea86f7` `feat(runtime): surface run phase in session events`
 - `bc76384` `test(runtime): cover unavailable worker views`
@@ -31,6 +32,13 @@
 - `0e403e6` `refactor(runtime): remove owner ingress from app state construction`
 - `6e6c1d6` `refactor(runtime): tighten owner ingress launch ownership`
 - `32d2cc5` `feat(runtime): move owner-managed hcodex launch into worker`
+
+## 增量進度（63fbe5b）
+
+- `docs/plan` 已新增 backend worker 主線進度快照，並掛入 plan registry。
+- 本地 runtime helper `scripts/local_threadbridge.sh` 已切到 `cargo build --bins`，避免只編 `threadbridge_desktop`。
+- 本地 runtime helper 已固定檢查 `threadbridge_desktop` / `app_server_ws_worker` 兩個 binary，缺失時 fail-fast。
+- 未使用的 `scripts/build_and_deploy_threadbridge.sh` 已移除，減少舊部署腳本對 today runtime 形狀的干擾。
 
 ## 已落地能力（backend worker 主線）
 
@@ -56,6 +64,18 @@
 - `runtime_control` 保留 owner-managed 與 self-managed 的分流，但 owner ingress 的 construction / wiring 已從多處抽離。
 - Telegram runtime 端已移除舊的 ingress adapter handle，改走 worker/owner 收斂後的路徑。
 
+## Worker 模式驗證 Runbook
+
+以下三個訊號同時成立，可判定 workspace 已在 worker mode：
+
+1. workspace runtime state file 具備 worker 欄位：`worker_ws_url`、`worker_pid`、`hcodex_ws_url`
+   - 例：`cat .threadbridge/state/app-server/current.json`
+2. `worker_pid` 對應實際 `app_server_ws_worker` 進程
+   - 例：`ps -p <worker_pid> -o pid=,comm=,args=`
+3. owner/management 視角可見 worker-ready runtime
+   - owner heartbeat event `runtime_owner.workspace.app_server_ready` 包含 `worker_ws_url`
+   - `/api/workspaces` 回傳 `app_server_status=running`、`hcodex_ingress_status=running`、`runtime_readiness=ready`
+
 ## 驗證證據（本次更新執行）
 
 以下測試在本次報告更新時重新執行且通過：
@@ -69,13 +89,14 @@
 
 ## 與原計劃對齊度（backend worker 主線）
 
-以 [app-server-ws-backend.md](app-server-ws-backend.md) 的 backend worker 主線目標估算，當前對齊度約為 **75%**。
+以 [app-server-ws-backend.md](app-server-ws-backend.md) 的 backend worker 主線目標估算，當前對齊度約為 **80%**。
 
 已完成：
 
 - workspace-scoped backend child worker 已可運作
 - worker-first run authority 已進共享狀態判斷
 - owner-managed `hcodex` launch endpoint 已下沉 worker
+- 本地 runtime helper 已把 worker binary 納入 build 與 preflight 檢查
 
 未完成：
 
