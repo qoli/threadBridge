@@ -846,6 +846,12 @@ async fn sync_local_transcript_mirrors_once(
         workspace_event_offsets.insert(workspace_key, new_offset);
     }
     mirror_previews.retain(|thread_key, _| active_thread_keys.contains(thread_key));
+    let preview_thread_keys = mirror_previews.keys().cloned().collect::<Vec<_>>();
+    for thread_key in preview_thread_keys {
+        if let Some(preview) = mirror_previews.get_mut(&thread_key) {
+            preview.heartbeat().await;
+        }
+    }
     Ok(())
 }
 

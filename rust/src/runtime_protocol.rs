@@ -40,6 +40,7 @@ pub struct RuntimeHealthView {
 pub enum RuntimeEventKind {
     SetupChanged,
     RuntimeHealthChanged,
+    ManagedCodexChanged,
     ThreadStateChanged,
     WorkspaceStateChanged,
     ArchivedThreadChanged,
@@ -53,12 +54,65 @@ impl RuntimeEventKind {
         match self {
             Self::SetupChanged => "setup_changed",
             Self::RuntimeHealthChanged => "runtime_health_changed",
+            Self::ManagedCodexChanged => "managed_codex_changed",
             Self::ThreadStateChanged => "thread_state_changed",
             Self::WorkspaceStateChanged => "workspace_state_changed",
             Self::ArchivedThreadChanged => "archived_thread_changed",
             Self::WorkingSessionChanged => "working_session_changed",
             Self::TranscriptChanged => "transcript_changed",
             Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeControlAction {
+    StartFreshSession,
+    RepairSessionBinding,
+    LaunchLocalSession,
+    SetWorkspaceExecutionMode,
+    SetThreadCollaborationMode,
+    InterruptRunningTurn,
+    AdoptTuiSession,
+    RejectTuiSession,
+    ArchiveThread,
+    RestoreThread,
+    RepairWorkspaceRuntime,
+}
+
+impl RuntimeControlAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StartFreshSession => "start_fresh_session",
+            Self::RepairSessionBinding => "repair_session_binding",
+            Self::LaunchLocalSession => "launch_local_session",
+            Self::SetWorkspaceExecutionMode => "set_workspace_execution_mode",
+            Self::SetThreadCollaborationMode => "set_thread_collaboration_mode",
+            Self::InterruptRunningTurn => "interrupt_running_turn",
+            Self::AdoptTuiSession => "adopt_tui_session",
+            Self::RejectTuiSession => "reject_tui_session",
+            Self::ArchiveThread => "archive_thread",
+            Self::RestoreThread => "restore_thread",
+            Self::RepairWorkspaceRuntime => "repair_workspace_runtime",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeInteractionKind {
+    RequestUserInput,
+    RequestResolved,
+    TurnCompleted,
+}
+
+impl RuntimeInteractionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RequestUserInput => "request_user_input",
+            Self::RequestResolved => "request_resolved",
+            Self::TurnCompleted => "turn_completed",
         }
     }
 }

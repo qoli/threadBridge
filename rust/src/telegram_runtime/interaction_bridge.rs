@@ -5,9 +5,8 @@ use teloxide::payloads::SendMessageSetters;
 use teloxide::requests::Requester;
 use teloxide::types::{ChatId, MessageId, ThreadId};
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{debug, warn};
 
-use crate::collaboration_mode::CollaborationMode;
 use crate::delivery_bus::{
     ClaimStatus, DeliveryAttempt, DeliveryBusCoordinator, DeliveryChannel, DeliveryClaim,
     DeliveryKind, provisional_key_for_request, provisional_key_for_text,
@@ -51,6 +50,11 @@ async fn handle_runtime_interaction(
     registry: &InteractiveRequestRegistry,
     event: RuntimeInteractionEvent,
 ) -> Result<()> {
+    let kind = event.kind();
+    debug!(
+        event = "telegram.interaction_bridge.event",
+        interaction_kind = kind.as_str()
+    );
     match event {
         RuntimeInteractionEvent::RequestUserInput(request) => {
             handle_request_user_input(bot, repository, delivery_bus, registry, request).await
@@ -179,7 +183,7 @@ async fn handle_turn_completed(
     delivery_bus: &DeliveryBusCoordinator,
     summary: TurnCompletionSummary,
 ) -> Result<()> {
-    if summary.collaboration_mode != CollaborationMode::Plan || !summary.has_plan {
+    if !summary.plan_follow_up_requested() {
         return Ok(());
     }
     let Some(record) = repository

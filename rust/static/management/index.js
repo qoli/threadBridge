@@ -292,6 +292,17 @@ function applyRuntimeEvent(payload) {
         shouldRender = true;
       }
       break;
+    case 'managed_codex_changed':
+      if (payload.op === 'remove') {
+        appState.health = { ...(appState.health || {}), managed_codex: null };
+        shouldRender = true;
+        break;
+      }
+      if (payload.op === 'upsert' && payload.current) {
+        appState.health = { ...(appState.health || {}), managed_codex: payload.current };
+        shouldRender = true;
+      }
+      break;
     case 'workspace_state_changed': {
       const key = payload.key;
       const existingIndex = typeof key === 'string' ? workspaceIndexByCwd(key) : -1;
@@ -1235,6 +1246,7 @@ const events = new EventSource('/api/events');
 for (const eventName of [
   'setup_changed',
   'runtime_health_changed',
+  'managed_codex_changed',
   'thread_state_changed',
   'workspace_state_changed',
   'archived_thread_changed',

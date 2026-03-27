@@ -31,8 +31,8 @@ use crate::runtime_control::{
     workspace_launch_config_for_record as shared_workspace_launch_config_for_record,
 };
 use crate::runtime_protocol::{
-    WorkingSessionRecordKind, WorkingSessionRecordView, WorkingSessionSummaryView,
-    build_working_session_records, build_working_session_summaries,
+    RuntimeControlAction, WorkingSessionRecordKind, WorkingSessionRecordView,
+    WorkingSessionSummaryView, build_working_session_records, build_working_session_summaries,
 };
 use crate::turn_completion::compose_visible_final_reply;
 
@@ -67,7 +67,11 @@ async fn persist_collaboration_mode_change(
         .append_log(
             &record,
             LogDirection::System,
-            format!("Collaboration mode changed to `{}`.", mode.as_str()),
+            format!(
+                "Action `{}` changed collaboration mode to `{}`.",
+                RuntimeControlAction::SetThreadCollaborationMode.as_str(),
+                mode.as_str()
+            ),
             None,
         )
         .await?;
@@ -562,7 +566,8 @@ pub(crate) async fn run_command(
                             &record,
                             LogDirection::System,
                             format!(
-                                "Started a fresh Codex session for workspace {}.",
+                                "Action `{}` started a fresh Codex session for workspace {}.",
+                                RuntimeControlAction::StartFreshSession.as_str(),
                                 workspace_path.display()
                             ),
                             None,
@@ -663,7 +668,10 @@ pub(crate) async fn run_command(
                         .append_log(
                             &updated,
                             LogDirection::System,
-                            "Codex session revalidated for the current workspace binding.",
+                            format!(
+                                "Action `{}` revalidated the current workspace session binding.",
+                                RuntimeControlAction::RepairSessionBinding.as_str()
+                            ),
                             None,
                         )
                         .await?;
@@ -821,7 +829,10 @@ pub(crate) async fn run_command(
                 .append_log(
                     &record,
                     LogDirection::System,
-                    format!("Launched local hcodex via `/launch {label}`."),
+                    format!(
+                        "Action `{}` launched local hcodex via `/launch {label}`.",
+                        RuntimeControlAction::LaunchLocalSession.as_str()
+                    ),
                     None,
                 )
                 .await?;
@@ -902,7 +913,11 @@ pub(crate) async fn run_command(
                 .append_log(
                     &record,
                     LogDirection::System,
-                    format!("Workspace execution mode changed to `{}`.", mode.as_str()),
+                    format!(
+                        "Action `{}` changed workspace execution mode to `{}`.",
+                        RuntimeControlAction::SetWorkspaceExecutionMode.as_str(),
+                        mode.as_str()
+                    ),
                     None,
                 )
                 .await?;
@@ -1132,8 +1147,10 @@ pub(crate) async fn run_command(
                     &record,
                     LogDirection::System,
                     format!(
-                        "Requested interrupt for session `{}` turn `{}` via `/stop`.",
-                        busy.session_id, turn_id
+                        "Action `{}` requested interrupt for session `{}` turn `{}` via `/stop`.",
+                        RuntimeControlAction::InterruptRunningTurn.as_str(),
+                        busy.session_id,
+                        turn_id
                     ),
                     None,
                 )

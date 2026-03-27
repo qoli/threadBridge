@@ -34,8 +34,9 @@ use crate::runtime_control::{
 use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus};
 pub use crate::runtime_protocol::{
     ArchivedThreadView, ManagedCodexBuildDefaultsView, ManagedCodexBuildInfoView, ManagedCodexView,
-    ManagedWorkspaceView, RuntimeEvent, RuntimeEventKind, RuntimeEventOperation, RuntimeHealthView,
-    ThreadStateView, WorkingSessionRecordView, WorkingSessionSummaryView,
+    ManagedWorkspaceView, RuntimeControlAction, RuntimeEvent, RuntimeEventKind,
+    RuntimeEventOperation, RuntimeHealthView, ThreadStateView, WorkingSessionRecordView,
+    WorkingSessionSummaryView,
 };
 use crate::runtime_protocol::{
     build_archived_thread_views, build_runtime_health, build_thread_views,
@@ -212,6 +213,7 @@ struct ArchiveThreadResponse {
 pub struct ThreadMutationResponse {
     pub ok: bool,
     pub thread_key: String,
+    pub action: RuntimeControlAction,
 }
 
 #[derive(Debug, Serialize)]
@@ -254,6 +256,7 @@ pub struct LaunchWorkspaceResponse {
     pub launched: bool,
     pub thread_key: String,
     pub command: String,
+    pub action: RuntimeControlAction,
 }
 
 #[derive(Debug, Clone)]
@@ -822,6 +825,7 @@ fn diff_management_event_snapshots(
             message: None,
         });
     }
+    push_managed_codex_runtime_event(&mut events, previous, current);
 
     push_keyed_runtime_events(
         &mut events,
@@ -855,6 +859,34 @@ fn diff_management_event_snapshots(
     );
 
     events
+}
+
+fn push_managed_codex_runtime_event(
+    target: &mut Vec<RuntimeEvent>,
+    previous: Option<&ManagementEventSnapshot>,
+    current: &ManagementEventSnapshot,
+) {
+    let previous_managed_codex =
+        previous.and_then(|snapshot| managed_codex_view(&snapshot.runtime));
+    let current_managed_codex = managed_codex_view(&current.runtime);
+    if previous_managed_codex == current_managed_codex {
+        return;
+    }
+    let (op, current_payload) = match current_managed_codex {
+        Some(value) => (RuntimeEventOperation::Upsert, Some(value)),
+        None => (RuntimeEventOperation::Remove, None),
+    };
+    target.push(RuntimeEvent {
+        kind: RuntimeEventKind::ManagedCodexChanged,
+        op,
+        key: None,
+        current: current_payload,
+        message: None,
+    });
+}
+
+fn managed_codex_view(runtime: &Value) -> Option<Value> {
+    runtime.get("managed_codex").cloned()
 }
 
 fn push_keyed_runtime_events(
@@ -1495,6 +1527,7 @@ impl ManagementApiState {
         Ok(ThreadMutationResponse {
             ok: true,
             thread_key: record.metadata.thread_key,
+            action: RuntimeControlAction::AdoptTuiSession,
         })
     }
 
@@ -1511,6 +1544,7 @@ impl ManagementApiState {
         Ok(ThreadMutationResponse {
             ok: true,
             thread_key: record.metadata.thread_key,
+            action: RuntimeControlAction::RejectTuiSession,
         })
     }
 
@@ -1576,6 +1610,7 @@ impl ManagementApiState {
         Ok(ThreadMutationResponse {
             ok: true,
             thread_key: restored.metadata.thread_key,
+            action: RuntimeControlAction::RestoreThread,
         })
     }
 
@@ -1598,6 +1633,7 @@ impl ManagementApiState {
         Ok(ThreadMutationResponse {
             ok: true,
             thread_key: result.record.metadata.thread_key,
+            action: RuntimeControlAction::RepairSessionBinding,
         })
     }
 
@@ -1625,6 +1661,7 @@ impl ManagementApiState {
         Ok(ThreadMutationResponse {
             ok: true,
             thread_key: thread_key.to_owned(),
+            action: RuntimeControlAction::RepairWorkspaceRuntime,
         })
     }
 
@@ -1666,6 +1703,7 @@ impl ManagementApiState {
             launched: true,
             thread_key: thread_key.to_owned(),
             command: config.launch_new_command,
+            action: RuntimeControlAction::LaunchLocalSession,
         })
     }
 
@@ -1683,6 +1721,7 @@ impl ManagementApiState {
             launched: true,
             thread_key: thread_key.to_owned(),
             command,
+            action: RuntimeControlAction::LaunchLocalSession,
         })
     }
 
@@ -1703,6 +1742,7 @@ impl ManagementApiState {
             launched: true,
             thread_key: thread_key.to_owned(),
             command,
+            action: RuntimeControlAction::LaunchLocalSession,
         })
     }
 
@@ -2590,6 +2630,45 @@ mod tests {
             event.kind == RuntimeEventKind::TranscriptChanged
                 && event.op == RuntimeEventOperation::Upsert
                 && event.key.as_deref() == Some("thread-1")
+        }));
+    }
+
+    #[test]
+    fn diff_management_event_snapshots_emits_managed_codex_changed() {
+        let previous = ManagementEventSnapshot {
+            setup: json!({}),
+            runtime: json!({
+                "runtime_readiness": "ready",
+                "managed_codex": {"version": "1.0.0"}
+            }),
+            threads: BTreeMap::new(),
+            workspaces: BTreeMap::new(),
+            archived_threads: BTreeMap::new(),
+            working_sessions: BTreeMap::new(),
+            transcripts: BTreeMap::new(),
+        };
+        let current = ManagementEventSnapshot {
+            setup: json!({}),
+            runtime: json!({
+                "runtime_readiness": "ready",
+                "managed_codex": {"version": "1.0.1"}
+            }),
+            threads: BTreeMap::new(),
+            workspaces: BTreeMap::new(),
+            archived_threads: BTreeMap::new(),
+            working_sessions: BTreeMap::new(),
+            transcripts: BTreeMap::new(),
+        };
+
+        let events = diff_management_event_snapshots(Some(&previous), &current);
+        assert!(events.iter().any(|event| {
+            event.kind == RuntimeEventKind::ManagedCodexChanged
+                && event.op == RuntimeEventOperation::Upsert
+                && event
+                    .current
+                    .as_ref()
+                    .and_then(|value| value.get("version"))
+                    == Some(&json!("1.0.1"))
         }));
     }
 
