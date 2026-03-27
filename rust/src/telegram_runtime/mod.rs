@@ -122,7 +122,7 @@ impl AppState {
         Self::new_with_runtimes_and_mode(
             config,
             app_server_runtime,
-            hcodex_ingress,
+            Some(hcodex_ingress),
             RuntimeOwnershipMode::SelfManaged,
         )
         .await
@@ -131,14 +131,14 @@ impl AppState {
     pub(crate) async fn new_with_runtimes_and_mode(
         config: AppConfig,
         app_server_runtime: WorkspaceRuntimeManager,
-        hcodex_ingress: HcodexIngressManager,
+        hcodex_ingress: Option<HcodexIngressManager>,
         runtime_ownership_mode: RuntimeOwnershipMode,
     ) -> Result<Self> {
         let interactive_requests = InteractiveRequestRegistry::new();
         let control = RuntimeControlContext::new(
             config.runtime.clone(),
             app_server_runtime,
-            Some(hcodex_ingress.clone()),
+            hcodex_ingress.clone(),
             runtime_ownership_mode,
         )
         .await?;
@@ -151,6 +151,8 @@ impl AppState {
         );
         if runtime_ownership_mode == RuntimeOwnershipMode::SelfManaged {
             hcodex_ingress
+                .as_ref()
+                .context("self-managed telegram runtime is missing hcodex ingress manager")?
                 .configure_interaction_sender(interaction_sender.clone())
                 .await;
         }

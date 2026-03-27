@@ -38,7 +38,7 @@ pub async fn spawn_bot_runtime_with_runtimes(
     let state = AppState::new_with_runtimes_and_mode(
         config.clone(),
         app_server_runtime,
-        hcodex_ingress.clone(),
+        None,
         RuntimeOwnershipMode::DesktopOwner,
     )
     .await?;
