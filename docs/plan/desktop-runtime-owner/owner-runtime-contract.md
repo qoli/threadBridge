@@ -19,7 +19,6 @@
 
 - observer attach 仍建立在 `thread/resume` attach 語義上，而不是正式的 upstream subscribe API
 - Telegram 雖已透過 shared control semantics 與 interaction bridge 工作，但仍未完全退回純 protocol consumer
-- `hcodex ingress` 仍未下沉進 backend worker
 - `hcodex` ingress、launch contract、與 compatibility shim 的長期保留邊界仍未完全寫死
 - adoption 的最終命名與對外呈現仍未拍板
 - `runtime protocol` 仍未完全收斂成 transport-neutral 的正式契約
@@ -77,7 +76,7 @@ owner 所管理的 backend plane today reality 與其長期收斂到 workspace-s
 - ensure / repair workspace runtime
 - owner-canonical runtime health
 - workspace-scoped control orchestration authority
-- ensure workspace app-server 與 `hcodex ingress`
+- ensure workspace app-server worker，並以 worker-managed launch endpoint 作為 `hcodex` 啟動基底
 
 目前沒有承擔：
 

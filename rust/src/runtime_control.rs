@@ -366,13 +366,8 @@ impl WorkspaceRuntimeService {
             owner_managed = self.ctx.runtime_is_owner_managed(),
             "runtime control requested control-path workspace runtime"
         );
-        let runtime_state = self
-            .resolve_control_runtime_state(&workspace)
-            .await?;
-        Ok(self.codex_workspace_from_runtime_state(
-            workspace,
-            &runtime_state,
-        ))
+        let runtime_state = self.resolve_control_runtime_state(&workspace).await?;
+        Ok(self.codex_workspace_from_runtime_state(workspace, &runtime_state))
     }
 
     pub async fn shared_codex_workspace(&self, workspace: PathBuf) -> Result<CodexWorkspace> {
@@ -382,13 +377,8 @@ impl WorkspaceRuntimeService {
             owner_managed = self.ctx.runtime_is_owner_managed(),
             "runtime control requested shared workspace runtime"
         );
-        let runtime_state = self
-            .resolve_shared_runtime_state(&workspace)
-            .await?;
-        Ok(self.codex_workspace_from_runtime_state(
-            workspace,
-            &runtime_state,
-        ))
+        let runtime_state = self.resolve_shared_runtime_state(&workspace).await?;
+        Ok(self.codex_workspace_from_runtime_state(workspace, &runtime_state))
     }
 
     async fn resolve_control_runtime_state(
@@ -477,12 +467,9 @@ impl WorkspaceRuntimeService {
         let Some(socket_addr) = client_ws_url.strip_prefix("ws://") else {
             bail!("owner-managed runtime url must start with ws://");
         };
-        let _ = TcpStream::connect(socket_addr).await.with_context(|| {
-            format!(
-                "owner-managed runtime is unavailable: {}",
-                client_ws_url
-            )
-        })?;
+        let _ = TcpStream::connect(socket_addr)
+            .await
+            .with_context(|| format!("owner-managed runtime is unavailable: {}", client_ws_url))?;
         Ok(state)
     }
 }

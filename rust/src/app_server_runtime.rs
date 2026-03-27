@@ -3,14 +3,17 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -19,6 +22,7 @@ use crate::app_server_ws_worker::WorkerReadyState;
 #[derive(Debug, Clone)]
 pub struct WorkspaceRuntimeManager {
     inner: Arc<Mutex<HashMap<String, WorkspaceRuntime>>>,
+    data_root_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +30,7 @@ struct WorkspaceRuntime {
     workspace_path: PathBuf,
     daemon_url: String,
     worker_url: String,
+    hcodex_url: Option<String>,
     child: Arc<Mutex<Child>>,
 }
 
@@ -57,9 +62,7 @@ const RUNTIME_STATE_SCHEMA_VERSION: u32 = 3;
 
 impl WorkspaceRuntimeState {
     pub fn client_ws_url(&self) -> &str {
-        self.worker_ws_url
-            .as_deref()
-            .unwrap_or(&self.daemon_ws_url)
+        self.worker_ws_url.as_deref().unwrap_or(&self.daemon_ws_url)
     }
 }
 
@@ -67,6 +70,14 @@ impl WorkspaceRuntimeManager {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
+            data_root_path: None,
+        }
+    }
+
+    pub fn new_with_data_root(data_root_path: PathBuf) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            data_root_path: Some(data_root_path),
         }
     }
 
@@ -84,19 +95,30 @@ impl WorkspaceRuntimeManager {
                 .ok()
                 .flatten()
                 .and_then(|state| state.hcodex_ws_url);
+            let hcodex_ws_url = if self.data_root_path.is_some() {
+                let ensured = ensure_worker_hcodex_ingress(&existing.worker_url)
+                    .await?
+                    .or(existing_proxy_url)
+                    .filter(|value| !value.trim().is_empty())
+                    .context("owner-managed worker is missing hcodex launch endpoint")?;
+                Some(ensured)
+            } else {
+                existing_proxy_url
+            };
             let state = WorkspaceRuntimeState {
                 schema_version: RUNTIME_STATE_SCHEMA_VERSION,
                 workspace_cwd: existing.workspace_path.display().to_string(),
                 daemon_ws_url: existing.daemon_url.clone(),
                 worker_ws_url: Some(existing.worker_url.clone()),
                 worker_pid: child_process_id(&existing.child).await,
-                hcodex_ws_url: existing_proxy_url,
+                hcodex_ws_url,
             };
             info!(
                 event = "app_server_runtime.reuse",
                 workspace = %existing.workspace_path.display(),
                 daemon_ws_url = %existing.daemon_url,
                 worker_ws_url = %existing.worker_url,
+                hcodex_ws_url = %state.hcodex_ws_url.as_deref().unwrap_or(""),
                 "reusing shared app-server worker"
             );
             drop(inner);
@@ -104,20 +126,33 @@ impl WorkspaceRuntimeManager {
             return Ok(state);
         }
 
-        let runtime = spawn_workspace_runtime(workspace_path).await?;
+        let runtime =
+            spawn_workspace_runtime(workspace_path, self.data_root_path.as_deref()).await?;
+        let hcodex_ws_url = if self.data_root_path.is_some() {
+            let ensured = runtime
+                .hcodex_url
+                .clone()
+                .or(ensure_worker_hcodex_ingress(&runtime.worker_url).await?)
+                .filter(|value| !value.trim().is_empty())
+                .context("owner-managed worker did not publish hcodex launch endpoint")?;
+            Some(ensured)
+        } else {
+            runtime.hcodex_url.clone()
+        };
         let state = WorkspaceRuntimeState {
             schema_version: RUNTIME_STATE_SCHEMA_VERSION,
             workspace_cwd: runtime.workspace_path.display().to_string(),
             daemon_ws_url: runtime.daemon_url.clone(),
             worker_ws_url: Some(runtime.worker_url.clone()),
             worker_pid: child_process_id(&runtime.child).await,
-            hcodex_ws_url: None,
+            hcodex_ws_url,
         };
         info!(
             event = "app_server_runtime.spawned",
             workspace = %runtime.workspace_path.display(),
             daemon_ws_url = %runtime.daemon_url,
             worker_ws_url = %runtime.worker_url,
+            hcodex_ws_url = %runtime.hcodex_url.as_deref().unwrap_or(""),
             "spawned shared app-server worker"
         );
         inner.insert(key, runtime.clone());
@@ -139,7 +174,10 @@ fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-async fn spawn_workspace_runtime(workspace_path: &Path) -> Result<WorkspaceRuntime> {
+async fn spawn_workspace_runtime(
+    workspace_path: &Path,
+    data_root_path: Option<&Path>,
+) -> Result<WorkspaceRuntime> {
     let workspace_path = workspace_path
         .canonicalize()
         .unwrap_or_else(|_| workspace_path.to_path_buf());
@@ -149,25 +187,39 @@ async fn spawn_workspace_runtime(workspace_path: &Path) -> Result<WorkspaceRunti
         .join(APP_SERVER_STATE_DIR)
         .join(format!("worker-ready-{}.json", Uuid::new_v4()));
     let worker_bin = resolve_worker_binary_path()?;
-    let mut child = Command::new(&worker_bin)
-        .args([
-            "--workspace",
-            workspace_path
+    let mut command = Command::new(&worker_bin);
+    command.args([
+        "--workspace",
+        workspace_path
+            .to_str()
+            .context("workspace path must be valid utf-8")?,
+        "--listen-ws-url",
+        &worker_url,
+        "--ready-file",
+        ready_file
+            .to_str()
+            .context("ready file path must be valid utf-8")?,
+    ]);
+    if let Some(data_root_path) = data_root_path {
+        command.args([
+            "--data-root",
+            data_root_path
                 .to_str()
-                .context("workspace path must be valid utf-8")?,
-            "--listen-ws-url",
-            &worker_url,
-            "--ready-file",
-            ready_file
-                .to_str()
-                .context("ready file path must be valid utf-8")?,
-        ])
+                .context("data root path must be valid utf-8")?,
+        ]);
+    }
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .with_context(|| format!("failed to spawn app_server_ws_worker at {}", worker_bin.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to spawn app_server_ws_worker at {}",
+                worker_bin.display()
+            )
+        })?;
 
     if let Some(stderr) = child.stderr.take() {
         let mut stderr_lines = BufReader::new(stderr).lines();
@@ -184,6 +236,7 @@ async fn spawn_workspace_runtime(workspace_path: &Path) -> Result<WorkspaceRunti
         workspace_path,
         daemon_url: ready.daemon_ws_url,
         worker_url: ready.worker_ws_url,
+        hcodex_url: ready.hcodex_ws_url,
         child,
     };
     wait_for_daemon(&runtime).await?;
@@ -209,7 +262,55 @@ async fn worker_is_healthy(runtime: &WorkspaceRuntime) -> bool {
     {
         return false;
     }
-    worker_endpoint_is_live(&runtime.worker_url).await && daemon_endpoint_is_live(&runtime.daemon_url).await
+    worker_endpoint_is_live(&runtime.worker_url).await
+        && daemon_endpoint_is_live(&runtime.daemon_url).await
+}
+
+async fn ensure_worker_hcodex_ingress(worker_ws_url: &str) -> Result<Option<String>> {
+    let request_id = 9_001_i64;
+    let (mut worker_ws, _) = connect_async(worker_ws_url)
+        .await
+        .with_context(|| format!("failed to connect to worker endpoint {worker_ws_url}"))?;
+    worker_ws
+        .send(WsMessage::Text(
+            json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "threadbridge/ensureHcodexIngress",
+                "params": {},
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .context("failed to send worker ingress ensure request")?;
+
+    while let Some(message) = worker_ws.next().await {
+        let message = message.context("failed to read worker ingress ensure response")?;
+        let payload = match message {
+            WsMessage::Text(text) => serde_json::from_str::<Value>(text.as_str())
+                .context("invalid json response from worker ingress ensure request")?,
+            WsMessage::Binary(bytes) => serde_json::from_slice::<Value>(&bytes)
+                .context("invalid binary json from worker ingress ensure request")?,
+            WsMessage::Close(_) => break,
+            _ => continue,
+        };
+        if payload.get("id").and_then(Value::as_i64) != Some(request_id) {
+            continue;
+        }
+        if let Some(error) = payload.get("error") {
+            return Err(anyhow!(
+                "worker ingress ensure request failed: {}",
+                error
+            ));
+        }
+        return Ok(payload
+            .get("result")
+            .and_then(|result| result.get("hcodexWsUrl"))
+            .and_then(Value::as_str)
+            .map(str::to_owned));
+    }
+    bail!("worker closed before replying to ingress ensure request");
 }
 
 pub async fn daemon_endpoint_is_live(url: &str) -> bool {

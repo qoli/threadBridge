@@ -16,7 +16,6 @@
 
 目前尚未完成的部分：
 
-- `hcodex ingress` 仍暫留 desktop process，且 relay 仍直連 upstream daemon；目前只把 observer attach 收回 worker
 - today code 中與 backend 相關的責任仍散落在 `codex.rs`、`app_server_runtime.rs`、`app_server_observer.rs`、`hcodex_ingress.rs`、`runtime_owner.rs`、`runtime_control.rs`
 - `observer` attach 仍建立在 `thread/resume` attach 語義上，而不是正式 upstream subscribe API
 - backend plane 與 shared runtime semantics 的長期 API 形狀仍未收斂成獨立 contract

@@ -209,9 +209,9 @@ async fn worker_busy_snapshot_for_binding(
             pending_interrupt_turn_id: None,
             pending_interrupt_requested_at: None,
             observer_attach_mode: None,
-            updated_at: run_state
-                .last_transition_at
-                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+            updated_at: run_state.last_transition_at.unwrap_or_else(|| {
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            }),
         }));
     }
 
@@ -259,14 +259,16 @@ pub async fn resolve_run_status_with_cache(
     cache: &WorkspaceStatusCache,
     binding: Option<&SessionBinding>,
 ) -> Result<RunStatus> {
-    Ok(if resolve_run_phase_with_cache(cache, binding)
-        .await?
-        .is_turn_busy()
-    {
-        RunStatus::Running
-    } else {
-        RunStatus::Idle
-    })
+    Ok(
+        if resolve_run_phase_with_cache(cache, binding)
+            .await?
+            .is_turn_busy()
+        {
+            RunStatus::Running
+        } else {
+            RunStatus::Idle
+        },
+    )
 }
 
 pub async fn resolve_run_phase(binding: Option<&SessionBinding>) -> Result<WorkspaceStatusPhase> {

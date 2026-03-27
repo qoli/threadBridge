@@ -22,22 +22,20 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::config::{RuntimeConfig, load_optional_telegram_config};
-use crate::execution_mode::{
-    ExecutionMode, write_workspace_execution_config,
-};
+use crate::execution_mode::{ExecutionMode, write_workspace_execution_config};
 use crate::local_control::{
     TelegramControlBridgeHandle, ensure_archived_thread, resolve_workspace_argument,
 };
 use crate::repository::{ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry};
+use crate::runtime_control::{
+    HcodexLaunchConfigView, SharedControlHandle, WorkspaceExecutionModeView, hcodex_launch_command,
+    launch_hcodex_via_terminal,
+};
 use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus};
 pub use crate::runtime_protocol::{
     ArchivedThreadView, ManagedCodexBuildDefaultsView, ManagedCodexBuildInfoView, ManagedCodexView,
     ManagedWorkspaceView, RuntimeEvent, RuntimeEventKind, RuntimeEventOperation, RuntimeHealthView,
     ThreadStateView, WorkingSessionRecordView, WorkingSessionSummaryView,
-};
-use crate::runtime_control::{
-    HcodexLaunchConfigView, SharedControlHandle, WorkspaceExecutionModeView,
-    hcodex_launch_command, launch_hcodex_via_terminal,
 };
 use crate::runtime_protocol::{
     build_archived_thread_views, build_runtime_health, build_thread_views,
@@ -938,11 +936,9 @@ async fn get_events(
 
 impl ManagementApiState {
     async fn shared_control(&self) -> Result<SharedControlHandle> {
-        self.shared_control
-            .read()
-            .await
-            .clone()
-            .context("Desktop runtime owner control is not active. Start threadBridge in desktop mode.")
+        self.shared_control.read().await.clone().context(
+            "Desktop runtime owner control is not active. Start threadBridge in desktop mode.",
+        )
     }
 
     async fn telegram_bridge(&self) -> Result<TelegramControlBridgeHandle> {
@@ -1364,9 +1360,11 @@ impl ManagementApiState {
                 .map(|summary| &summary.updated_at)
                 .max()
                 .cloned();
-            let latest_summary = summaries
-                .iter()
-                .max_by(|a, b| a.updated_at.cmp(&b.updated_at).then_with(|| a.session_id.cmp(&b.session_id)));
+            let latest_summary = summaries.iter().max_by(|a, b| {
+                a.updated_at
+                    .cmp(&b.updated_at)
+                    .then_with(|| a.session_id.cmp(&b.session_id))
+            });
             views.push(WorkingSessionsEventView {
                 thread_key,
                 updated_at,
@@ -1405,46 +1403,48 @@ impl ManagementApiState {
     async fn add_workspace(&self, workspace_cwd: &str) -> Result<AddWorkspaceResult> {
         let control = self.shared_control().await?;
         let workspace_path = resolve_workspace_argument(workspace_cwd).await?;
-        let (created, record, bound_workspace_cwd) = match control
-            .resolve_workspace_add(&workspace_path)
-            .await?
-        {
-            crate::runtime_control::WorkspaceAddResolution::Existing(record) => {
-                let binding = self.repository.read_session_binding(&record).await?;
-                let bound_workspace_cwd = binding
-                    .as_ref()
-                    .and_then(|binding| binding.workspace_cwd.clone())
-                    .or_else(|| Some(workspace_path.display().to_string()));
-                (false, record, bound_workspace_cwd)
-            }
-            crate::runtime_control::WorkspaceAddResolution::Create {
-                canonical_workspace_cwd,
-                suggested_title,
-            } => {
-                let bridge = self.telegram_bridge().await?;
-                let created_thread = bridge
-                    .create_workspace_thread(Some(suggested_title), "local management UI")
-                    .await?;
-                let record = control
-                    .create_thread(
-                        created_thread.chat_id,
-                        created_thread.message_thread_id,
-                        created_thread.title.clone(),
-                    )
-                    .await?;
-                let record = control
-                    .bind_workspace_record(
-                        record,
-                        Path::new(&canonical_workspace_cwd),
-                        "local management UI",
-                    )
-                    .await?;
-                bridge
-                    .notify_workspace_bound(&record, Path::new(&canonical_workspace_cwd), "local_bind_workspace")
-                    .await?;
-                (true, record, Some(canonical_workspace_cwd))
-            }
-        };
+        let (created, record, bound_workspace_cwd) =
+            match control.resolve_workspace_add(&workspace_path).await? {
+                crate::runtime_control::WorkspaceAddResolution::Existing(record) => {
+                    let binding = self.repository.read_session_binding(&record).await?;
+                    let bound_workspace_cwd = binding
+                        .as_ref()
+                        .and_then(|binding| binding.workspace_cwd.clone())
+                        .or_else(|| Some(workspace_path.display().to_string()));
+                    (false, record, bound_workspace_cwd)
+                }
+                crate::runtime_control::WorkspaceAddResolution::Create {
+                    canonical_workspace_cwd,
+                    suggested_title,
+                } => {
+                    let bridge = self.telegram_bridge().await?;
+                    let created_thread = bridge
+                        .create_workspace_thread(Some(suggested_title), "local management UI")
+                        .await?;
+                    let record = control
+                        .create_thread(
+                            created_thread.chat_id,
+                            created_thread.message_thread_id,
+                            created_thread.title.clone(),
+                        )
+                        .await?;
+                    let record = control
+                        .bind_workspace_record(
+                            record,
+                            Path::new(&canonical_workspace_cwd),
+                            "local management UI",
+                        )
+                        .await?;
+                    bridge
+                        .notify_workspace_bound(
+                            &record,
+                            Path::new(&canonical_workspace_cwd),
+                            "local_bind_workspace",
+                        )
+                        .await?;
+                    (true, record, Some(canonical_workspace_cwd))
+                }
+            };
         if let Some(workspace_cwd) = bound_workspace_cwd.as_deref() {
             self.maybe_reconcile_owner_workspace(workspace_cwd).await?;
         }
@@ -1543,7 +1543,9 @@ impl ManagementApiState {
 
     async fn archive_thread(&self, thread_key: &str) -> Result<ArchiveThreadResponse> {
         let control = self.shared_control().await?;
-        let archived = control.archive_thread(thread_key, "local management UI").await?;
+        let archived = control
+            .archive_thread(thread_key, "local management UI")
+            .await?;
         if let Some(bridge) = self.telegram_bridge.read().await.clone() {
             let _ = bridge.delete_thread_topic(&archived).await;
         }
@@ -2204,7 +2206,9 @@ mod tests {
         ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
         TranscriptMirrorRole,
     };
-    use crate::runtime_control::{RuntimeControlContext, RuntimeOwnershipMode, SharedControlHandle};
+    use crate::runtime_control::{
+        RuntimeControlContext, RuntimeOwnershipMode, SharedControlHandle,
+    };
     use crate::runtime_protocol::{
         RuntimeEventKind, RuntimeEventOperation, WorkingSessionRecordKind,
     };
@@ -2416,10 +2420,16 @@ mod tests {
             .await
             .unwrap();
 
-        let result = handle.add_workspace(&workspace.display().to_string()).await.unwrap();
+        let result = handle
+            .add_workspace(&workspace.display().to_string())
+            .await
+            .unwrap();
         assert!(!result.created);
         assert_eq!(result.thread_key, record.metadata.thread_key);
-        assert_eq!(result.workspace_cwd.as_deref(), Some(workspace.to_str().unwrap()));
+        assert_eq!(
+            result.workspace_cwd.as_deref(),
+            Some(workspace.to_str().unwrap())
+        );
     }
 
     #[tokio::test]
@@ -2469,9 +2479,11 @@ mod tests {
             .restore_thread(&archived.metadata.thread_key)
             .await
             .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("Telegram bot runtime is unavailable"));
+        assert!(
+            error
+                .to_string()
+                .contains("Telegram bot runtime is unavailable")
+        );
     }
 
     #[test]
@@ -2540,13 +2552,23 @@ mod tests {
             event.kind == RuntimeEventKind::ThreadStateChanged
                 && event.op == RuntimeEventOperation::Upsert
                 && event.key.as_deref() == Some("thread-1")
-                && event.current.as_ref().and_then(|value| value.get("run_phase")).and_then(|value| value.as_str()) == Some("turn_finalizing")
+                && event
+                    .current
+                    .as_ref()
+                    .and_then(|value| value.get("run_phase"))
+                    .and_then(|value| value.as_str())
+                    == Some("turn_finalizing")
         }));
         assert!(events.iter().any(|event| {
             event.kind == RuntimeEventKind::WorkspaceStateChanged
                 && event.op == RuntimeEventOperation::Upsert
                 && event.key.as_deref() == Some("/tmp/workspace")
-                && event.current.as_ref().and_then(|value| value.get("run_phase")).and_then(|value| value.as_str()) == Some("turn_finalizing")
+                && event
+                    .current
+                    .as_ref()
+                    .and_then(|value| value.get("run_phase"))
+                    .and_then(|value| value.as_str())
+                    == Some("turn_finalizing")
         }));
         assert!(events.iter().any(|event| {
             event.kind == RuntimeEventKind::ArchivedThreadChanged
@@ -2557,7 +2579,12 @@ mod tests {
             event.kind == RuntimeEventKind::WorkingSessionChanged
                 && event.op == RuntimeEventOperation::Upsert
                 && event.key.as_deref() == Some("thread-1")
-                && event.current.as_ref().and_then(|value| value.get("run_phase")).and_then(|value| value.as_str()) == Some("turn_finalizing")
+                && event
+                    .current
+                    .as_ref()
+                    .and_then(|value| value.get("run_phase"))
+                    .and_then(|value| value.as_str())
+                    == Some("turn_finalizing")
         }));
         assert!(events.iter().any(|event| {
             event.kind == RuntimeEventKind::TranscriptChanged

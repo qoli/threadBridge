@@ -9,13 +9,10 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 
 use crate::app_server_runtime::{
-    WorkspaceRuntimeManager, WorkspaceRuntimeState, daemon_endpoint_is_live,
-    read_workspace_runtime_state_file, worker_endpoint_is_live,
+    WorkspaceRuntimeManager, daemon_endpoint_is_live, worker_endpoint_is_live,
 };
 use crate::config::RuntimeConfig;
-use crate::hcodex_ingress::{HcodexIngressManager, hcodex_ingress_endpoint_is_live};
-use crate::repository::ThreadRepository;
-use crate::runtime_interaction::RuntimeInteractionSender;
+use crate::hcodex_ingress::hcodex_ingress_endpoint_is_live;
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -63,7 +60,6 @@ pub struct DesktopRuntimeOwner {
     runtime: RuntimeConfig,
     seed_template_path: PathBuf,
     app_server_runtime: WorkspaceRuntimeManager,
-    hcodex_ingress_runtime: HcodexIngressManager,
     status: Arc<RwLock<RuntimeOwnerStatus>>,
     workspace_heartbeats: Arc<RwLock<BTreeMap<String, WorkspaceRuntimeHeartbeat>>>,
     reconcile_lock: Arc<Mutex<()>>,
@@ -77,12 +73,12 @@ impl DesktopRuntimeOwner {
                 .join("templates")
                 .join("AGENTS.md"),
         )?;
-        let repository = ThreadRepository::open(&runtime.data_root_path).await?;
         Ok(Self {
+            app_server_runtime: WorkspaceRuntimeManager::new_with_data_root(
+                runtime.data_root_path.clone(),
+            ),
             runtime,
             seed_template_path,
-            app_server_runtime: WorkspaceRuntimeManager::new(),
-            hcodex_ingress_runtime: HcodexIngressManager::new(repository),
             status: Arc::new(RwLock::new(RuntimeOwnerStatus {
                 state: "idle",
                 last_reconcile_started_at: None,
@@ -102,15 +98,6 @@ impl DesktopRuntimeOwner {
 
     pub fn app_server_runtime(&self) -> WorkspaceRuntimeManager {
         self.app_server_runtime.clone()
-    }
-
-    pub async fn configure_hcodex_ingress_interaction_sender(
-        &self,
-        sender: RuntimeInteractionSender,
-    ) {
-        self.hcodex_ingress_runtime
-            .configure_interaction_sender(sender)
-            .await;
     }
 
     pub async fn workspace_heartbeat(
@@ -170,11 +157,13 @@ impl DesktopRuntimeOwner {
                     workspace = %workspace_path.display(),
                     daemon_ws_url = %runtime.daemon_ws_url,
                     worker_ws_url = %runtime.worker_ws_url.as_deref().unwrap_or(""),
+                    hcodex_ws_url = %runtime.hcodex_ws_url.as_deref().unwrap_or(""),
                     "desktop runtime owner ensured workspace app-server"
                 );
-                let ensured_ingress = self
-                    .ensure_workspace_ingress_if_needed(workspace_path, &runtime)
-                    .await?;
+                let ensured_ingress = runtime
+                    .hcodex_ws_url
+                    .as_deref()
+                    .is_some_and(|url| !url.trim().is_empty());
                 Ok::<bool, anyhow::Error>(ensured_ingress)
             }
             .await;
@@ -241,52 +230,6 @@ impl DesktopRuntimeOwner {
             .await
             .retain(|workspace, _| workspaces.contains(workspace));
     }
-
-    async fn ensure_workspace_ingress_if_needed(
-        &self,
-        workspace_path: &Path,
-        runtime_state: &WorkspaceRuntimeState,
-    ) -> Result<bool> {
-        let existing_runtime_state = read_workspace_runtime_state_file(workspace_path).await?;
-        let existing_ingress_running = match existing_runtime_state
-            .as_ref()
-            .and_then(|state| state.hcodex_ws_url.as_deref())
-        {
-            Some(url) => hcodex_ingress_endpoint_is_live(url).await,
-            None => false,
-        };
-        if !workspace_needs_owner_managed_ingress(
-            existing_runtime_state.as_ref(),
-            existing_ingress_running,
-        ) {
-            info!(
-                event = "runtime_owner.workspace.proxy_reused",
-                workspace = %workspace_path.display(),
-                hcodex_ws_url = %existing_runtime_state
-                    .as_ref()
-                    .and_then(|state| state.hcodex_ws_url.as_deref())
-                    .unwrap_or(""),
-                "desktop runtime owner reused existing workspace hcodex launch endpoint"
-            );
-            return Ok(false);
-        }
-
-        let _ = self
-            .hcodex_ingress_runtime
-            .ensure_workspace_ingress(
-                workspace_path,
-                runtime_state.client_ws_url(),
-                runtime_state.client_ws_url(),
-            )
-            .await?;
-        info!(
-            event = "runtime_owner.workspace.proxy_ready",
-            workspace = %workspace_path.display(),
-            daemon_ws_url = %runtime_state.daemon_ws_url,
-            "desktop runtime owner ensured workspace hcodex launch endpoint"
-        );
-        Ok(true)
-    }
 }
 
 fn canonical_workspace_string(workspace_path: &Path) -> String {
@@ -299,19 +242,6 @@ fn canonical_workspace_string(workspace_path: &Path) -> String {
 
 fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
-
-fn workspace_needs_owner_managed_ingress(
-    runtime_state: Option<&WorkspaceRuntimeState>,
-    ingress_running: bool,
-) -> bool {
-    let Some(runtime_state) = runtime_state else {
-        return true;
-    };
-    let Some(hcodex_ws_url) = runtime_state.hcodex_ws_url.as_deref() else {
-        return true;
-    };
-    hcodex_ws_url.trim().is_empty() || !ingress_running
 }
 
 async fn heartbeat_for_workspace(workspace_path: &Path) -> WorkspaceRuntimeHeartbeat {
@@ -388,44 +318,5 @@ async fn heartbeat_for_workspace(workspace_path: &Path) -> WorkspaceRuntimeHeart
         } else {
             Some("workspace app-server worker is unavailable".to_owned())
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{WorkspaceRuntimeState, workspace_needs_owner_managed_ingress};
-
-    #[test]
-    fn owner_reconcile_skips_live_existing_ingress() {
-        let state = WorkspaceRuntimeState {
-            schema_version: 3,
-            workspace_cwd: "/tmp/workspace".to_owned(),
-            daemon_ws_url: "ws://127.0.0.1:4100".to_owned(),
-            worker_ws_url: Some("ws://127.0.0.1:4101".to_owned()),
-            worker_pid: Some(42),
-            hcodex_ws_url: Some("ws://127.0.0.1:4102".to_owned()),
-        };
-
-        assert!(!workspace_needs_owner_managed_ingress(Some(&state), true));
-    }
-
-    #[test]
-    fn owner_reconcile_repairs_missing_or_stale_ingress() {
-        let missing = WorkspaceRuntimeState {
-            schema_version: 3,
-            workspace_cwd: "/tmp/workspace".to_owned(),
-            daemon_ws_url: "ws://127.0.0.1:4100".to_owned(),
-            worker_ws_url: Some("ws://127.0.0.1:4101".to_owned()),
-            worker_pid: Some(42),
-            hcodex_ws_url: None,
-        };
-        let stale = WorkspaceRuntimeState {
-            hcodex_ws_url: Some("ws://127.0.0.1:4102".to_owned()),
-            ..missing.clone()
-        };
-
-        assert!(workspace_needs_owner_managed_ingress(None, false));
-        assert!(workspace_needs_owner_managed_ingress(Some(&missing), false));
-        assert!(workspace_needs_owner_managed_ingress(Some(&stale), false));
     }
 }

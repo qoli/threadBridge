@@ -86,8 +86,9 @@ impl TelegramControlBridgeHandle {
             ),
         )
         .await?;
-        let _ = status_sync::refresh_thread_topic_title(&self.bot, &self.repository, record, source)
-            .await;
+        let _ =
+            status_sync::refresh_thread_topic_title(&self.bot, &self.repository, record, source)
+                .await;
         Ok(())
     }
 
@@ -96,8 +97,9 @@ impl TelegramControlBridgeHandle {
         record: &ThreadRecord,
         source: &'static str,
     ) -> Result<()> {
-        let _ = status_sync::refresh_thread_topic_title(&self.bot, &self.repository, record, source)
-            .await;
+        let _ =
+            status_sync::refresh_thread_topic_title(&self.bot, &self.repository, record, source)
+                .await;
         Ok(())
     }
 
@@ -115,7 +117,10 @@ impl TelegramControlBridgeHandle {
         Ok(())
     }
 
-    pub async fn create_restored_thread(&self, archived: &ThreadRecord) -> Result<CreatedTelegramThread> {
+    pub async fn create_restored_thread(
+        &self,
+        archived: &ThreadRecord,
+    ) -> Result<CreatedTelegramThread> {
         let topic = self
             .bot
             .create_forum_topic(
@@ -151,9 +156,13 @@ impl TelegramControlBridgeHandle {
             "This thread has been restored from archive.",
         )
         .await?;
-        let _ =
-            status_sync::refresh_thread_topic_title(&self.bot, &self.repository, restored, "restore")
-                .await;
+        let _ = status_sync::refresh_thread_topic_title(
+            &self.bot,
+            &self.repository,
+            restored,
+            "restore",
+        )
+        .await;
         Ok(())
     }
 

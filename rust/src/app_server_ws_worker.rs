@@ -1,6 +1,6 @@
-use std::ffi::OsString;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -19,10 +19,15 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, warn};
 
+use crate::hcodex_ingress::HcodexIngressManager;
+use crate::repository::ThreadRepository;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerReadyState {
     pub worker_ws_url: String,
     pub daemon_ws_url: String,
+    #[serde(default)]
+    pub hcodex_ws_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +52,13 @@ struct WorkerState {
     thread_channels: HashMap<String, mpsc::UnboundedSender<WsMessage>>,
 }
 
+#[derive(Debug, Clone)]
+struct WorkerIngressRuntime {
+    workspace_path: PathBuf,
+    daemon_ws_url: String,
+    ingress_manager: HcodexIngressManager,
+}
+
 fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -68,6 +80,7 @@ async fn run_cli(args: Vec<OsString>) -> Result<()> {
 #[derive(Debug)]
 struct WorkerCli {
     workspace: PathBuf,
+    data_root: Option<PathBuf>,
     listen_ws_url: String,
     ready_file: PathBuf,
 }
@@ -75,6 +88,7 @@ struct WorkerCli {
 impl WorkerCli {
     fn parse(args: &[OsString]) -> Result<Self> {
         let mut workspace: Option<PathBuf> = None;
+        let mut data_root: Option<PathBuf> = None;
         let mut listen_ws_url: Option<String> = None;
         let mut ready_file: Option<PathBuf> = None;
         let mut iter = args.iter();
@@ -86,6 +100,10 @@ impl WorkerCli {
                 "--workspace" => {
                     let value = iter.next().context("missing value for --workspace")?;
                     workspace = Some(PathBuf::from(value));
+                }
+                "--data-root" => {
+                    let value = iter.next().context("missing value for --data-root")?;
+                    data_root = Some(PathBuf::from(value));
                 }
                 "--listen-ws-url" => {
                     let value = iter
@@ -105,6 +123,7 @@ impl WorkerCli {
 
         Ok(Self {
             workspace: workspace.context("missing required --workspace")?,
+            data_root,
             listen_ws_url: listen_ws_url.context("missing required --listen-ws-url")?,
             ready_file: ready_file.context("missing required --ready-file")?,
         })
@@ -147,11 +166,31 @@ async fn run_worker(config: WorkerCli) -> Result<()> {
     }
 
     wait_for_daemon(&daemon_ws_url).await?;
+    let worker_ingress = if let Some(data_root_path) = config.data_root.as_deref() {
+        let repository = ThreadRepository::open(data_root_path).await?;
+        let ingress = HcodexIngressManager::new(repository);
+        let ingress_state = ingress
+            .ensure_workspace_ingress(&workspace, &daemon_ws_url, &daemon_ws_url)
+            .await?;
+        Some((
+            Arc::new(WorkerIngressRuntime {
+                workspace_path: workspace.clone(),
+                daemon_ws_url: daemon_ws_url.clone(),
+                ingress_manager: ingress,
+            }),
+            ingress_state.hcodex_ws_url,
+        ))
+    } else {
+        None
+    };
     write_ready_file(
         &config.ready_file,
         &WorkerReadyState {
             worker_ws_url,
             daemon_ws_url: daemon_ws_url.clone(),
+            hcodex_ws_url: worker_ingress
+                .as_ref()
+                .and_then(|(_, hcodex_ws_url)| hcodex_ws_url.clone()),
         },
     )
     .await?;
@@ -168,8 +207,16 @@ async fn run_worker(config: WorkerCli) -> Result<()> {
                 let (stream, _) = accept.context("worker listener accept failed")?;
                 let upstream_url = daemon_ws_url.clone();
                 let worker_state = worker_state.clone();
+                let worker_ingress = worker_ingress.as_ref().map(|(runtime, _)| runtime.clone());
                 tokio::spawn(async move {
-                    if let Err(error) = proxy_client_session(stream, &upstream_url, worker_state).await {
+                    if let Err(error) = proxy_client_session(
+                        stream,
+                        &upstream_url,
+                        worker_state,
+                        worker_ingress,
+                    )
+                    .await
+                    {
                         warn!(event = "app_server_ws_worker.proxy.failed", error = %error);
                     }
                 });
@@ -182,6 +229,7 @@ async fn proxy_client_session(
     stream: TcpStream,
     upstream_url: &str,
     worker_state: Arc<Mutex<WorkerState>>,
+    worker_ingress: Option<Arc<WorkerIngressRuntime>>,
 ) -> Result<()> {
     let client_ws = accept_async(stream)
         .await
@@ -201,7 +249,14 @@ async fn proxy_client_session(
                     break;
                 };
                 let message = client_message.context("failed to read worker client websocket message")?;
-                if handle_local_request(&message, &worker_state, &mut client_sink).await? {
+                if handle_local_request(
+                    &message,
+                    &worker_state,
+                    worker_ingress.as_ref(),
+                    &mut client_sink,
+                )
+                .await?
+                {
                     continue;
                 }
                 track_client_message(&message, &worker_state).await?;
@@ -304,6 +359,7 @@ fn socket_addr_from_ws_url(url: &str) -> Result<String> {
 async fn handle_local_request<S>(
     message: &WsMessage,
     worker_state: &Arc<Mutex<WorkerState>>,
+    worker_ingress: Option<&Arc<WorkerIngressRuntime>>,
     client_sink: &mut futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream<S>,
         WsMessage,
@@ -377,7 +433,9 @@ where
                     .thread_channels
                     .get(thread_id)
                     .cloned()
-                    .with_context(|| format!("no live worker ingress channel for thread `{thread_id}`"))?;
+                    .with_context(|| {
+                        format!("no live worker ingress channel for thread `{thread_id}`")
+                    })?;
                 sender
                     .send(WsMessage::Text(
                         json!({
@@ -387,7 +445,9 @@ where
                         .to_string()
                         .into(),
                     ))
-                    .map_err(|_| anyhow!("failed to inject request_user_input response into worker session"))?;
+                    .map_err(|_| {
+                        anyhow!("failed to inject request_user_input response into worker session")
+                    })?;
                 json!({})
             };
             client_sink
@@ -404,11 +464,45 @@ where
                 .context("failed to send worker local response")?;
             Ok(true)
         }
+        "threadbridge/ensureHcodexIngress" => {
+            let worker_ingress =
+                worker_ingress.context("worker ingress runtime is unavailable for ensure request")?;
+            let ingress_state = worker_ingress
+                .ingress_manager
+                .ensure_workspace_ingress(
+                    &worker_ingress.workspace_path,
+                    &worker_ingress.daemon_ws_url,
+                    &worker_ingress.daemon_ws_url,
+                )
+                .await?;
+            let hcodex_ws_url = ingress_state
+                .hcodex_ws_url
+                .filter(|value| !value.trim().is_empty())
+                .context("worker ingress ensure response is missing hcodex_ws_url")?;
+            client_sink
+                .send(WsMessage::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "hcodexWsUrl": hcodex_ws_url,
+                        },
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .context("failed to send worker local response")?;
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }
 
-async fn track_client_message(message: &WsMessage, worker_state: &Arc<Mutex<WorkerState>>) -> Result<()> {
+async fn track_client_message(
+    message: &WsMessage,
+    worker_state: &Arc<Mutex<WorkerState>>,
+) -> Result<()> {
     let Some(payload) = parse_json_message(message)? else {
         return Ok(());
     };
@@ -488,7 +582,9 @@ async fn track_upstream_message(
             if let Some(thread_id) = state.pending_turn_requests.remove(&response_id)
                 && let Some(turn_id) = turn.get("id").and_then(Value::as_str)
             {
-                state.turn_to_thread.insert(turn_id.to_owned(), thread_id.clone());
+                state
+                    .turn_to_thread
+                    .insert(turn_id.to_owned(), thread_id.clone());
                 state.thread_runs.insert(
                     thread_id.clone(),
                     WorkerThreadRunState {
@@ -537,9 +633,7 @@ async fn track_upstream_message(
             );
         }
         "turn/completed" => {
-            let turn = payload
-                .get("params")
-                .and_then(|params| params.get("turn"));
+            let turn = payload.get("params").and_then(|params| params.get("turn"));
             let turn_id = turn.and_then(|turn| turn.get("id")).and_then(Value::as_str);
             let status = turn
                 .and_then(|turn| turn.get("status"))
@@ -555,11 +649,14 @@ async fn track_upstream_message(
                 run_state.is_busy = false;
                 run_state.active_turn_id = None;
                 run_state.interruptible = false;
-                run_state.phase = Some(match status {
-                    "interrupted" => "interrupted",
-                    "failed" => "failed",
-                    _ => "idle",
-                }.to_owned());
+                run_state.phase = Some(
+                    match status {
+                        "interrupted" => "interrupted",
+                        "failed" => "failed",
+                        _ => "idle",
+                    }
+                    .to_owned(),
+                );
                 run_state.last_transition_at = Some(now_iso());
             }
         }
@@ -647,7 +744,9 @@ mod tests {
         let state = Arc::new(Mutex::new(WorkerState::default()));
         {
             let mut locked = state.lock().await;
-            locked.turn_to_thread.insert("turn_1".to_owned(), "thr_1".to_owned());
+            locked
+                .turn_to_thread
+                .insert("turn_1".to_owned(), "thr_1".to_owned());
             locked.thread_runs.insert(
                 "thr_1".to_owned(),
                 super::WorkerThreadRunState {
@@ -697,7 +796,9 @@ mod tests {
         let state = Arc::new(Mutex::new(WorkerState::default()));
         {
             let mut locked = state.lock().await;
-            locked.turn_to_thread.insert("turn_1".to_owned(), "thr_1".to_owned());
+            locked
+                .turn_to_thread
+                .insert("turn_1".to_owned(), "thr_1".to_owned());
             locked.thread_runs.insert(
                 "thr_1".to_owned(),
                 super::WorkerThreadRunState {

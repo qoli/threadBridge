@@ -29,7 +29,6 @@ pub(crate) use crate::repository::{
     TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin, TranscriptMirrorRole,
 };
 use crate::runtime_control::{RuntimeControlContext, RuntimeOwnershipMode};
-use crate::runtime_interaction::RuntimeInteractionSender;
 use crate::thread_state::{
     BindingStatus, ResolvedThreadState, cached_effective_busy_snapshot_for_binding,
     resolve_thread_state_with_cache,
@@ -102,7 +101,6 @@ pub struct AppState {
     pub(crate) codex: CodexRunner,
     pub(crate) control: RuntimeControlContext,
     pub(crate) interactive_requests: InteractiveRequestRegistry,
-    pub(crate) runtime_interaction_sender: RuntimeInteractionSender,
     pub(crate) workspace_status_cache: WorkspaceStatusCache,
 }
 
@@ -161,7 +159,6 @@ impl AppState {
             control,
             interactive_requests,
             repository,
-            runtime_interaction_sender: interaction_sender,
             workspace_status_cache: WorkspaceStatusCache::new(),
             config,
         })
@@ -1388,7 +1385,6 @@ mod tests {
                 runtime_ownership_mode: RuntimeOwnershipMode::DesktopOwner,
             },
             interactive_requests: InteractiveRequestRegistry::new(),
-            runtime_interaction_sender: tokio::sync::mpsc::unbounded_channel().0,
             workspace_status_cache: WorkspaceStatusCache::new(),
         };
 

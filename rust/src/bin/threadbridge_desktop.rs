@@ -118,20 +118,18 @@ mod macos_app {
             None,
             RuntimeOwnershipMode::DesktopOwner,
         ))?;
-        runtime.block_on(management_api.set_shared_control(Some(SharedControlHandle::new(
-            shared_control,
-        ))));
+        runtime.block_on(
+            management_api.set_shared_control(Some(SharedControlHandle::new(shared_control))),
+        );
         runtime.block_on(reconcile_runtime_owner(&management_api, &owner));
 
-        if let Some(bot_runtime) = runtime.block_on(spawn_bot_runtime_from_env_with_runtimes(
-            management_api.clone(),
-            owner.app_server_runtime(),
-        ))? {
-            runtime.block_on(
-                owner.configure_hcodex_ingress_interaction_sender(
-                    bot_runtime.runtime_interaction_sender(),
-                ),
-            );
+        if runtime
+            .block_on(spawn_bot_runtime_from_env_with_runtimes(
+                management_api.clone(),
+                owner.app_server_runtime(),
+            ))?
+            .is_some()
+        {
             info!(
                 event = "desktop_runtime.bot.started",
                 management_api_base_url = %management_api.base_url,
@@ -311,13 +309,7 @@ mod macos_app {
         )
         .await
         {
-            Ok(Some(bot_runtime)) => {
-                owner
-                    .configure_hcodex_ingress_interaction_sender(
-                        bot_runtime.runtime_interaction_sender(),
-                    )
-                    .await;
-            }
+            Ok(Some(_)) => {}
             Ok(None) => {}
             Err(error) => {
                 warn!(event = "desktop_runtime.bot.auto_start_failed", error = %error);

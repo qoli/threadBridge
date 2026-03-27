@@ -515,7 +515,11 @@ pub async fn build_working_session_summaries(
             updated_at,
             run_status: aggregate
                 .run_status_override
-                .unwrap_or(if aggregate.is_running { "running" } else { "idle" })
+                .unwrap_or(if aggregate.is_running {
+                    "running"
+                } else {
+                    "idle"
+                })
                 .to_owned(),
             run_phase: aggregate
                 .run_phase_override
@@ -663,11 +667,16 @@ async fn build_working_session_aggregates(
                 .as_ref()
                 .is_some_and(|snapshot| snapshot.session_id == session_id)
             {
-                aggregate.status_updated_at = snapshot.as_ref().map(|snapshot| snapshot.updated_at.clone());
+                aggregate.status_updated_at = snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.updated_at.clone());
                 aggregate.is_running = true;
                 aggregate.phase = snapshot.as_ref().map(|snapshot| snapshot.phase);
             }
-        } else if authority_session_ids.iter().any(|candidate| *candidate == session_id) {
+        } else if authority_session_ids
+            .iter()
+            .any(|candidate| *candidate == session_id)
+        {
             aggregate.status_updated_at = Some(binding.updated_at.clone());
             aggregate.run_status_override = Some("unavailable");
             aggregate.run_phase_override = Some("unavailable");
@@ -1025,8 +1034,8 @@ mod tests {
     use super::{
         ManagedCodexBuildDefaultsView, ManagedCodexView, ManagedWorkspaceView, ThreadStateView,
         WorkingSessionRecordKind, aggregate_runtime_readiness, build_runtime_health,
-        build_thread_views, build_workspace_views, build_working_session_records,
-        build_working_session_summaries,
+        build_thread_views, build_working_session_records, build_working_session_summaries,
+        build_workspace_views,
     };
     use crate::app_server_runtime::WorkspaceRuntimeState;
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};

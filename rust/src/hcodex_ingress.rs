@@ -112,10 +112,11 @@ impl HcodexIngressManager {
                 observer_ws_url,
                 hcodex_ingress_endpoint_is_live(&existing.proxy_base_ws_url).await,
             ) {
-                let existing_runtime_state = read_workspace_runtime_state_file(&existing.workspace_path)
-                    .await
-                    .ok()
-                    .flatten();
+                let existing_runtime_state =
+                    read_workspace_runtime_state_file(&existing.workspace_path)
+                        .await
+                        .ok()
+                        .flatten();
                 let state = WorkspaceRuntimeState {
                     schema_version: 3,
                     workspace_cwd: existing.workspace_path.display().to_string(),

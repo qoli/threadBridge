@@ -20,14 +20,6 @@ pub struct BotRuntimeHandle {
     pub state: AppState,
 }
 
-impl BotRuntimeHandle {
-    pub fn runtime_interaction_sender(
-        &self,
-    ) -> crate::runtime_interaction::RuntimeInteractionSender {
-        self.state.runtime_interaction_sender.clone()
-    }
-}
-
 pub async fn spawn_bot_runtime(
     config: AppConfig,
     management_api: ManagementApiHandle,

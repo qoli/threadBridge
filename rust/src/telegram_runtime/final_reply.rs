@@ -718,8 +718,7 @@ fn rewrite_markdown_links_as_code(html: &str) -> String {
 mod tests {
     use super::{
         OVERFLOW_NOTICE, TelegramReplyPlan, first_preview_snippet, plan_final_assistant_reply,
-        render_markdown_to_telegram_html,
-        render_role_markdown_to_telegram_html,
+        render_markdown_to_telegram_html, render_role_markdown_to_telegram_html,
     };
     use crate::telegram_runtime::TelegramTextRole;
 

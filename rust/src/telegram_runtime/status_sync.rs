@@ -985,9 +985,9 @@ fn local_mirror_entry_from_event(
 mod tests {
     use super::{
         STARTUP_STALE_BUSY_RECOVERED_LOG, busy_command_message, busy_text_message,
-        initial_workspace_event_offset,
-        local_mirror_entry_from_event, reconcile_stale_bot_busy_sessions_for_repository,
-        render_topic_title, topic_title_suffix_label, tui_adoption_prompt_text,
+        initial_workspace_event_offset, local_mirror_entry_from_event,
+        reconcile_stale_bot_busy_sessions_for_repository, render_topic_title,
+        topic_title_suffix_label, tui_adoption_prompt_text,
     };
     use crate::repository::{
         SessionBinding, ThreadMetadata, ThreadRecord, ThreadRepository, ThreadScope, ThreadStatus,
@@ -1093,7 +1093,9 @@ mod tests {
             updated_at: "2026-03-27T00:00:00.000Z".to_owned(),
         };
 
-        assert!(busy_text_message(&snapshot, false).contains("settling after an interrupt request"));
+        assert!(
+            busy_text_message(&snapshot, false).contains("settling after an interrupt request")
+        );
         assert!(busy_command_message(&snapshot).contains("settling after an interrupt request"));
     }
 
