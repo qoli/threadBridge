@@ -87,6 +87,18 @@ pub struct CodexRunResult {
     pub execution: SessionExecutionSnapshot,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendThreadRunState {
+    #[serde(rename = "threadId")]
+    pub thread_id: String,
+    #[serde(rename = "isBusy")]
+    pub is_busy: bool,
+    #[serde(rename = "activeTurnId")]
+    pub active_turn_id: Option<String>,
+    pub interruptible: bool,
+    pub phase: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexTurnOutcome {
@@ -1169,6 +1181,23 @@ impl CodexRunner {
             )
             .await?;
         Ok(())
+    }
+
+    pub async fn read_thread_run_state(
+        &self,
+        workspace: &CodexWorkspace,
+        thread_id: &str,
+    ) -> Result<BackendThreadRunState> {
+        let mut client = AppServerClient::start(workspace).await?;
+        let result = client
+            .request_simple(
+                "threadbridge/getThreadRunState",
+                json!({
+                    "threadId": thread_id,
+                }),
+            )
+            .await?;
+        serde_json::from_value(result).context("invalid threadbridge/getThreadRunState result")
     }
 
     fn ensure_locked_thread_id(

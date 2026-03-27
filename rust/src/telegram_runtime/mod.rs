@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use teloxide::prelude::*;
 use teloxide::requests::Requester;
 use teloxide::types::{BotCommand, CallbackQuery, LinkPreviewOptions, ThreadId};
@@ -35,7 +36,8 @@ use crate::thread_state::{
 };
 pub(crate) use crate::tool_results::{TelegramOutboxItem, parse_telegram_outbox};
 pub(crate) use crate::workspace_status::{
-    SessionCurrentStatus, WorkspaceStatusCache, read_session_status, record_bot_status_event,
+    SessionActivitySource, SessionCurrentStatus, WorkspaceStatusCache, WorkspaceStatusPhase,
+    read_session_status, record_bot_status_event,
 };
 
 pub mod final_reply;
@@ -928,15 +930,74 @@ pub(crate) async fn resolve_busy_gate_state(
     record: &ThreadRecord,
     session: Option<&SessionBinding>,
 ) -> Result<(ResolvedThreadState, Option<SessionCurrentStatus>)> {
-    let resolved_state =
+    let mut resolved_state =
         resolve_thread_state_with_cache(&record.metadata, session, &state.workspace_status_cache)
             .await?;
-    let blocking_snapshot = if resolved_state.is_running() {
+    let mut blocking_snapshot = if resolved_state.is_running() {
         cached_effective_busy_snapshot_for_binding(&state.workspace_status_cache, session).await?
     } else {
         None
     };
+    if blocking_snapshot.is_none()
+        && let Some(worker_snapshot) = resolve_worker_busy_snapshot(state, session).await?
+    {
+        resolved_state.run_status = crate::thread_state::RunStatus::Running;
+        blocking_snapshot = Some(worker_snapshot);
+    }
     Ok((resolved_state, blocking_snapshot))
+}
+
+async fn resolve_worker_busy_snapshot(
+    state: &AppState,
+    session: Option<&SessionBinding>,
+) -> Result<Option<SessionCurrentStatus>> {
+    let Some(binding) = session else {
+        return Ok(None);
+    };
+    let Some(thread_id) = binding
+        .current_codex_thread_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let Some(workspace_cwd) = binding
+        .workspace_cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let workspace = state
+        .control
+        .workspace_runtime_service()
+        .shared_codex_workspace(PathBuf::from(workspace_cwd))
+        .await?;
+    let run_state = state.codex.read_thread_run_state(&workspace, thread_id).await?;
+    if !run_state.is_busy {
+        return Ok(None);
+    }
+    Ok(Some(SessionCurrentStatus {
+        schema_version: 2,
+        workspace_cwd: workspace_cwd.to_owned(),
+        session_id: thread_id.to_owned(),
+        activity_source: SessionActivitySource::ManagedRuntime,
+        live: true,
+        phase: WorkspaceStatusPhase::TurnRunning,
+        shell_pid: None,
+        child_pid: None,
+        child_pgid: None,
+        child_command: Some("app_server_ws_worker".to_owned()),
+        client: Some("threadbridge-app-server-worker".to_owned()),
+        turn_id: run_state.active_turn_id,
+        summary: None,
+        pending_interrupt_turn_id: None,
+        pending_interrupt_requested_at: None,
+        observer_attach_mode: None,
+        updated_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    }))
 }
 
 pub(crate) fn command_argument_text<'a>(msg: &'a Message, command_name: &str) -> Option<&'a str> {

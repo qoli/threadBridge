@@ -1,13 +1,17 @@
 use std::ffi::OsString;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
+use tokio::sync::Mutex;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -17,6 +21,25 @@ use tracing::{debug, warn};
 pub struct WorkerReadyState {
     pub worker_ws_url: String,
     pub daemon_ws_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerThreadRunState {
+    #[serde(rename = "threadId")]
+    pub thread_id: String,
+    #[serde(rename = "isBusy")]
+    pub is_busy: bool,
+    #[serde(rename = "activeTurnId")]
+    pub active_turn_id: Option<String>,
+    pub interruptible: bool,
+    pub phase: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct WorkerState {
+    pending_turn_requests: HashMap<i64, String>,
+    turn_to_thread: HashMap<String, String>,
+    thread_runs: HashMap<String, WorkerThreadRunState>,
 }
 
 pub fn run_from_env() -> Result<()> {
@@ -124,6 +147,8 @@ async fn run_worker(config: WorkerCli) -> Result<()> {
     )
     .await?;
 
+    let worker_state = Arc::new(Mutex::new(WorkerState::default()));
+
     loop {
         tokio::select! {
             result = daemon.wait() => {
@@ -133,8 +158,9 @@ async fn run_worker(config: WorkerCli) -> Result<()> {
             accept = listener.accept() => {
                 let (stream, _) = accept.context("worker listener accept failed")?;
                 let upstream_url = daemon_ws_url.clone();
+                let worker_state = worker_state.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = proxy_client_session(stream, &upstream_url).await {
+                    if let Err(error) = proxy_client_session(stream, &upstream_url, worker_state).await {
                         warn!(event = "app_server_ws_worker.proxy.failed", error = %error);
                     }
                 });
@@ -143,7 +169,11 @@ async fn run_worker(config: WorkerCli) -> Result<()> {
     }
 }
 
-async fn proxy_client_session(stream: TcpStream, upstream_url: &str) -> Result<()> {
+async fn proxy_client_session(
+    stream: TcpStream,
+    upstream_url: &str,
+    worker_state: Arc<Mutex<WorkerState>>,
+) -> Result<()> {
     let client_ws = accept_async(stream)
         .await
         .context("failed to accept worker websocket client")?;
@@ -153,31 +183,34 @@ async fn proxy_client_session(stream: TcpStream, upstream_url: &str) -> Result<(
 
     let (mut client_sink, mut client_stream) = client_ws.split();
     let (mut upstream_sink, mut upstream_stream) = upstream_ws.split();
-
-    let to_upstream = async {
-        while let Some(message) = client_stream.next().await {
-            let message = message.context("failed to read worker client websocket message")?;
-            upstream_sink
-                .send(message)
-                .await
-                .context("failed to forward worker client message upstream")?;
+    loop {
+        tokio::select! {
+            client_message = client_stream.next() => {
+                let Some(client_message) = client_message else {
+                    break;
+                };
+                let message = client_message.context("failed to read worker client websocket message")?;
+                if handle_local_request(&message, &worker_state, &mut client_sink).await? {
+                    continue;
+                }
+                track_client_message(&message, &worker_state).await?;
+                upstream_sink
+                    .send(message)
+                    .await
+                    .context("failed to forward worker client message upstream")?;
+            }
+            upstream_message = upstream_stream.next() => {
+                let Some(upstream_message) = upstream_message else {
+                    break;
+                };
+                let message = upstream_message.context("failed to read worker upstream websocket message")?;
+                track_upstream_message(&message, &worker_state).await?;
+                client_sink
+                    .send(message)
+                    .await
+                    .context("failed to forward worker upstream message to client")?;
+            }
         }
-        Ok::<(), anyhow::Error>(())
-    };
-    let to_client = async {
-        while let Some(message) = upstream_stream.next().await {
-            let message = message.context("failed to read worker upstream websocket message")?;
-            client_sink
-                .send(message)
-                .await
-                .context("failed to forward worker upstream message to client")?;
-        }
-        Ok::<(), anyhow::Error>(())
-    };
-
-    tokio::select! {
-        result = to_upstream => result?,
-        result = to_client => result?,
     }
 
     let _ = upstream_sink.send(WsMessage::Close(None)).await;
@@ -233,4 +266,273 @@ fn socket_addr_from_ws_url(url: &str) -> Result<String> {
         .port()
         .context("worker websocket url is missing port")?;
     Ok(format!("{host}:{port}"))
+}
+
+async fn handle_local_request<S>(
+    message: &WsMessage,
+    worker_state: &Arc<Mutex<WorkerState>>,
+    client_sink: &mut futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<S>,
+        WsMessage,
+    >,
+) -> Result<bool>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let Some(payload) = parse_json_message(message)? else {
+        return Ok(false);
+    };
+    let Some(request_id) = payload.get("id").and_then(Value::as_i64) else {
+        return Ok(false);
+    };
+    let Some(method) = payload.get("method").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    if method != "threadbridge/getThreadRunState" {
+        return Ok(false);
+    }
+    let thread_id = payload
+        .get("params")
+        .and_then(|params| params.get("threadId"))
+        .and_then(Value::as_str)
+        .context("threadbridge/getThreadRunState missing threadId")?;
+    let state = worker_state.lock().await;
+    let run_state = state
+        .thread_runs
+        .get(thread_id)
+        .cloned()
+        .unwrap_or_else(|| WorkerThreadRunState {
+            thread_id: thread_id.to_owned(),
+            is_busy: false,
+            active_turn_id: None,
+            interruptible: false,
+            phase: Some("idle".to_owned()),
+        });
+    client_sink
+        .send(WsMessage::Text(
+            json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": serde_json::to_value(run_state)?,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .context("failed to send worker local response")?;
+    Ok(true)
+}
+
+async fn track_client_message(message: &WsMessage, worker_state: &Arc<Mutex<WorkerState>>) -> Result<()> {
+    let Some(payload) = parse_json_message(message)? else {
+        return Ok(());
+    };
+    let Some(request_id) = payload.get("id").and_then(Value::as_i64) else {
+        return Ok(());
+    };
+    let Some(method) = payload.get("method").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    match method {
+        "turn/start" => {
+            let Some(thread_id) = payload
+                .get("params")
+                .and_then(|params| params.get("threadId"))
+                .and_then(Value::as_str)
+            else {
+                return Ok(());
+            };
+            worker_state
+                .lock()
+                .await
+                .pending_turn_requests
+                .insert(request_id, thread_id.to_owned());
+        }
+        "turn/interrupt" => {
+            let Some(thread_id) = payload
+                .get("params")
+                .and_then(|params| params.get("threadId"))
+                .and_then(Value::as_str)
+            else {
+                return Ok(());
+            };
+            if let Some(run_state) = worker_state.lock().await.thread_runs.get_mut(thread_id) {
+                run_state.interruptible = false;
+                run_state.phase = Some("turn_interrupt_requested".to_owned());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn track_upstream_message(message: &WsMessage, worker_state: &Arc<Mutex<WorkerState>>) -> Result<()> {
+    let Some(payload) = parse_json_message(message)? else {
+        return Ok(());
+    };
+    if let Some(response_id) = payload.get("id").and_then(Value::as_i64) {
+        let turn = payload
+            .get("result")
+            .and_then(|result| result.get("turn"))
+            .cloned();
+        if let Some(turn) = turn {
+            let mut state = worker_state.lock().await;
+            if let Some(thread_id) = state.pending_turn_requests.remove(&response_id)
+                && let Some(turn_id) = turn.get("id").and_then(Value::as_str)
+            {
+                state.turn_to_thread.insert(turn_id.to_owned(), thread_id.clone());
+                state.thread_runs.insert(
+                    thread_id.clone(),
+                    WorkerThreadRunState {
+                        thread_id,
+                        is_busy: true,
+                        active_turn_id: Some(turn_id.to_owned()),
+                        interruptible: true,
+                        phase: Some("turn_running".to_owned()),
+                    },
+                );
+            }
+        }
+        return Ok(());
+    }
+    let Some(method) = payload.get("method").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    match method {
+        "turn/completed" => {
+            let turn_id = payload
+                .get("params")
+                .and_then(|params| params.get("turn"))
+                .and_then(|turn| turn.get("id"))
+                .and_then(Value::as_str);
+            let Some(turn_id) = turn_id else {
+                return Ok(());
+            };
+            let mut state = worker_state.lock().await;
+            if let Some(thread_id) = state.turn_to_thread.remove(turn_id)
+                && let Some(run_state) = state.thread_runs.get_mut(&thread_id)
+            {
+                run_state.is_busy = false;
+                run_state.active_turn_id = None;
+                run_state.interruptible = false;
+                run_state.phase = Some("idle".to_owned());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn parse_json_message(message: &WsMessage) -> Result<Option<Value>> {
+    let text = match message {
+        WsMessage::Text(text) => text.as_str(),
+        WsMessage::Binary(bytes) => std::str::from_utf8(bytes)
+            .context("worker websocket binary payload was not valid utf-8")?,
+        _ => return Ok(None),
+    };
+    let payload = match serde_json::from_str(text) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(None),
+    };
+    Ok(Some(payload))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WorkerState, track_client_message, track_upstream_message};
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    #[tokio::test]
+    async fn track_turn_start_response_marks_thread_busy() {
+        let state = Arc::new(Mutex::new(WorkerState::default()));
+        track_client_message(
+            &WsMessage::Text(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 42,
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": "thr_1"
+                    }
+                })
+                .to_string()
+                .into(),
+            ),
+            &state,
+        )
+        .await
+        .unwrap();
+        track_upstream_message(
+            &WsMessage::Text(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 42,
+                    "result": {
+                        "turn": {
+                            "id": "turn_1"
+                        }
+                    }
+                })
+                .to_string()
+                .into(),
+            ),
+            &state,
+        )
+        .await
+        .unwrap();
+
+        let state = state.lock().await;
+        let run = state.thread_runs.get("thr_1").expect("run state");
+        assert!(run.is_busy);
+        assert_eq!(run.active_turn_id.as_deref(), Some("turn_1"));
+        assert!(run.interruptible);
+        assert_eq!(run.phase.as_deref(), Some("turn_running"));
+    }
+
+    #[tokio::test]
+    async fn turn_completed_clears_thread_busy() {
+        let state = Arc::new(Mutex::new(WorkerState::default()));
+        {
+            let mut locked = state.lock().await;
+            locked.turn_to_thread.insert("turn_1".to_owned(), "thr_1".to_owned());
+            locked.thread_runs.insert(
+                "thr_1".to_owned(),
+                super::WorkerThreadRunState {
+                    thread_id: "thr_1".to_owned(),
+                    is_busy: true,
+                    active_turn_id: Some("turn_1".to_owned()),
+                    interruptible: true,
+                    phase: Some("turn_running".to_owned()),
+                },
+            );
+        }
+        track_upstream_message(
+            &WsMessage::Text(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": "turn_1"
+                        }
+                    }
+                })
+                .to_string()
+                .into(),
+            ),
+            &state,
+        )
+        .await
+        .unwrap();
+
+        let state = state.lock().await;
+        let run = state.thread_runs.get("thr_1").expect("run state");
+        assert!(!run.is_busy);
+        assert_eq!(run.active_turn_id, None);
+        assert!(!run.interruptible);
+        assert_eq!(run.phase.as_deref(), Some("idle"));
+    }
 }
