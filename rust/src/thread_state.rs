@@ -237,7 +237,11 @@ async fn worker_busy_snapshot_for_binding(
             session_id: session_id.to_owned(),
             activity_source: SessionActivitySource::ManagedRuntime,
             live: true,
-            phase: WorkspaceStatusPhase::TurnRunning,
+            phase: match run_state.phase.as_deref() {
+                Some("turn_interrupt_requested") => WorkspaceStatusPhase::TurnFinalizing,
+                Some("interrupted") | Some("failed") | Some("idle") => WorkspaceStatusPhase::Idle,
+                _ => WorkspaceStatusPhase::TurnRunning,
+            },
             shell_pid: None,
             child_pid: None,
             child_pgid: None,
@@ -680,6 +684,85 @@ mod tests {
         assert_eq!(snapshot.session_id, "thr_current");
         assert_eq!(snapshot.turn_id.as_deref(), Some("turn_worker"));
         assert_eq!(snapshot.phase, WorkspaceStatusPhase::TurnRunning);
+
+        let _ = fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn worker_interrupt_requested_maps_to_turn_finalizing() {
+        let workspace = temp_path();
+        ensure_workspace_status_surface(&workspace).await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut ws = accept_async(stream).await.unwrap();
+                    while let Some(message) = ws.next().await {
+                        let Ok(message) = message else {
+                            break;
+                        };
+                        let text = match message {
+                            WsMessage::Text(text) => text.to_string(),
+                            _ => continue,
+                        };
+                        let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
+                        let method = payload.get("method").and_then(|value| value.as_str());
+                        let id = payload.get("id").and_then(|value| value.as_i64());
+                        match method {
+                            Some("initialize") => {
+                                ws.send(WsMessage::Text(
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id.unwrap(),
+                                        "result": {}
+                                    })
+                                    .to_string()
+                                    .into(),
+                                ))
+                                .await
+                                .unwrap();
+                            }
+                            Some("initialized") => {}
+                            Some("threadbridge/getThreadRunState") => {
+                                ws.send(WsMessage::Text(
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id.unwrap(),
+                                        "result": {
+                                            "threadId": "thr_current",
+                                            "isBusy": true,
+                                            "activeTurnId": "turn_worker",
+                                            "interruptible": false,
+                                            "phase": "turn_interrupt_requested"
+                                        }
+                                    })
+                                    .to_string()
+                                    .into(),
+                                ))
+                                .await
+                                .unwrap();
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        });
+        write_runtime_state(&workspace, &format!("ws://127.0.0.1:{}", addr.port())).await;
+
+        let snapshot = effective_busy_snapshot_for_binding(Some(&binding(
+            &workspace,
+            Some("thr_current"),
+            None,
+            false,
+        )))
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(snapshot.phase, WorkspaceStatusPhase::TurnFinalizing);
 
         let _ = fs::remove_dir_all(workspace).await;
     }

@@ -399,12 +399,42 @@ async fn track_upstream_message(message: &WsMessage, worker_state: &Arc<Mutex<Wo
         return Ok(());
     };
     match method {
-        "turn/completed" => {
-            let turn_id = payload
-                .get("params")
+        "turn/started" => {
+            let params = payload.get("params");
+            let turn_id = params
                 .and_then(|params| params.get("turn"))
                 .and_then(|turn| turn.get("id"))
                 .and_then(Value::as_str);
+            let thread_id = params
+                .and_then(|params| params.get("threadId"))
+                .and_then(Value::as_str);
+            let (Some(turn_id), Some(thread_id)) = (turn_id, thread_id) else {
+                return Ok(());
+            };
+            let mut state = worker_state.lock().await;
+            state
+                .turn_to_thread
+                .insert(turn_id.to_owned(), thread_id.to_owned());
+            state.thread_runs.insert(
+                thread_id.to_owned(),
+                WorkerThreadRunState {
+                    thread_id: thread_id.to_owned(),
+                    is_busy: true,
+                    active_turn_id: Some(turn_id.to_owned()),
+                    interruptible: true,
+                    phase: Some("turn_running".to_owned()),
+                },
+            );
+        }
+        "turn/completed" => {
+            let turn = payload
+                .get("params")
+                .and_then(|params| params.get("turn"));
+            let turn_id = turn.and_then(|turn| turn.get("id")).and_then(Value::as_str);
+            let status = turn
+                .and_then(|turn| turn.get("status"))
+                .and_then(Value::as_str)
+                .unwrap_or("completed");
             let Some(turn_id) = turn_id else {
                 return Ok(());
             };
@@ -415,7 +445,11 @@ async fn track_upstream_message(message: &WsMessage, worker_state: &Arc<Mutex<Wo
                 run_state.is_busy = false;
                 run_state.active_turn_id = None;
                 run_state.interruptible = false;
-                run_state.phase = Some("idle".to_owned());
+                run_state.phase = Some(match status {
+                    "interrupted" => "interrupted",
+                    "failed" => "failed",
+                    _ => "idle",
+                }.to_owned());
             }
         }
         _ => {}
@@ -516,7 +550,8 @@ mod tests {
                     "method": "turn/completed",
                     "params": {
                         "turn": {
-                            "id": "turn_1"
+                            "id": "turn_1",
+                            "status": "completed"
                         }
                     }
                 })
@@ -534,5 +569,48 @@ mod tests {
         assert_eq!(run.active_turn_id, None);
         assert!(!run.interruptible);
         assert_eq!(run.phase.as_deref(), Some("idle"));
+    }
+
+    #[tokio::test]
+    async fn interrupted_turn_sets_interrupted_phase() {
+        let state = Arc::new(Mutex::new(WorkerState::default()));
+        {
+            let mut locked = state.lock().await;
+            locked.turn_to_thread.insert("turn_1".to_owned(), "thr_1".to_owned());
+            locked.thread_runs.insert(
+                "thr_1".to_owned(),
+                super::WorkerThreadRunState {
+                    thread_id: "thr_1".to_owned(),
+                    is_busy: true,
+                    active_turn_id: Some("turn_1".to_owned()),
+                    interruptible: false,
+                    phase: Some("turn_interrupt_requested".to_owned()),
+                },
+            );
+        }
+        track_upstream_message(
+            &WsMessage::Text(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {
+                            "id": "turn_1",
+                            "status": "interrupted"
+                        }
+                    }
+                })
+                .to_string()
+                .into(),
+            ),
+            &state,
+        )
+        .await
+        .unwrap();
+
+        let state = state.lock().await;
+        let run = state.thread_runs.get("thr_1").expect("run state");
+        assert!(!run.is_busy);
+        assert_eq!(run.phase.as_deref(), Some("interrupted"));
     }
 }
