@@ -136,7 +136,7 @@ impl AppState {
         let control = RuntimeControlContext::new(
             config.runtime.clone(),
             app_server_runtime,
-            hcodex_ingress.clone(),
+            Some(hcodex_ingress.clone()),
             runtime_ownership_mode,
         )
         .await?;

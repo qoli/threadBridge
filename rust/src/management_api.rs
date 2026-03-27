@@ -2200,7 +2200,6 @@ mod tests {
     use crate::app_server_runtime::WorkspaceRuntimeManager;
     use crate::config::RuntimeConfig;
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
-    use crate::hcodex_ingress::HcodexIngressManager;
     use crate::repository::{
         ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
         TranscriptMirrorRole,
@@ -2245,7 +2244,7 @@ mod tests {
         let control = RuntimeControlContext::new(
             runtime_config(root),
             WorkspaceRuntimeManager::new(),
-            HcodexIngressManager::new(handle.state.repository.clone()),
+            None,
             RuntimeOwnershipMode::DesktopOwner,
         )
         .await

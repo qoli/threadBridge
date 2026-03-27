@@ -43,7 +43,7 @@ impl RuntimeControlContext {
     pub async fn new(
         runtime: RuntimeConfig,
         app_server_runtime: WorkspaceRuntimeManager,
-        hcodex_ingress: HcodexIngressManager,
+        hcodex_ingress: Option<HcodexIngressManager>,
         runtime_ownership_mode: RuntimeOwnershipMode,
     ) -> Result<Self> {
         let repository = ThreadRepository::open(&runtime.data_root_path).await?;
@@ -58,8 +58,11 @@ impl RuntimeControlContext {
             codex: CodexRunner::new(runtime.codex_model.clone()),
             repository,
             app_server_runtime,
-            hcodex_ingress: (runtime_ownership_mode == RuntimeOwnershipMode::SelfManaged)
-                .then_some(hcodex_ingress),
+            hcodex_ingress: if runtime_ownership_mode == RuntimeOwnershipMode::SelfManaged {
+                hcodex_ingress
+            } else {
+                None
+            },
             seed_template_path,
             runtime,
             runtime_ownership_mode,

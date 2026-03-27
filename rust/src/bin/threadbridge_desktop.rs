@@ -115,7 +115,7 @@ mod macos_app {
         let shared_control = runtime.block_on(RuntimeControlContext::new(
             runtime_config.clone(),
             owner.app_server_runtime(),
-            owner.hcodex_ingress_runtime(),
+            None,
             RuntimeOwnershipMode::DesktopOwner,
         ))?;
         runtime.block_on(management_api.set_shared_control(Some(SharedControlHandle::new(
