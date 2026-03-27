@@ -13,6 +13,7 @@
 
 - `threadBridge` 已新增獨立的 app-server ws observer，mirror intake 不再只掛在 `rust/src/hcodex_ingress.rs`
 - observer 已將 `request_user_input` / resolved-request / plan follow-up 轉成 adapter-neutral runtime interaction event
+- observer turn finalization 已不再直接依賴 Telegram final reply helper；visible final text 組裝已改由 shared completion helper 承接
 - `hcodex` ingress 目前承擔：
   - `hcodex` 連線入口
   - launch ticket 驗證

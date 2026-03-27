@@ -67,7 +67,7 @@
   - doc kind: `plan`
   - depends_on: [runtime-architecture.md](runtime-control/runtime-architecture.md)
   - 以 `runtime-architecture` 為中心的 current-code drift audit
-  - 目前已確認 4 個 responsibility drift 功能點，active drift 剩 observer final reply composition
+  - 目前已確認 4 個 responsibility drift 功能點，原本的 observer final reply composition 也已在 2026-03-27 收斂為 shared helper
 - [runtime-state-machine.md](runtime-control/runtime-state-machine.md)
   - doc kind: `spec`
   - primary spec: `yes`

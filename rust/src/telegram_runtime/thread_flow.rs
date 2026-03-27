@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tracing::{error, info};
 
-use super::final_reply::{compose_visible_final_reply, send_final_assistant_reply};
+use super::final_reply::send_final_assistant_reply;
 use super::media::{self, dispatch_workspace_telegram_outbox};
 use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
 use super::restore;
@@ -34,6 +34,7 @@ use crate::runtime_protocol::{
     WorkingSessionRecordKind, WorkingSessionRecordView, WorkingSessionSummaryView,
     build_working_session_records, build_working_session_summaries,
 };
+use crate::turn_completion::compose_visible_final_reply;
 
 const TELEGRAM_SESSION_SUMMARY_LIMIT: usize = 5;
 const TELEGRAM_SESSION_RECORD_LIMIT: usize = 12;

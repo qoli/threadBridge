@@ -21,7 +21,7 @@ use crate::runtime_interaction::{
     RuntimeInteractionEvent, RuntimeInteractionRequest, RuntimeInteractionResolved,
     RuntimeInteractionSender, TurnCompletionSummary,
 };
-use crate::telegram_runtime::final_reply::compose_visible_final_reply;
+use crate::turn_completion::compose_visible_final_reply;
 use crate::workspace_status::{
     ObserverAttachMode, record_hcodex_ingress_completed, record_hcodex_ingress_preview_text,
     record_hcodex_ingress_process_event, record_hcodex_ingress_prompt,

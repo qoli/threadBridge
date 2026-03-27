@@ -11,8 +11,8 @@
 - 已用 [runtime-architecture.md](runtime-architecture.md) 的 canonical role boundary 掃描 active code path
 - 已確認 4 個 responsibility drift 功能點
 - 其中 3 個已在 2026-03-26 進一步收斂回 shared runtime semantics
+- observer final reply composition 已在 2026-03-27 改由 shared helper 承接，不再直接依賴 Telegram adapter helper
 - Telegram mirror / status_sync 與 direct path 的 duplicate delivery 已透過 shared `DeliveryBusCoordinator` 收回 shared runtime 子域
-- 目前仍維持 active drift 的，剩 observer final reply composition 這一項
 
 目前尚未完成的部分：
 
@@ -82,25 +82,26 @@
   - 將 management action 的 shared control semantics 與 Telegram side effect bridge 分開
   - 讓 management surface 可直接調 shared control，再由 Telegram adapter 處理必要的 Telegram-facing side effect
 
-### 2. `app-server observer` 仍直接依賴 Telegram final reply composition
+### 2. `app-server observer` 曾直接依賴 Telegram final reply composition（已於 2026-03-27 收斂）
 
 - 功能點：
   - observer turn finalization
-- 當前 responsibility drift：
-  - observer 在 finalize turn 時直接組出 Telegram-visible final reply text
+- 當前狀態：
+  - final reply composition 已抽成 shared helper
+  - observer finalize turn 不再直接 import Telegram adapter helper
+  - Telegram direct bot path 與 observer path 已改為共用同一個 shared completion combiner
 - today code anchors：
   - [app_server_observer.rs](../../../rust/src/app_server_observer.rs#L24)
   - [app_server_observer.rs](../../../rust/src/app_server_observer.rs#L499)
+  - [turn_completion.rs](../../../rust/src/turn_completion.rs)
 - 預期 owner role：
   - `app-server observer` 應只做 read-side projection
-  - Telegram final reply composition 應留在 shared projection helper 或 Telegram adapter
-- 為何這是偏移：
-  - observer 已經跨進 adapter-specific output language
-  - 這會讓 observer 的 read-side projection 邊界重新和 Telegram renderer 黏在一起
+  - visible final reply composition 應由 shared helper 承接
 - 是否已在 `runtime-architecture` 記錄：
   - 已記錄，對應 temporary exception #1
-- 退出方向：
-  - 將 final text composition 抽成 shared helper，或讓 Telegram adapter 在消費 observer projection 時自行組裝
+- 收斂結果：
+  - 這一項已不再是 active drift
+  - observer 與 Telegram renderer / final reply helper 的直接耦合已解除
 
 ### 3. Telegram `/launch` 與 `/execution_mode` 曾直接依賴 management API view/helper（已於 2026-03-26 收斂）
 

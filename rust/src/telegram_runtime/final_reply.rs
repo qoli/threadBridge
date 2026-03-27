@@ -79,23 +79,6 @@ fn plan_final_assistant_reply_from_rendered(
     }
 }
 
-pub(crate) fn compose_visible_final_reply(
-    final_response: &str,
-    final_plan_text: Option<&str>,
-) -> Option<String> {
-    let final_response = final_response.trim();
-    let final_plan_text = final_plan_text
-        .map(str::trim)
-        .filter(|text| !text.is_empty());
-
-    match (!final_response.is_empty(), final_plan_text) {
-        (true, Some(plan)) => Some(format!("{final_response}\n\n## Proposed Plan\n\n{plan}")),
-        (true, None) => Some(final_response.to_owned()),
-        (false, Some(plan)) => Some(plan.to_owned()),
-        (false, None) => None,
-    }
-}
-
 pub(crate) async fn send_final_assistant_reply(
     bot: &Bot,
     record: &ThreadRecord,
@@ -734,8 +717,8 @@ fn rewrite_markdown_links_as_code(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        OVERFLOW_NOTICE, TelegramReplyPlan, compose_visible_final_reply, first_preview_snippet,
-        plan_final_assistant_reply, render_markdown_to_telegram_html,
+        OVERFLOW_NOTICE, TelegramReplyPlan, first_preview_snippet, plan_final_assistant_reply,
+        render_markdown_to_telegram_html,
         render_role_markdown_to_telegram_html,
     };
     use crate::telegram_runtime::TelegramTextRole;
@@ -911,20 +894,5 @@ mod tests {
                 reason: "empty_reply",
             }
         );
-    }
-
-    #[test]
-    fn compose_visible_final_reply_combines_assistant_and_plan() {
-        let composed = compose_visible_final_reply("Done.", Some("# Plan\n- one"));
-        assert_eq!(
-            composed.as_deref(),
-            Some("Done.\n\n## Proposed Plan\n\n# Plan\n- one")
-        );
-    }
-
-    #[test]
-    fn compose_visible_final_reply_falls_back_to_plan_only() {
-        let composed = compose_visible_final_reply("   ", Some("# Plan\n- one"));
-        assert_eq!(composed.as_deref(), Some("# Plan\n- one"));
     }
 }

@@ -9,7 +9,7 @@ use teloxide::types::{
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
-use super::final_reply::{compose_visible_final_reply, send_final_assistant_reply};
+use super::final_reply::send_final_assistant_reply;
 use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
 use super::status_sync;
 use super::*;
@@ -20,6 +20,7 @@ use crate::delivery_bus::{
 use crate::execution_mode::workspace_execution_mode;
 use crate::image_artifacts::PendingImageBatch;
 use crate::tool_results::TelegramDeliverySurface;
+use crate::turn_completion::compose_visible_final_reply;
 
 pub(crate) const CALLBACK_IMAGE_BATCH_ANALYZE: &str = "image_batch_analyze";
 const TELEGRAM_OUTBOX_FILE: &str = ".threadbridge/tool_results/telegram_outbox.json";
