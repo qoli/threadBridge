@@ -12,7 +12,10 @@ use crate::repository::{
     TranscriptMirrorRole,
 };
 use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus, WorkspaceRuntimeHeartbeat};
-use crate::thread_state::{BindingStatus, resolve_binding_status, resolve_thread_state};
+use crate::thread_state::{
+    BindingStatus, effective_busy_snapshot_for_binding, resolve_binding_status,
+    resolve_thread_state,
+};
 use crate::workspace_status::read_session_status;
 
 #[derive(Debug, Clone, Serialize)]
@@ -602,12 +605,21 @@ async fn build_working_session_aggregates(
             read_session_status(workspace_path, session_id).await?,
         );
     }
+    let fallback_busy_snapshot = effective_busy_snapshot_for_binding(Some(binding)).await?;
 
     for (session_id, status) in session_statuses {
-        let aggregate = aggregates.entry(session_id).or_default();
+        let aggregate = aggregates.entry(session_id.clone()).or_default();
         if let Some(status) = status {
             aggregate.status_updated_at = Some(status.updated_at);
             aggregate.is_running = status.phase.is_turn_busy();
+        } else if fallback_busy_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.session_id == session_id)
+        {
+            aggregate.status_updated_at = fallback_busy_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.updated_at.clone());
+            aggregate.is_running = true;
         }
     }
 
@@ -964,6 +976,7 @@ mod tests {
         WorkingSessionRecordKind, aggregate_runtime_readiness, build_runtime_health,
         build_thread_views, build_working_session_records, build_working_session_summaries,
     };
+    use crate::app_server_runtime::WorkspaceRuntimeState;
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
     use crate::repository::{
         ThreadMetadata, ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry,
@@ -971,8 +984,12 @@ mod tests {
     };
     use crate::runtime_owner::RuntimeOwnerStatus;
     use crate::workspace_status::record_bot_status_event;
+    use futures_util::{SinkExt, StreamExt};
     use std::path::PathBuf;
     use tokio::fs;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
     use uuid::Uuid;
 
     fn temp_path() -> PathBuf {
@@ -984,6 +1001,87 @@ mod tests {
 
     fn full_auto_snapshot() -> SessionExecutionSnapshot {
         SessionExecutionSnapshot::from_mode(ExecutionMode::FullAuto)
+    }
+
+    async fn write_runtime_state(workspace_path: &std::path::Path, worker_ws_url: &str) {
+        let state_dir = workspace_path.join(".threadbridge/state/app-server");
+        fs::create_dir_all(&state_dir).await.unwrap();
+        let state = WorkspaceRuntimeState {
+            schema_version: 3,
+            workspace_cwd: workspace_path.display().to_string(),
+            daemon_ws_url: "ws://127.0.0.1:1".to_owned(),
+            worker_ws_url: Some(worker_ws_url.to_owned()),
+            worker_pid: None,
+            hcodex_ws_url: None,
+        };
+        fs::write(
+            state_dir.join("current.json"),
+            format!("{}\n", serde_json::to_string_pretty(&state).unwrap()),
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn start_mock_worker_for_busy_query() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut ws = accept_async(stream).await.unwrap();
+                    while let Some(message) = ws.next().await {
+                        let Ok(message) = message else {
+                            break;
+                        };
+                        let text = match message {
+                            WsMessage::Text(text) => text.to_string(),
+                            _ => continue,
+                        };
+                        let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
+                        let method = payload.get("method").and_then(|value| value.as_str());
+                        let id = payload.get("id").and_then(|value| value.as_i64());
+                        match method {
+                            Some("initialize") => {
+                                ws.send(WsMessage::Text(
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id.unwrap(),
+                                        "result": {}
+                                    })
+                                    .to_string()
+                                    .into(),
+                                ))
+                                .await
+                                .unwrap();
+                            }
+                            Some("initialized") => {}
+                            Some("threadbridge/getThreadRunState") => {
+                                ws.send(WsMessage::Text(
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id.unwrap(),
+                                        "result": {
+                                            "threadId": "thr_current",
+                                            "isBusy": true,
+                                            "activeTurnId": "turn_worker",
+                                            "interruptible": true,
+                                            "phase": "turn_running"
+                                        }
+                                    })
+                                    .to_string()
+                                    .into(),
+                                ))
+                                .await
+                                .unwrap();
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        });
+        format!("ws://127.0.0.1:{}", addr.port())
     }
 
     #[test]
@@ -1110,6 +1208,45 @@ mod tests {
         let views = build_thread_views(&repo).await.unwrap();
         assert_eq!(views[0].binding_status, "healthy");
         assert_eq!(views[0].session_broken_reason, None);
+
+        let _ = fs::remove_dir_all(root).await;
+        let _ = fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn working_session_summaries_fall_back_to_worker_busy_state() {
+        let root = temp_path();
+        let workspace = temp_path();
+        fs::create_dir_all(&workspace).await.unwrap();
+        let worker_ws_url = start_mock_worker_for_busy_query().await;
+        write_runtime_state(&workspace, &worker_ws_url).await;
+        let repo = ThreadRepository::open(&root).await.unwrap();
+        let record = repo
+            .create_thread(1, 7, "Workspace".to_owned())
+            .await
+            .unwrap();
+        let record = repo
+            .bind_workspace(
+                record,
+                workspace.display().to_string(),
+                "thr_current".to_owned(),
+                full_auto_snapshot(),
+            )
+            .await
+            .unwrap();
+        let binding = repo
+            .read_session_binding(&record)
+            .await
+            .unwrap()
+            .expect("binding");
+
+        let summaries = build_working_session_summaries(&repo, &record, &binding)
+            .await
+            .unwrap();
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].session_id, "thr_current");
+        assert_eq!(summaries[0].run_status, "running");
 
         let _ = fs::remove_dir_all(root).await;
         let _ = fs::remove_dir_all(workspace).await;
