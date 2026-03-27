@@ -1341,7 +1341,7 @@ mod tests {
             &workspace,
             &record.metadata.thread_key,
             "thr_tui",
-            ObserverAttachMode::LiveForwarded,
+            ObserverAttachMode::WorkerObserve,
         )
         .await
         .unwrap();

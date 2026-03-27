@@ -17,7 +17,7 @@
 目前尚未完成的部分：
 
 - today code 中與 backend 相關的責任仍散落在 `codex.rs`、`app_server_runtime.rs`、`app_server_observer.rs`、`hcodex_ingress.rs`、`runtime_owner.rs`、`runtime_control.rs`
-- `observer` attach 仍建立在 `thread/resume` attach 語義上，而不是正式 upstream subscribe API
+- `observer` attach 對 threadBridge surface 已改走 worker-local `threadbridge/observeThread`；但 upstream 仍未提供正式 subscribe API
 - backend plane 與 shared runtime semantics 的長期 API 形狀仍未收斂成獨立 contract
 - 原生 busy truth 雖已開始透過 backend API（worker run-state）提供 authority，但產品層 busy gate 與兼容衍生路徑仍未完全收斂
 

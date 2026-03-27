@@ -1431,8 +1431,10 @@ where
     let mut client = AppServerClient::start_websocket(app_server_url).await?;
     let result = client
         .request_simple(
-            "thread/resume",
-            CodexRunner::build_thread_resume_params(thread_id, None),
+            "threadbridge/observeThread",
+            json!({
+                "threadId": thread_id,
+            }),
         )
         .await?;
     let binding = CodexRunner::parse_binding(&result)?;

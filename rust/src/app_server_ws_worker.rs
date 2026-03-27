@@ -56,7 +56,19 @@ struct WorkerState {
 struct WorkerIngressRuntime {
     workspace_path: PathBuf,
     daemon_ws_url: String,
+    worker_ws_url: String,
     ingress_manager: HcodexIngressManager,
+}
+
+#[derive(Debug, Default)]
+struct ObserverSessionState {
+    observed_thread_id: Option<String>,
+}
+
+#[derive(Debug)]
+enum LocalRequestAction {
+    Consumed,
+    Forward(WsMessage),
 }
 
 fn now_iso() -> String {
@@ -170,12 +182,13 @@ async fn run_worker(config: WorkerCli) -> Result<()> {
         let repository = ThreadRepository::open(data_root_path).await?;
         let ingress = HcodexIngressManager::new(repository);
         let ingress_state = ingress
-            .ensure_workspace_ingress(&workspace, &daemon_ws_url, &daemon_ws_url)
+            .ensure_workspace_ingress(&workspace, &daemon_ws_url, &worker_ws_url)
             .await?;
         Some((
             Arc::new(WorkerIngressRuntime {
                 workspace_path: workspace.clone(),
                 daemon_ws_url: daemon_ws_url.clone(),
+                worker_ws_url: worker_ws_url.clone(),
                 ingress_manager: ingress,
             }),
             ingress_state.hcodex_ws_url,
@@ -242,6 +255,7 @@ async fn proxy_client_session(
     let (mut upstream_sink, mut upstream_stream) = upstream_ws.split();
     let (injected_tx, mut injected_rx) = mpsc::unbounded_channel();
     let mut session_thread_ids = HashSet::new();
+    let mut observer_session = ObserverSessionState::default();
     loop {
         tokio::select! {
             client_message = client_stream.next() => {
@@ -249,19 +263,25 @@ async fn proxy_client_session(
                     break;
                 };
                 let message = client_message.context("failed to read worker client websocket message")?;
-                if handle_local_request(
+                let action = handle_local_request(
                     &message,
                     &worker_state,
                     worker_ingress.as_ref(),
                     &mut client_sink,
+                    &mut observer_session,
                 )
-                .await?
-                {
-                    continue;
+                .await?;
+                let forwarded = match action {
+                    LocalRequestAction::Consumed => continue,
+                    LocalRequestAction::Forward(message) => message,
+                };
+                if matches!(forwarded, WsMessage::Close(_)) {
+                    let _ = upstream_sink.send(forwarded).await;
+                    break;
                 }
-                track_client_message(&message, &worker_state).await?;
+                track_client_message(&forwarded, &worker_state).await?;
                 upstream_sink
-                    .send(message)
+                    .send(forwarded)
                     .await
                     .context("failed to forward worker client message upstream")?;
             }
@@ -364,19 +384,32 @@ async fn handle_local_request<S>(
         tokio_tungstenite::WebSocketStream<S>,
         WsMessage,
     >,
-) -> Result<bool>
+    observer_session: &mut ObserverSessionState,
+) -> Result<LocalRequestAction>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let Some(payload) = parse_json_message(message)? else {
-        return Ok(false);
+        return Ok(LocalRequestAction::Forward(message.clone()));
     };
     let Some(request_id) = payload.get("id").and_then(Value::as_i64) else {
-        return Ok(false);
+        return Ok(LocalRequestAction::Forward(message.clone()));
     };
     let Some(method) = payload.get("method").and_then(Value::as_str) else {
-        return Ok(false);
+        return Ok(LocalRequestAction::Forward(message.clone()));
     };
+
+    if observer_session.observed_thread_id.is_some() && observer_disallows_method(method) {
+        send_local_error(
+            client_sink,
+            request_id,
+            -32010,
+            "observer session is read-only",
+        )
+        .await?;
+        return Ok(LocalRequestAction::Consumed);
+    }
+
     match method {
         "threadbridge/getThreadRunState" => {
             let thread_id = payload
@@ -409,7 +442,7 @@ where
                 ))
                 .await
                 .context("failed to send worker local response")?;
-            Ok(true)
+            Ok(LocalRequestAction::Consumed)
         }
         "threadbridge/respondRequestUserInput" => {
             let thread_id = payload
@@ -462,17 +495,17 @@ where
                 ))
                 .await
                 .context("failed to send worker local response")?;
-            Ok(true)
+            Ok(LocalRequestAction::Consumed)
         }
         "threadbridge/ensureHcodexIngress" => {
-            let worker_ingress =
-                worker_ingress.context("worker ingress runtime is unavailable for ensure request")?;
+            let worker_ingress = worker_ingress
+                .context("worker ingress runtime is unavailable for ensure request")?;
             let ingress_state = worker_ingress
                 .ingress_manager
                 .ensure_workspace_ingress(
                     &worker_ingress.workspace_path,
                     &worker_ingress.daemon_ws_url,
-                    &worker_ingress.daemon_ws_url,
+                    &worker_ingress.worker_ws_url,
                 )
                 .await?;
             let hcodex_ws_url = ingress_state
@@ -493,10 +526,78 @@ where
                 ))
                 .await
                 .context("failed to send worker local response")?;
-            Ok(true)
+            Ok(LocalRequestAction::Consumed)
         }
-        _ => Ok(false),
+        "threadbridge/observeThread" => {
+            let thread_id = payload
+                .get("params")
+                .and_then(|params| params.get("threadId"))
+                .and_then(Value::as_str)
+                .context("threadbridge/observeThread missing threadId")?;
+            observer_session.observed_thread_id = Some(thread_id.to_owned());
+            Ok(LocalRequestAction::Forward(observer_resume_request(
+                request_id, thread_id,
+            )))
+        }
+        _ => Ok(LocalRequestAction::Forward(message.clone())),
     }
+}
+
+fn observer_resume_request(request_id: i64, thread_id: &str) -> WsMessage {
+    WsMessage::Text(
+        json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "thread/resume",
+            "params": {
+                "threadId": thread_id,
+                "persistExtendedHistory": false,
+            },
+        })
+        .to_string()
+        .into(),
+    )
+}
+
+fn observer_disallows_method(method: &str) -> bool {
+    matches!(
+        method,
+        "thread/start"
+            | "thread/resume"
+            | "turn/start"
+            | "turn/interrupt"
+            | "threadbridge/respondRequestUserInput"
+            | "threadbridge/ensureHcodexIngress"
+    )
+}
+
+async fn send_local_error<S>(
+    client_sink: &mut futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<S>,
+        WsMessage,
+    >,
+    request_id: i64,
+    code: i64,
+    message: &str,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    client_sink
+        .send(WsMessage::Text(
+            json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": code,
+                    "message": message,
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .context("failed to send worker local error response")
 }
 
 async fn track_client_message(
@@ -681,7 +782,10 @@ fn parse_json_message(message: &WsMessage) -> Result<Option<Value>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{WorkerState, track_client_message, track_upstream_message};
+    use super::{
+        WorkerState, observer_disallows_method, observer_resume_request, track_client_message,
+        track_upstream_message,
+    };
     use serde_json::json;
     use std::collections::HashSet;
     use std::sync::Arc;
@@ -839,5 +943,27 @@ mod tests {
         let run = state.thread_runs.get("thr_1").expect("run state");
         assert!(!run.is_busy);
         assert_eq!(run.phase.as_deref(), Some("interrupted"));
+    }
+
+    #[test]
+    fn observe_thread_translates_to_thread_resume_request() {
+        let message = observer_resume_request(99, "thr_obs");
+        let WsMessage::Text(text) = message else {
+            panic!("expected text message");
+        };
+        let payload: serde_json::Value = serde_json::from_str(text.as_str()).expect("json payload");
+        assert_eq!(payload["id"], 99);
+        assert_eq!(payload["method"], "thread/resume");
+        assert_eq!(payload["params"]["threadId"], "thr_obs");
+        assert_eq!(payload["params"]["persistExtendedHistory"], false);
+    }
+
+    #[test]
+    fn observer_mode_blocks_write_methods() {
+        assert!(observer_disallows_method("turn/start"));
+        assert!(observer_disallows_method(
+            "threadbridge/respondRequestUserInput"
+        ));
+        assert!(!observer_disallows_method("thread/read"));
     }
 }

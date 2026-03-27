@@ -27,7 +27,7 @@
 
 目前尚未完成：
 
-- observer 目前仍建立在 `thread/resume` attach 語義上，而不是正式的 upstream subscribe API
+- observer 對 threadBridge surface 已改走 worker-local `threadbridge/observeThread` attach contract；但 upstream 仍未提供正式 subscribe API
 - 少量文檔、legacy compatibility alias、與歷史分析仍沿用 `tui_proxy` 詞彙，尚未完全對齊新的 ingress/observer 分層
 - broader session observability 與 transport-neutral observer contract 仍未完成
 

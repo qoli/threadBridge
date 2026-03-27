@@ -58,6 +58,7 @@ impl WorkspaceStatusPhase {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ObserverAttachMode {
+    WorkerObserve,
     LiveForwarded,
     ResumeWs,
 }
@@ -65,6 +66,7 @@ pub enum ObserverAttachMode {
 impl ObserverAttachMode {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::WorkerObserve => "worker_observe",
             Self::LiveForwarded => "live_forwarded",
             Self::ResumeWs => "resume_ws",
         }
@@ -810,7 +812,7 @@ pub async fn record_hcodex_ingress_turn_started(
     current.turn_id = turn_id.map(str::to_owned);
     current
         .observer_attach_mode
-        .get_or_insert(ObserverAttachMode::LiveForwarded);
+        .get_or_insert(ObserverAttachMode::WorkerObserve);
     current.updated_at = now_iso();
     write_session_status(workspace_path, &current).await?;
     let aggregate = read_workspace_aggregate_status(workspace_path).await?;
@@ -882,7 +884,7 @@ pub async fn record_hcodex_ingress_prompt(
     current.summary = summarize_prompt(prompt);
     current
         .observer_attach_mode
-        .get_or_insert(ObserverAttachMode::LiveForwarded);
+        .get_or_insert(ObserverAttachMode::WorkerObserve);
     current.updated_at = now_iso();
     write_session_status(workspace_path, &current).await?;
     let record = WorkspaceStatusEventRecord {
@@ -979,7 +981,7 @@ pub async fn record_hcodex_ingress_completed(
     current.turn_id = None;
     current
         .observer_attach_mode
-        .get_or_insert(ObserverAttachMode::LiveForwarded);
+        .get_or_insert(ObserverAttachMode::WorkerObserve);
     current.summary = last_assistant_message
         .and_then(summarize_prompt)
         .or(current.summary);
@@ -1602,7 +1604,7 @@ mod tests {
             &workspace,
             "thread-key",
             "thr_new",
-            ObserverAttachMode::LiveForwarded,
+            ObserverAttachMode::WorkerObserve,
         )
         .await
         .unwrap();
@@ -1970,7 +1972,7 @@ mod tests {
             &workspace,
             "thread-key",
             "thr_old",
-            ObserverAttachMode::LiveForwarded,
+            ObserverAttachMode::WorkerObserve,
         )
         .await
         .unwrap();
@@ -1978,7 +1980,7 @@ mod tests {
             &workspace,
             "thread-key",
             "thr_new",
-            ObserverAttachMode::LiveForwarded,
+            ObserverAttachMode::WorkerObserve,
         )
         .await
         .unwrap();
@@ -2016,7 +2018,7 @@ mod tests {
             &workspace,
             "thread-key",
             "thr_new",
-            ObserverAttachMode::LiveForwarded,
+            ObserverAttachMode::WorkerObserve,
         )
         .await
         .unwrap();

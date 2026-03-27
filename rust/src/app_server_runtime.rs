@@ -299,10 +299,7 @@ async fn ensure_worker_hcodex_ingress(worker_ws_url: &str) -> Result<Option<Stri
             continue;
         }
         if let Some(error) = payload.get("error") {
-            return Err(anyhow!(
-                "worker ingress ensure request failed: {}",
-                error
-            ));
+            return Err(anyhow!("worker ingress ensure request failed: {}", error));
         }
         return Ok(payload
             .get("result")

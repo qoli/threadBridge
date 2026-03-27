@@ -371,9 +371,6 @@ async fn handle_ingress_connection(
                 .await? {
                     current_session_id = Some(session_id);
                 }
-                observer_runtime
-                    .observe_forwarded_daemon_message(&workspace_path, &thread_key, &daemon_message)
-                    .await?;
                 if matches!(daemon_message, WsMessage::Close(_)) {
                     let _ = client_ws.send(daemon_message).await;
                     break;
@@ -526,25 +523,17 @@ async fn maybe_track_server_response(
         return Ok(None);
     };
     let attach_mode = match method {
-        TrackedRequestMethod::ThreadStart => ObserverAttachMode::LiveForwarded,
-        TrackedRequestMethod::ThreadResume => ObserverAttachMode::ResumeWs,
+        TrackedRequestMethod::ThreadStart | TrackedRequestMethod::ThreadResume => {
+            ObserverAttachMode::WorkerObserve
+        }
         TrackedRequestMethod::TurnStart => return Ok(None),
     };
     repository
         .set_tui_active_session_for_thread_key(thread_key, thread_id.to_owned())
         .await?;
-    match attach_mode {
-        ObserverAttachMode::LiveForwarded => {
-            observer_runtime
-                .register_live_forwarded_source(workspace_path, thread_key, thread_id)
-                .await?;
-        }
-        ObserverAttachMode::ResumeWs => {
-            observer_runtime
-                .ensure_thread_observer(workspace_path, observer_ws_url, thread_key, thread_id)
-                .await?;
-        }
-    }
+    observer_runtime
+        .ensure_thread_observer(workspace_path, observer_ws_url, thread_key, thread_id)
+        .await?;
     record_hcodex_ingress_connected(workspace_path, thread_key, thread_id, attach_mode).await?;
     info!(
         event = "hcodex_ingress.session_tracked",
