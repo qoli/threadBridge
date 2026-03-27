@@ -257,11 +257,17 @@ fn render_working_sessions(
                 .collect::<Vec<_>>()
                 .join(",")
         };
+        let run_label = if summary.run_status == "running" && summary.run_phase == "turn_finalizing"
+        {
+            "running/finalizing".to_owned()
+        } else {
+            summary.run_status.clone()
+        };
         lines.push(format!(
             "- `{}`{} | {} | records={} | tools={} | final={} | origins={}",
             summary.session_id,
             current,
-            summary.run_status,
+            run_label,
             summary.record_count,
             summary.tool_use_count,
             if summary.has_final_reply { "yes" } else { "no" },
@@ -300,6 +306,18 @@ fn render_working_session_records(
 }
 
 fn render_stop_started_message(snapshot: &SessionCurrentStatus) -> String {
+    if snapshot.phase == crate::workspace_status::WorkspaceStatusPhase::TurnFinalizing {
+        return match snapshot.activity_source {
+            crate::workspace_status::SessionActivitySource::Tui => format!(
+                "Interrupt was already requested for shared TUI session `{}`. Wait for the current turn to settle.",
+                snapshot.session_id
+            ),
+            crate::workspace_status::SessionActivitySource::ManagedRuntime => format!(
+                "Interrupt was already requested for Telegram session `{}`. Wait for the current turn to settle.",
+                snapshot.session_id
+            ),
+        };
+    }
     match snapshot.activity_source {
         crate::workspace_status::SessionActivitySource::Tui => format!(
             "Interrupt requested for shared TUI session `{}`. Wait for the current turn to settle.",
@@ -1069,6 +1087,16 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             };
+            if busy.phase == crate::workspace_status::WorkspaceStatusPhase::TurnFinalizing {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    render_stop_started_message(busy),
+                )
+                .await?;
+                return Ok(());
+            }
             let Some(turn_id) = busy.turn_id.as_deref() else {
                 send_scoped_warning_message(
                     bot,
@@ -2161,7 +2189,7 @@ mod tests {
     use super::{
         LaunchCommandTarget, build_workspace_launch_config, parse_execution_mode_argument,
         parse_launch_command_target, persist_collaboration_mode_change,
-        render_working_session_records, render_working_sessions,
+        render_stop_started_message, render_working_session_records, render_working_sessions,
     };
     use crate::collaboration_mode::CollaborationMode;
     use crate::config::{AppConfig, RuntimeConfig, TelegramConfig};
@@ -2174,7 +2202,9 @@ mod tests {
     use crate::runtime_control::{RuntimeControlContext, RuntimeOwnershipMode};
     use crate::runtime_protocol::{WorkingSessionRecordKind, WorkingSessionRecordView};
     use crate::telegram_runtime::AppState;
-    use crate::workspace_status::WorkspaceStatusCache;
+    use crate::workspace_status::{
+        SessionActivitySource, SessionCurrentStatus, WorkspaceStatusCache, WorkspaceStatusPhase,
+    };
     use std::collections::HashSet;
     use std::path::PathBuf;
     use uuid::Uuid;
@@ -2235,6 +2265,7 @@ mod tests {
             started_at: Some("2026-03-25T00:00:00.000Z".to_owned()),
             updated_at: "2026-03-25T00:01:00.000Z".to_owned(),
             run_status: "running".to_owned(),
+            run_phase: "turn_finalizing".to_owned(),
             origins_seen: vec![
                 TranscriptMirrorOrigin::Telegram,
                 TranscriptMirrorOrigin::Tui,
@@ -2248,6 +2279,7 @@ mod tests {
         assert!(rendered_summaries.contains("/session_log <session_id>"));
         assert!(rendered_summaries.contains("thr_current"));
         assert!(rendered_summaries.contains("current"));
+        assert!(rendered_summaries.contains("running/finalizing"));
 
         let rendered_records = render_working_session_records(
             "thr_current",
@@ -2266,6 +2298,31 @@ mod tests {
         );
         assert!(rendered_records.contains("process_tool"));
         assert!(rendered_records.contains("Tool call finished"));
+    }
+
+    #[test]
+    fn stop_started_message_is_idempotent_for_finalizing_turns() {
+        let snapshot = SessionCurrentStatus {
+            schema_version: 2,
+            workspace_cwd: "/tmp/workspace".to_owned(),
+            session_id: "thr_current".to_owned(),
+            activity_source: SessionActivitySource::ManagedRuntime,
+            live: true,
+            phase: WorkspaceStatusPhase::TurnFinalizing,
+            shell_pid: None,
+            child_pid: None,
+            child_pgid: None,
+            child_command: None,
+            client: None,
+            turn_id: Some("turn-1".to_owned()),
+            summary: None,
+            pending_interrupt_turn_id: None,
+            pending_interrupt_requested_at: None,
+            observer_attach_mode: None,
+            updated_at: "2026-03-27T00:00:00.000Z".to_owned(),
+        };
+
+        assert!(render_stop_started_message(&snapshot).contains("already requested"));
     }
 
     #[tokio::test]

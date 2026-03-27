@@ -218,6 +218,19 @@ pub(crate) fn busy_text_message(
     snapshot: &SessionCurrentStatus,
     image_saved: bool,
 ) -> &'static str {
+    if snapshot.phase == crate::workspace_status::WorkspaceStatusPhase::TurnFinalizing {
+        return match snapshot.activity_source {
+            SessionActivitySource::Tui if image_saved => {
+                "Image saved. The shared TUI session is already settling after an interrupt request. Analysis will stay pending until that turn fully stops."
+            }
+            SessionActivitySource::Tui => {
+                "The shared TUI session is already settling after an interrupt request. Wait for it to stop before sending a new Telegram request."
+            }
+            SessionActivitySource::ManagedRuntime => {
+                "This thread's current Codex session is already settling after an interrupt request. Wait for it to stop before sending a new Telegram request."
+            }
+        };
+    }
     match snapshot.activity_source {
         SessionActivitySource::Tui if image_saved => {
             "Image saved. Analysis will stay pending until the shared TUI session finishes its current turn. Use /stop if you want to interrupt it."
@@ -232,6 +245,16 @@ pub(crate) fn busy_text_message(
 }
 
 pub(crate) fn busy_command_message(snapshot: &SessionCurrentStatus) -> &'static str {
+    if snapshot.phase == crate::workspace_status::WorkspaceStatusPhase::TurnFinalizing {
+        return match snapshot.activity_source {
+            SessionActivitySource::Tui => {
+                "The shared TUI session is already settling after an interrupt request. Wait for it to stop before changing this thread's session state."
+            }
+            SessionActivitySource::ManagedRuntime => {
+                "This thread's current Codex session is already settling after an interrupt request. Wait for it to stop before changing session state."
+            }
+        };
+    }
     match snapshot.activity_source {
         SessionActivitySource::Tui => {
             "The shared TUI session is already running a turn. Wait for it to finish before changing this thread's session state, or use /stop to interrupt it."
@@ -960,7 +983,8 @@ fn local_mirror_entry_from_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        STARTUP_STALE_BUSY_RECOVERED_LOG, initial_workspace_event_offset,
+        STARTUP_STALE_BUSY_RECOVERED_LOG, busy_command_message, busy_text_message,
+        initial_workspace_event_offset,
         local_mirror_entry_from_event, reconcile_stale_bot_busy_sessions_for_repository,
         render_topic_title, topic_title_suffix_label, tui_adoption_prompt_text,
     };
@@ -1044,6 +1068,32 @@ mod tests {
         assert!(is_hcodex_ingress_client(Some("threadbridge-tui-proxy")));
         assert!(!is_hcodex_ingress_client(Some("codex-cli")));
         assert!(!is_hcodex_ingress_client(None));
+    }
+
+    #[test]
+    fn busy_messages_distinguish_turn_finalizing() {
+        let snapshot = SessionCurrentStatus {
+            schema_version: 2,
+            workspace_cwd: "/tmp/workspace".to_owned(),
+            session_id: "thr_current".to_owned(),
+            activity_source: SessionActivitySource::ManagedRuntime,
+            live: true,
+            phase: WorkspaceStatusPhase::TurnFinalizing,
+            shell_pid: None,
+            child_pid: None,
+            child_pgid: None,
+            child_command: None,
+            client: None,
+            turn_id: Some("turn-1".to_owned()),
+            summary: None,
+            pending_interrupt_turn_id: None,
+            pending_interrupt_requested_at: None,
+            observer_attach_mode: None,
+            updated_at: "2026-03-27T00:00:00.000Z".to_owned(),
+        };
+
+        assert!(busy_text_message(&snapshot, false).contains("settling after an interrupt request"));
+        assert!(busy_command_message(&snapshot).contains("settling after an interrupt request"));
     }
 
     #[test]

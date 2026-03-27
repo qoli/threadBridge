@@ -16,7 +16,7 @@ use crate::thread_state::{
     BindingStatus, effective_busy_snapshot_for_binding, resolve_binding_status,
     resolve_thread_state,
 };
-use crate::workspace_status::read_session_status;
+use crate::workspace_status::{WorkspaceStatusPhase, read_session_status};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeHealthView {
@@ -192,6 +192,7 @@ pub struct WorkingSessionSummaryView {
     pub started_at: Option<String>,
     pub updated_at: String,
     pub run_status: String,
+    pub run_phase: String,
     pub origins_seen: Vec<TranscriptMirrorOrigin>,
     pub record_count: usize,
     pub tool_use_count: usize,
@@ -223,6 +224,7 @@ struct WorkingSessionAggregate {
     entries: Vec<TranscriptMirrorEntry>,
     status_updated_at: Option<String>,
     is_running: bool,
+    phase: Option<WorkspaceStatusPhase>,
     history_updated_at: Option<String>,
     last_error: Option<WorkingSessionError>,
 }
@@ -488,6 +490,11 @@ pub async fn build_working_session_summaries(
             } else {
                 "idle".to_owned()
             },
+            run_phase: aggregate
+                .phase
+                .unwrap_or(WorkspaceStatusPhase::Idle)
+                .as_str()
+                .to_owned(),
             origins_seen: origins_seen_for_entries(&aggregate.entries),
             record_count,
             tool_use_count: aggregate
@@ -612,6 +619,7 @@ async fn build_working_session_aggregates(
         if let Some(status) = status {
             aggregate.status_updated_at = Some(status.updated_at);
             aggregate.is_running = status.phase.is_turn_busy();
+            aggregate.phase = Some(status.phase);
         } else if fallback_busy_snapshot
             .as_ref()
             .is_some_and(|snapshot| snapshot.session_id == session_id)
@@ -620,6 +628,7 @@ async fn build_working_session_aggregates(
                 .as_ref()
                 .map(|snapshot| snapshot.updated_at.clone());
             aggregate.is_running = true;
+            aggregate.phase = fallback_busy_snapshot.as_ref().map(|snapshot| snapshot.phase);
         }
     }
 
@@ -1247,6 +1256,7 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].session_id, "thr_current");
         assert_eq!(summaries[0].run_status, "running");
+        assert_eq!(summaries[0].run_phase, "turn_running");
 
         let _ = fs::remove_dir_all(root).await;
         let _ = fs::remove_dir_all(workspace).await;
@@ -1489,6 +1499,7 @@ mod tests {
             .unwrap();
         assert_eq!(summaries[0].session_id, "thr_current");
         assert_eq!(summaries[0].run_status, "running");
+        assert_eq!(summaries[0].run_phase, "turn_running");
         assert_eq!(
             summaries[0].last_error.as_deref(),
             Some("session continuity lost")

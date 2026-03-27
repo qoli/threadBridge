@@ -41,6 +41,15 @@ pub enum WorkspaceStatusPhase {
 }
 
 impl WorkspaceStatusPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::ShellActive => "shell_active",
+            Self::TurnRunning => "turn_running",
+            Self::TurnFinalizing => "turn_finalizing",
+        }
+    }
+
     pub fn is_turn_busy(self) -> bool {
         matches!(self, Self::TurnRunning | Self::TurnFinalizing)
     }
