@@ -205,6 +205,30 @@ runtime_binary_name() {
   printf '%s\n' 'threadbridge_desktop'
 }
 
+runtime_binary_names() {
+  printf '%s\n' \
+    'threadbridge_desktop' \
+    'app_server_ws_worker'
+}
+
+ensure_runtime_binaries_built() {
+  local missing=0
+  local runtime_bin runtime_path
+  while IFS= read -r runtime_bin; do
+    [[ -n "$runtime_bin" ]] || continue
+    runtime_path=$(binary_path "$runtime_bin")
+    if [[ ! -x "$runtime_path" ]]; then
+      printf 'Missing built runtime binary: %s\n' "$runtime_path" >&2
+      missing=1
+    fi
+  done < <(runtime_binary_names)
+
+  if [[ $missing -ne 0 ]]; then
+    printf 'Run scripts/local_threadbridge.sh build to compile runtime binaries.\n' >&2
+    exit 1
+  fi
+}
+
 stdout_log_path() {
   printf '%s/local-threadbridge-desktop.stdout.log\n' "$LOG_DIR"
 }
@@ -246,7 +270,7 @@ build_runtime_binaries() {
   if [[ "$BUILD_PROFILE" == "release" ]]; then
     build_args+=(--release)
   fi
-  build_args+=(--bin threadbridge_desktop)
+  build_args+=(--bins)
 
   log "building threadbridge runtime binaries ($BUILD_PROFILE)"
   (
@@ -258,7 +282,12 @@ build_runtime_binaries() {
     cargo "${build_args[@]}"
   )
 
-  log "built binary: $(binary_path threadbridge_desktop)"
+  ensure_runtime_binaries_built
+  local runtime_bin
+  while IFS= read -r runtime_bin; do
+    [[ -n "$runtime_bin" ]] || continue
+    log "built binary: $(binary_path "$runtime_bin")"
+  done < <(runtime_binary_names)
 }
 
 build_local() {
@@ -300,10 +329,6 @@ start_runtime() {
   runtime_binary=$(binary_path "$runtime_binary_name_value")
   stdout_log=$(stdout_log_path)
   stderr_log=$(stderr_log_path)
-  if [[ ! -x "$runtime_binary" ]]; then
-    printf 'Missing built binary: %s\n' "$runtime_binary" >&2
-    exit 1
-  fi
 
   local session_name
   session_name=$(tmux_session_name)
