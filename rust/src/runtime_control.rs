@@ -362,20 +362,25 @@ impl WorkspaceRuntimeService {
             owner_managed = self.ctx.runtime_is_owner_managed(),
             "runtime control requested control-path workspace runtime"
         );
-        let runtime = self
-            .ctx
-            .app_server_runtime
-            .ensure_workspace_daemon(&workspace)
-            .await?;
-        let _ = self
-            .ctx
-            .hcodex_ingress
-            .ensure_workspace_ingress(
-                &workspace,
-                runtime.client_ws_url(),
-                runtime.client_ws_url(),
-            )
-            .await?;
+        let runtime = if self.ctx.runtime_is_owner_managed() {
+            self.read_owner_managed_workspace_runtime(&workspace).await?
+        } else {
+            let runtime = self
+                .ctx
+                .app_server_runtime
+                .ensure_workspace_daemon(&workspace)
+                .await?;
+            let _ = self
+                .ctx
+                .hcodex_ingress
+                .ensure_workspace_ingress(
+                    &workspace,
+                    runtime.client_ws_url(),
+                    runtime.client_ws_url(),
+                )
+                .await?;
+            runtime
+        };
         Ok(CodexWorkspace {
             working_directory: workspace,
             app_server_url: Some(runtime.client_ws_url().to_owned()),
