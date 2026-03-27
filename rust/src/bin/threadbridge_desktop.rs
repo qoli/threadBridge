@@ -123,14 +123,15 @@ mod macos_app {
         ))));
         runtime.block_on(reconcile_runtime_owner(&management_api, &owner));
 
-        if runtime
-            .block_on(spawn_bot_runtime_from_env_with_runtimes(
-                management_api.clone(),
-                owner.app_server_runtime(),
-                owner.hcodex_ingress_runtime(),
-            ))?
-            .is_some()
-        {
+        if let Some(bot_runtime) = runtime.block_on(spawn_bot_runtime_from_env_with_runtimes(
+            management_api.clone(),
+            owner.app_server_runtime(),
+        ))? {
+            runtime.block_on(
+                owner.configure_hcodex_ingress_interaction_sender(
+                    bot_runtime.runtime_interaction_sender(),
+                ),
+            );
             info!(
                 event = "desktop_runtime.bot.started",
                 management_api_base_url = %management_api.base_url,
@@ -304,14 +305,23 @@ mod macos_app {
         {
             return;
         }
-        if let Err(error) = spawn_bot_runtime_from_env_with_runtimes(
+        match spawn_bot_runtime_from_env_with_runtimes(
             management_api.clone(),
             owner.app_server_runtime(),
-            owner.hcodex_ingress_runtime(),
         )
         .await
         {
-            warn!(event = "desktop_runtime.bot.auto_start_failed", error = %error);
+            Ok(Some(bot_runtime)) => {
+                owner
+                    .configure_hcodex_ingress_interaction_sender(
+                        bot_runtime.runtime_interaction_sender(),
+                    )
+                    .await;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(event = "desktop_runtime.bot.auto_start_failed", error = %error);
+            }
         }
     }
 

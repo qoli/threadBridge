@@ -521,7 +521,7 @@ async fn resolve_hcodex_launch(config: &ResolveHcodexLaunchCli) -> Result<()> {
         .hcodex_ws_url
         .as_deref()
         .filter(|value| !value.trim().is_empty())
-        .context("hcodex: app-server state is missing hcodex_ws_url")?;
+        .context("hcodex: app-server state is missing the workspace launch endpoint")?;
     let matches = bound_threads_for_workspace(&config.data_root, &config.workspace).await?;
     let selected = select_bound_thread(matches, config.thread_key.as_deref())?;
     let current_thread = selected

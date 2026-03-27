@@ -15,6 +15,7 @@ use crate::app_server_runtime::{
 use crate::config::RuntimeConfig;
 use crate::hcodex_ingress::{HcodexIngressManager, hcodex_ingress_endpoint_is_live};
 use crate::repository::ThreadRepository;
+use crate::runtime_interaction::RuntimeInteractionSender;
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -103,8 +104,13 @@ impl DesktopRuntimeOwner {
         self.app_server_runtime.clone()
     }
 
-    pub fn hcodex_ingress_runtime(&self) -> HcodexIngressManager {
-        self.hcodex_ingress_runtime.clone()
+    pub async fn configure_hcodex_ingress_interaction_sender(
+        &self,
+        sender: RuntimeInteractionSender,
+    ) {
+        self.hcodex_ingress_runtime
+            .configure_interaction_sender(sender)
+            .await;
     }
 
     pub async fn workspace_heartbeat(
@@ -260,7 +266,7 @@ impl DesktopRuntimeOwner {
                     .as_ref()
                     .and_then(|state| state.hcodex_ws_url.as_deref())
                     .unwrap_or(""),
-                "desktop runtime owner reused existing workspace hcodex ingress"
+                "desktop runtime owner reused existing workspace hcodex launch endpoint"
             );
             return Ok(false);
         }
@@ -277,7 +283,7 @@ impl DesktopRuntimeOwner {
             event = "runtime_owner.workspace.proxy_ready",
             workspace = %workspace_path.display(),
             daemon_ws_url = %runtime_state.daemon_ws_url,
-            "desktop runtime owner ensured workspace hcodex ingress"
+            "desktop runtime owner ensured workspace hcodex launch endpoint"
         );
         Ok(true)
     }

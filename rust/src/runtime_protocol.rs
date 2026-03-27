@@ -896,7 +896,7 @@ pub fn workspace_recovery_hint(
     }
     if runtime_status.hcodex_ingress_status != "running" {
         return Some(
-            "hcodex ingress is not ready. Run Repair Runtime for this workspace, or Reconcile Runtime Owner to rebuild ingress state."
+            "hcodex launch endpoint is not ready. Run Repair Runtime for this workspace, or Reconcile Runtime Owner to repair the workspace launch surface."
                 .to_owned(),
         );
     }

@@ -6,7 +6,6 @@ use tracing::{info, warn};
 
 use crate::app_server_runtime::WorkspaceRuntimeManager;
 use crate::config::{AppConfig, load_app_config, load_optional_telegram_config};
-use crate::hcodex_ingress::HcodexIngressManager;
 use crate::local_control::TelegramControlBridgeHandle;
 use crate::management_api::{ManagementApiHandle, TelegramPollingState};
 use crate::runtime_control::RuntimeOwnershipMode;
@@ -21,6 +20,14 @@ pub struct BotRuntimeHandle {
     pub state: AppState,
 }
 
+impl BotRuntimeHandle {
+    pub fn runtime_interaction_sender(
+        &self,
+    ) -> crate::runtime_interaction::RuntimeInteractionSender {
+        self.state.runtime_interaction_sender.clone()
+    }
+}
+
 pub async fn spawn_bot_runtime(
     config: AppConfig,
     management_api: ManagementApiHandle,
@@ -33,7 +40,6 @@ pub async fn spawn_bot_runtime_with_runtimes(
     config: AppConfig,
     management_api: ManagementApiHandle,
     app_server_runtime: WorkspaceRuntimeManager,
-    hcodex_ingress: HcodexIngressManager,
 ) -> Result<BotRuntimeHandle> {
     let state = AppState::new_with_runtimes_and_mode(
         config.clone(),
@@ -42,9 +48,6 @@ pub async fn spawn_bot_runtime_with_runtimes(
         RuntimeOwnershipMode::DesktopOwner,
     )
     .await?;
-    hcodex_ingress
-        .configure_interaction_sender(state.runtime_interaction_sender.clone())
-        .await;
     spawn_bot_runtime_from_state(config, management_api, state).await
 }
 
@@ -135,7 +138,6 @@ pub async fn spawn_bot_runtime_from_env(
 pub async fn spawn_bot_runtime_from_env_with_runtimes(
     management_api: ManagementApiHandle,
     app_server_runtime: WorkspaceRuntimeManager,
-    hcodex_ingress: HcodexIngressManager,
 ) -> Result<Option<BotRuntimeHandle>> {
     if load_optional_telegram_config()?.is_none() {
         management_api
@@ -144,7 +146,7 @@ pub async fn spawn_bot_runtime_from_env_with_runtimes(
         return Ok(None);
     }
     let config = load_app_config()?;
-    spawn_bot_runtime_with_runtimes(config, management_api, app_server_runtime, hcodex_ingress)
+    spawn_bot_runtime_with_runtimes(config, management_api, app_server_runtime)
         .await
         .map(Some)
 }
