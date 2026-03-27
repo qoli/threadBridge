@@ -574,12 +574,12 @@ async fn runtime_state_is_live(workspace: &Path) -> Result<bool> {
         return Ok(false);
     }
     let state = read_runtime_state(workspace).await?;
-    let daemon_live = tcp_endpoint_is_live(&state.daemon_ws_url).await;
+    let client_live = tcp_endpoint_is_live(state.client_ws_url()).await;
     let proxy_live = match state.hcodex_ws_url.as_deref() {
         Some(url) => tcp_endpoint_is_live(url).await,
         None => false,
     };
-    Ok(daemon_live && proxy_live)
+    Ok(client_live && proxy_live)
 }
 
 async fn tcp_endpoint_is_live(url: &str) -> bool {
@@ -679,6 +679,7 @@ fn select_bound_thread(
 #[cfg(test)]
 mod tests {
     use super::{build_launch_ws_url, maybe_run_from_args};
+    use crate::app_server_runtime::WorkspaceRuntimeState;
     use std::ffi::OsString;
 
     #[tokio::test]
@@ -707,5 +708,19 @@ mod tests {
             launch_ws_url,
             "ws://127.0.0.1:61399/?existing=1&launch_ticket=test-ticket"
         );
+    }
+
+    #[test]
+    fn workspace_runtime_state_prefers_worker_client_url() {
+        let state = WorkspaceRuntimeState {
+            schema_version: 3,
+            workspace_cwd: "/tmp/workspace".to_owned(),
+            daemon_ws_url: "ws://127.0.0.1:4100".to_owned(),
+            worker_ws_url: Some("ws://127.0.0.1:4101".to_owned()),
+            worker_pid: Some(7),
+            hcodex_ws_url: Some("ws://127.0.0.1:4102".to_owned()),
+        };
+
+        assert_eq!(state.client_ws_url(), "ws://127.0.0.1:4101");
     }
 }
