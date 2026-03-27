@@ -2382,6 +2382,7 @@ mod tests {
                 runtime_ownership_mode: RuntimeOwnershipMode::SelfManaged,
             },
             interactive_requests: crate::interactive::InteractiveRequestRegistry::new(),
+            runtime_interaction_sender: tokio::sync::mpsc::unbounded_channel().0,
             workspace_status_cache: WorkspaceStatusCache::new(),
         };
 
@@ -2476,6 +2477,7 @@ mod tests {
                 runtime_ownership_mode: RuntimeOwnershipMode::SelfManaged,
             },
             interactive_requests: crate::interactive::InteractiveRequestRegistry::new(),
+            runtime_interaction_sender: tokio::sync::mpsc::unbounded_channel().0,
             workspace_status_cache: WorkspaceStatusCache::new(),
         };
 

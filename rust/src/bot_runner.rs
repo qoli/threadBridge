@@ -38,10 +38,13 @@ pub async fn spawn_bot_runtime_with_runtimes(
     let state = AppState::new_with_runtimes_and_mode(
         config.clone(),
         app_server_runtime,
-        hcodex_ingress,
+        hcodex_ingress.clone(),
         RuntimeOwnershipMode::DesktopOwner,
     )
     .await?;
+    hcodex_ingress
+        .configure_interaction_sender(state.runtime_interaction_sender.clone())
+        .await;
     spawn_bot_runtime_from_state(config, management_api, state).await
 }
 
