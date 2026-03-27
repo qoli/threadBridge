@@ -1006,7 +1006,6 @@ mod tests {
     use crate::app_server_runtime::WorkspaceRuntimeState;
     use crate::codex::CodexRunner;
     use crate::config::{AppConfig, RuntimeConfig, TelegramConfig};
-    use crate::hcodex_ingress::HcodexIngressManager;
     use crate::interactive::InteractiveRequestRegistry;
     use crate::repository::{SessionBinding, ThreadRepository};
     use crate::runtime_control::{RuntimeControlContext, RuntimeOwnershipMode};
@@ -1377,7 +1376,7 @@ mod tests {
                     .unwrap(),
                 codex: CodexRunner::new(None),
                 app_server_runtime: WorkspaceRuntimeManager::new(),
-                hcodex_ingress: HcodexIngressManager::new(repository.clone()),
+                hcodex_ingress: None,
                 seed_template_path: root.join("seed.md"),
                 runtime_ownership_mode: RuntimeOwnershipMode::DesktopOwner,
             },

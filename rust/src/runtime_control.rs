@@ -34,7 +34,7 @@ pub struct RuntimeControlContext {
     pub delivery_bus: DeliveryBusCoordinator,
     pub codex: CodexRunner,
     pub app_server_runtime: WorkspaceRuntimeManager,
-    pub hcodex_ingress: HcodexIngressManager,
+    pub hcodex_ingress: Option<HcodexIngressManager>,
     pub seed_template_path: PathBuf,
     pub runtime_ownership_mode: RuntimeOwnershipMode,
 }
@@ -58,7 +58,8 @@ impl RuntimeControlContext {
             codex: CodexRunner::new(runtime.codex_model.clone()),
             repository,
             app_server_runtime,
-            hcodex_ingress,
+            hcodex_ingress: (runtime_ownership_mode == RuntimeOwnershipMode::SelfManaged)
+                .then_some(hcodex_ingress),
             seed_template_path,
             runtime,
             runtime_ownership_mode,
@@ -424,6 +425,8 @@ impl WorkspaceRuntimeService {
         let _ = self
             .ctx
             .hcodex_ingress
+            .as_ref()
+            .context("self-managed control runtime is missing hcodex ingress manager")?
             .ensure_workspace_ingress(
                 workspace,
                 runtime_state.client_ws_url(),
