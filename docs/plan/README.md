@@ -226,6 +226,10 @@
 - [desktop-runtime-tool-bridge.md](desktop-runtime-owner/desktop-runtime-tool-bridge.md)
   - doc kind: `plan`
   - desktop runtime 作為跨沙盒 capability host / tool bridge / 自定義 webview service 草稿
+- [macos-public-release-track.md](desktop-runtime-owner/macos-public-release-track.md)
+  - doc kind: `plan`
+  - 公開 macOS desktop RC 發佈草稿
+  - 固定 `signed + notarized`、`universal DMG + Homebrew cask`、與 dedicated tap 發佈路徑
 - [optional-agents-injection.md](runtime-control/optional-agents-injection.md)
   - doc kind: `plan`
   - appendix 注入可選化草稿
