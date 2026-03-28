@@ -647,8 +647,9 @@ function renderWorkspaceCards(items) {
 
       <div class="actions-grid">
         <button class="secondary" onclick="openWorkspace('${item.thread_key}')">Open Workspace</button>
-        <button ${item.conflict ? 'disabled' : ''} onclick="launchHcodexNew('${item.thread_key}')">New Session</button>
-        <button ${item.conflict || !item.current_codex_thread_id ? 'disabled' : ''} onclick="launchHcodexContinueCurrent('${item.thread_key}')">Continue Telegram Session</button>
+        <button ${item.conflict ? 'disabled' : ''} onclick="startFreshSession('${item.thread_key}')">Start Fresh Session</button>
+        <button ${item.conflict ? 'disabled' : ''} onclick="launchHcodexNew('${item.thread_key}')">Launch Local Session (new)</button>
+        <button ${item.conflict || !item.current_codex_thread_id ? 'disabled' : ''} onclick="launchHcodexContinueCurrent('${item.thread_key}')">Launch Local Session (continue_current)</button>
         <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="repairContinuity('${item.thread_key}', '${item.binding_status}', ${item.tui_session_adoption_pending ? 'true' : 'false'})">${item.tui_session_adoption_pending ? 'Adopt TUI' : 'Repair Session'}</button>
         <button class="secondary" onclick="repairRuntime('${item.thread_key}')">Repair Runtime</button>
         <button ${item.conflict ? 'disabled' : ''} onclick="showLaunchConfig('${item.thread_key}')">Show Launch Commands</button>
@@ -657,7 +658,7 @@ function renderWorkspaceCards(items) {
 
       <div class="toolbar">
         <input id="resume-${item.thread_key}" type="text" placeholder="session id to resume" />
-        <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="launchHcodexResume('${item.thread_key}')">Launch Resume</button>
+        <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="launchHcodexResume('${item.thread_key}')">Launch Local Session (resume)</button>
       </div>
 
       <details class="raw-panel" data-thread-key="${item.thread_key}" data-panel-key="advanced" ${panelOpenAttr(item.thread_key, 'advanced')}>
@@ -812,6 +813,22 @@ async function showLaunchConfig(threadKey) {
   openLaunchOutput(threadKey, data);
 }
 
+async function postRuntimeControlAction(threadKey, payload, failureText) {
+  const response = await fetch(`/api/threads/${threadKey}/actions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    alert(data.error || failureText);
+    return null;
+  }
+  openLaunchOutput(threadKey, data);
+  await refresh();
+  return data;
+}
+
 async function updateExecutionMode(threadKey) {
   const select = document.getElementById(`mode-${threadKey}`);
   const executionMode = select?.value;
@@ -819,41 +836,31 @@ async function updateExecutionMode(threadKey) {
     alert('Pick an execution mode first');
     return;
   }
-  const response = await fetch(`/api/workspaces/${threadKey}/execution-mode`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ execution_mode: executionMode }),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    alert(data.error || 'Execution mode update failed');
+  const data = await postRuntimeControlAction(
+    threadKey,
+    { action: 'set_workspace_execution_mode', execution_mode: executionMode },
+    'Execution mode update failed',
+  );
+  if (!data) {
     return;
   }
   delete appState.executionModeDrafts[threadKey];
-  openLaunchOutput(threadKey, data);
-  await refresh();
 }
 
 async function launchHcodexNew(threadKey) {
-  const response = await fetch(`/api/workspaces/${threadKey}/launch-hcodex-new`, { method: 'POST' });
-  const data = await response.json();
-  if (!response.ok) {
-    alert(data.error || 'Launch failed');
-    return;
-  }
-  openLaunchOutput(threadKey, data);
-  await refresh();
+  await postRuntimeControlAction(
+    threadKey,
+    { action: 'launch_local_session', target: 'new' },
+    'Launch failed',
+  );
 }
 
 async function launchHcodexContinueCurrent(threadKey) {
-  const response = await fetch(`/api/workspaces/${threadKey}/launch-hcodex-continue-current`, { method: 'POST' });
-  const data = await response.json();
-  if (!response.ok) {
-    alert(data.error || 'Launch failed');
-    return;
-  }
-  openLaunchOutput(threadKey, data);
-  await refresh();
+  await postRuntimeControlAction(
+    threadKey,
+    { action: 'launch_local_session', target: 'continue_current' },
+    'Launch failed',
+  );
 }
 
 async function launchHcodexResume(threadKey) {
@@ -866,28 +873,27 @@ async function launchHcodexResume(threadKey) {
 }
 
 async function launchHcodexResumeWithSession(threadKey, sessionId) {
-  const response = await fetch(`/api/workspaces/${threadKey}/launch-hcodex-resume`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId }),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    alert(data.error || 'Launch failed');
-    return;
-  }
-  openLaunchOutput(threadKey, data);
-  await refresh();
+  await postRuntimeControlAction(
+    threadKey,
+    { action: 'launch_local_session', target: 'resume', session_id: sessionId },
+    'Launch failed',
+  );
+}
+
+async function startFreshSession(threadKey) {
+  await postRuntimeControlAction(
+    threadKey,
+    { action: 'start_fresh_session' },
+    'Start fresh session failed',
+  );
 }
 
 async function repairSessionBinding(threadKey) {
-  const response = await fetch(`/api/threads/${threadKey}/repair-session-binding`, { method: 'POST' });
-  const data = await response.json();
-  if (!response.ok) {
-    alert(data.error || 'Session repair failed');
-    return;
-  }
-  await refresh();
+  await postRuntimeControlAction(
+    threadKey,
+    { action: 'repair_session_binding' },
+    'Session repair failed',
+  );
 }
 
 async function repairContinuity(threadKey, bindingStatus, adoptionPending) {

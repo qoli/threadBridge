@@ -19,19 +19,19 @@ use crate::delivery_bus::{
     ClaimStatus, DeliveryAttempt, DeliveryChannel, DeliveryClaim, DeliveryKind,
     provisional_key_for_text,
 };
-use crate::execution_mode::{
-    ExecutionMode, workspace_execution_mode, write_workspace_execution_config,
-};
+use crate::execution_mode::{ExecutionMode, workspace_execution_mode};
 use crate::local_control::{TelegramControlBridgeHandle, resolve_workspace_argument};
 use crate::process_transcript::process_entry_from_codex_event;
 use crate::runtime_control::{
-    HcodexLaunchConfigView, WorkspaceExecutionModeView, hcodex_launch_command,
-    launch_hcodex_via_terminal, workspace_execution_mode_view_for_record,
+    HcodexLaunchConfigView, SharedControlHandle, WorkspaceExecutionModeView,
+    workspace_execution_mode_view_for_record,
     workspace_launch_config_for_record as shared_workspace_launch_config_for_record,
 };
 use crate::runtime_protocol::{
-    RuntimeControlAction, WorkingSessionRecordKind, WorkingSessionRecordView,
-    WorkingSessionSummaryView, build_working_session_records, build_working_session_summaries,
+    LaunchLocalSessionTarget, RuntimeControlAction, RuntimeControlActionEnvelope,
+    RuntimeControlActionRequest, RuntimeControlActionResult, WorkingSessionRecordKind,
+    WorkingSessionRecordView, WorkingSessionSummaryView, build_working_session_records,
+    build_working_session_summaries,
 };
 use crate::turn_completion::compose_visible_final_reply;
 
@@ -176,7 +176,7 @@ fn parse_launch_command_target(argument: &str) -> Option<LaunchCommandTarget> {
     let mut parts = argument.split_whitespace();
     match parts.next()? {
         "new" => Some(LaunchCommandTarget::New),
-        "current" => Some(LaunchCommandTarget::Current),
+        "continue_current" => Some(LaunchCommandTarget::Current),
         "resume" => Some(LaunchCommandTarget::Resume(parts.next()?.to_owned())),
         _ => None,
     }
@@ -198,9 +198,20 @@ async fn build_workspace_launch_config(
     shared_workspace_launch_config_for_record(&state.repository, record, binding).await
 }
 
+async fn execute_runtime_control_action(
+    state: &AppState,
+    thread_key: &str,
+    request: RuntimeControlActionRequest,
+    origin: &str,
+) -> Result<RuntimeControlActionEnvelope> {
+    SharedControlHandle::new(state.control.clone())
+        .execute_runtime_control_action(thread_key, request, origin)
+        .await
+}
+
 fn render_workspace_execution_mode_view(view: &WorkspaceExecutionModeView) -> String {
     format!(
-        "workspace_execution_mode: `{}`\ncurrent_execution_mode: `{}`\ncurrent_approval_policy: `{}`\ncurrent_sandbox_policy: `{}`\nmode_drift: `{}`\n\nUse `/execution_mode full_auto` or `/execution_mode yolo`.",
+        "workspace_execution_mode: `{}`\ncurrent_execution_mode: `{}`\ncurrent_approval_policy: `{}`\ncurrent_sandbox_policy: `{}`\nmode_drift: `{}`\n\nUse `/set_workspace_execution_mode full_auto` or `/set_workspace_execution_mode yolo`.",
         view.workspace_execution_mode.as_str(),
         view.current_execution_mode
             .map(|mode| mode.as_str().to_owned())
@@ -227,7 +238,7 @@ fn render_launch_usage(config: &HcodexLaunchConfigView) -> String {
             .join(", ")
     };
     format!(
-        "Usage: `/launch new`, `/launch current`, or `/launch resume <session_id>`.\ncurrent_codex_thread_id: `{}`\nrecent_sessions: `{}`",
+        "Usage: `/launch_local_session new`, `/launch_local_session continue_current`, or `/launch_local_session resume <session_id>`.\ncurrent_codex_thread_id: `{}`\nrecent_sessions: `{}`",
         config
             .current_codex_thread_id
             .clone()
@@ -399,7 +410,7 @@ pub(crate) async fn run_command(
                     .await?;
                 "Control console.\nUse /add_workspace <absolute-path> for the workspace-first flow."
             } else {
-                "Workspace thread.\nUse /new_session, /repair_session, /archive_workspace, /workspace_info, or /rename_workspace here."
+                "Workspace thread.\nUse /start_fresh_session, /repair_session_binding, /archive_workspace, /workspace_info, or /rename_workspace here."
             };
             send_scoped_message(bot, msg.chat.id, msg.thread_id, text).await?;
         }
@@ -499,13 +510,13 @@ pub(crate) async fn run_command(
                 }
             }
         }
-        Command::NewSession => {
+        Command::StartFreshSession => {
             if is_control_chat(msg) {
                 send_scoped_message(
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /new_session inside a workspace thread.",
+                    "Use /start_fresh_session inside a workspace thread.",
                 )
                 .await?;
                 return Ok(());
@@ -528,7 +539,7 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             }
-            let Some(binding) = session.as_ref() else {
+            let Some(_) = session.as_ref() else {
                 send_scoped_message(
                     bot,
                     msg.chat.id,
@@ -548,30 +559,18 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             }
-            let workspace_path = workspace_path_from_binding(binding)?;
             let typing = TypingHeartbeat::start(bot.clone(), msg.chat.id, Some(thread_id));
-            let result = state
-                .control
-                .workspace_session_service()
-                .start_fresh_session(record.clone(), workspace_path.clone())
-                .await;
+            let result = execute_runtime_control_action(
+                state,
+                &record.metadata.thread_key,
+                RuntimeControlActionRequest::StartFreshSession,
+                "telegram /start_fresh_session",
+            )
+            .await;
             typing.stop().await;
 
             match result {
-                Ok(record) => {
-                    state
-                        .repository
-                        .append_log(
-                            &record,
-                            LogDirection::System,
-                            format!(
-                                "Action `{}` started a fresh Codex session for workspace {}.",
-                                RuntimeControlAction::StartFreshSession.as_str(),
-                                workspace_path.display()
-                            ),
-                            None,
-                        )
-                        .await?;
+                Ok(_) => {
                     send_scoped_message(
                         bot,
                         msg.chat.id,
@@ -579,13 +578,19 @@ pub(crate) async fn run_command(
                         "Started a fresh Codex session for this workspace.",
                     )
                     .await?;
-                    let _ = title_sync::refresh_thread_topic_title(
-                        bot,
-                        &state.repository,
-                        &record,
-                        "new",
-                    )
-                    .await;
+                    if let Ok(updated) = state
+                        .repository
+                        .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
+                        .await
+                    {
+                        let _ = title_sync::refresh_thread_topic_title(
+                            bot,
+                            &state.repository,
+                            &updated,
+                            "new",
+                        )
+                        .await;
+                    }
                 }
                 Err(error) => {
                     let _ = state
@@ -602,13 +607,13 @@ pub(crate) async fn run_command(
                 }
             }
         }
-        Command::RepairSession => {
+        Command::RepairSessionBinding => {
             if is_control_chat(msg) {
                 send_scoped_message(
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /repair_session inside a workspace thread.",
+                    "Use /repair_session_binding inside a workspace thread.",
                 )
                 .await?;
                 return Ok(());
@@ -652,59 +657,59 @@ pub(crate) async fn run_command(
                 return Ok(());
             }
             let typing = TypingHeartbeat::start(bot.clone(), msg.chat.id, Some(thread_id));
-            let reconnect = state
-                .control
-                .workspace_session_service()
-                .repair_session_binding(record, session.as_ref().context("missing binding")?)
-                .await;
+            let reconnect = execute_runtime_control_action(
+                state,
+                &record.metadata.thread_key,
+                RuntimeControlActionRequest::RepairSessionBinding,
+                "telegram /repair_session_binding",
+            )
+            .await;
             typing.stop().await;
 
             match reconnect {
-                Ok(result) if result.verified => {
-                    let updated = result.record;
-                    state
-                        .repository
-                        .append_log(
-                            &updated,
-                            LogDirection::System,
-                            format!(
-                                "Action `{}` revalidated the current workspace session binding.",
-                                RuntimeControlAction::RepairSessionBinding.as_str()
-                            ),
-                            None,
+                Ok(result) => {
+                    let RuntimeControlActionResult::RepairSessionBinding { verified, .. } =
+                        result.result
+                    else {
+                        return Err(anyhow::anyhow!(
+                            "unexpected runtime control result for repair_session_binding"
+                        ));
+                    };
+                    if verified {
+                        send_scoped_message(
+                            bot,
+                            msg.chat.id,
+                            Some(thread_id),
+                            "Codex session continuity verified for this workspace.",
                         )
                         .await?;
-                    send_scoped_message(
-                        bot,
-                        msg.chat.id,
-                        Some(thread_id),
-                        "Codex session continuity verified for this workspace.",
-                    )
-                    .await?;
-                    let _ = title_sync::refresh_thread_topic_title(
-                        bot,
-                        &state.repository,
-                        &updated,
-                        "reconnect_codex_verified",
-                    )
-                    .await;
-                }
-                Ok(result) => {
-                    let updated = result.record;
-                    send_scoped_warning_message(
-                        bot,
-                        msg.chat.id,
-                        Some(thread_id),
-                        "Codex session repair failed. Use /new_session to start fresh or /repair_session to retry.",
-                    )
-                    .await?;
-                    let _ = title_sync::refresh_thread_topic_title(
-                        bot,
-                        &state.repository,
-                        &updated,
-                        "reconnect_codex_broken",
-                    )
-                    .await;
+                    } else {
+                        send_scoped_warning_message(
+                            bot,
+                            msg.chat.id,
+                            Some(thread_id),
+                            "Codex session repair failed. Use /start_fresh_session to start fresh or /repair_session_binding to retry.",
+                        )
+                        .await?;
+                    }
+                    if let Ok(updated) = state
+                        .repository
+                        .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
+                        .await
+                    {
+                        let source = if verified {
+                            "reconnect_codex_verified"
+                        } else {
+                            "reconnect_codex_broken"
+                        };
+                        let _ = title_sync::refresh_thread_topic_title(
+                            bot,
+                            &state.repository,
+                            &updated,
+                            source,
+                        )
+                        .await;
+                    }
                 }
                 Err(error) => return Err(error),
             }
@@ -733,13 +738,13 @@ pub(crate) async fn run_command(
             )
             .await?;
         }
-        Command::Launch => {
+        Command::LaunchLocalSession => {
             if is_control_chat(msg) {
                 send_scoped_message(
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /launch inside a workspace thread.",
+                    "Use /launch_local_session inside a workspace thread.",
                 )
                 .await?;
                 return Ok(());
@@ -773,7 +778,7 @@ pub(crate) async fn run_command(
                 return Ok(());
             };
             let config = build_workspace_launch_config(state, &record, binding).await?;
-            let Some(argument) = command_argument_text(msg, "launch") else {
+            let Some(argument) = command_argument_text(msg, "launch_local_session") else {
                 send_scoped_message(
                     bot,
                     msg.chat.id,
@@ -803,38 +808,27 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             }
-            let (command, label) = match target {
-                LaunchCommandTarget::New => (config.launch_new_command.clone(), "new"),
+            let (launch_target, session_id, label) = match target {
+                LaunchCommandTarget::New => (LaunchLocalSessionTarget::New, None, "new"),
                 LaunchCommandTarget::Current => (
-                    config
-                        .launch_current_command
-                        .clone()
-                        .context("managed workspace is missing a current Telegram session")?,
-                    "current",
-                ),
-                LaunchCommandTarget::Resume(session_id) => (
-                    hcodex_launch_command(
-                        Path::new(&config.hcodex_path),
-                        &record.metadata.thread_key,
-                        config.workspace_execution_mode,
-                        Some(&session_id),
-                    ),
-                    "resume",
-                ),
-            };
-            launch_hcodex_via_terminal(&command).await?;
-            state
-                .repository
-                .append_log(
-                    &record,
-                    LogDirection::System,
-                    format!(
-                        "Action `{}` launched local hcodex via `/launch {label}`.",
-                        RuntimeControlAction::LaunchLocalSession.as_str()
-                    ),
+                    LaunchLocalSessionTarget::ContinueCurrent,
                     None,
-                )
-                .await?;
+                    "continue_current",
+                ),
+                LaunchCommandTarget::Resume(session_id) => {
+                    (LaunchLocalSessionTarget::Resume, Some(session_id), "resume")
+                }
+            };
+            execute_runtime_control_action(
+                state,
+                &record.metadata.thread_key,
+                RuntimeControlActionRequest::LaunchLocalSession {
+                    target: launch_target,
+                    session_id,
+                },
+                "telegram /launch_local_session",
+            )
+            .await?;
             send_scoped_message(
                 bot,
                 msg.chat.id,
@@ -846,13 +840,13 @@ pub(crate) async fn run_command(
             )
             .await?;
         }
-        Command::ExecutionMode => {
+        Command::GetWorkspaceExecutionMode => {
             if is_control_chat(msg) {
                 send_scoped_message(
                     bot,
                     msg.chat.id,
                     None,
-                    "Use /execution_mode inside a workspace thread.",
+                    "Use /get_workspace_execution_mode inside a workspace thread.",
                 )
                 .await?;
                 return Ok(());
@@ -886,8 +880,56 @@ pub(crate) async fn run_command(
                 return Ok(());
             };
             let view = workspace_execution_mode_view_for_record(&record, binding).await?;
-            let Some(argument) = command_argument_text(msg, "execution_mode") else {
+            send_scoped_message(
+                bot,
+                msg.chat.id,
+                Some(thread_id),
+                render_workspace_execution_mode_view(&view),
+            )
+            .await?;
+        }
+        Command::SetWorkspaceExecutionMode => {
+            if is_control_chat(msg) {
                 send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    None,
+                    "Use /set_workspace_execution_mode inside a workspace thread.",
+                )
+                .await?;
+                return Ok(());
+            }
+            let thread_id = msg.thread_id.context("thread message missing thread id")?;
+            let record = state
+                .repository
+                .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
+                .await?;
+            let session = state.repository.read_session_binding(&record).await?;
+            let (resolved_state, _) =
+                resolve_busy_gate_state(state, &record, session.as_ref()).await?;
+            if resolved_state.is_archived() {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "This workspace is archived.",
+                )
+                .await?;
+                return Ok(());
+            }
+            let Some(binding) = session.as_ref() else {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "This workspace thread is not bound yet.",
+                )
+                .await?;
+                return Ok(());
+            };
+            let view = workspace_execution_mode_view_for_record(&record, binding).await?;
+            let Some(argument) = command_argument_text(msg, "set_workspace_execution_mode") else {
+                send_scoped_warning_message(
                     bot,
                     msg.chat.id,
                     Some(thread_id),
@@ -906,21 +948,38 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             };
-            write_workspace_execution_config(Path::new(&view.workspace_cwd), mode).await?;
-            state
-                .repository
-                .append_log(
-                    &record,
-                    LogDirection::System,
-                    format!(
-                        "Action `{}` changed workspace execution mode to `{}`.",
-                        RuntimeControlAction::SetWorkspaceExecutionMode.as_str(),
-                        mode.as_str()
-                    ),
-                    None,
-                )
-                .await?;
-            let updated_view = workspace_execution_mode_view_for_record(&record, binding).await?;
+            let result = execute_runtime_control_action(
+                state,
+                &record.metadata.thread_key,
+                RuntimeControlActionRequest::SetWorkspaceExecutionMode {
+                    execution_mode: mode,
+                },
+                "telegram /set_workspace_execution_mode",
+            )
+            .await?;
+            let RuntimeControlActionResult::SetWorkspaceExecutionMode {
+                thread_key,
+                workspace_cwd,
+                workspace_execution_mode,
+                current_execution_mode,
+                current_approval_policy,
+                current_sandbox_policy,
+                mode_drift,
+            } = result.result
+            else {
+                return Err(anyhow::anyhow!(
+                    "unexpected runtime control result for set_workspace_execution_mode"
+                ));
+            };
+            let updated_view = WorkspaceExecutionModeView {
+                thread_key,
+                workspace_cwd,
+                workspace_execution_mode,
+                current_execution_mode,
+                current_approval_policy,
+                current_sandbox_policy,
+                mode_drift,
+            };
             send_scoped_message(
                 bot,
                 msg.chat.id,
@@ -1264,7 +1323,7 @@ pub(crate) async fn run_command(
                         bot,
                         msg.chat.id,
                         Some(thread_id),
-                        "Codex session is unavailable. Use /repair_session or /new_session.",
+                        "Codex session is unavailable. Use /repair_session_binding or /start_fresh_session.",
                     )
                     .await?;
                     let _ = title_sync::refresh_thread_topic_title(
@@ -1532,6 +1591,7 @@ pub(crate) async fn run_text_message(
             &TranscriptMirrorEntry {
                 timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 session_id: existing_thread_id.to_owned(),
+                turn_id: None,
                 origin: TranscriptMirrorOrigin::Telegram,
                 role: TranscriptMirrorRole::User,
                 delivery: TranscriptMirrorDelivery::Final,
@@ -1742,11 +1802,12 @@ async fn execute_text_turn(
                             .await;
                     }
                     preview.lock().await.consume(&event).await;
-                    if let Some(entry) = process_entry_from_codex_event(
+                    if let Some(mut entry) = process_entry_from_codex_event(
                         &event,
                         &mirror_session_id,
                         TranscriptMirrorOrigin::Telegram,
                     ) {
+                        entry.turn_id = turn_id_slot.lock().await.clone();
                         preview.lock().await.consume_process_entry(&entry).await;
                         let _ = mirror_repository
                             .append_transcript_mirror(&mirror_record, &entry)
@@ -1871,6 +1932,7 @@ async fn execute_text_turn(
                                 timestamp: chrono::Utc::now()
                                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                                 session_id: existing_thread_id.to_owned(),
+                                turn_id: final_turn_id.clone(),
                                 origin: TranscriptMirrorOrigin::Telegram,
                                 role: TranscriptMirrorRole::Assistant,
                                 delivery: TranscriptMirrorDelivery::Final,
@@ -2048,7 +2110,7 @@ async fn execute_text_turn(
                 bot,
                 chat_id,
                 Some(thread_id),
-                "Codex session is unavailable. Use /repair_session to retry or /new_session to start a fresh one.",
+                "Codex session is unavailable. Use /repair_session_binding to retry or /start_fresh_session to start a fresh one.",
             )
             .await?;
             let _ = title_sync::refresh_thread_topic_title(
@@ -2119,6 +2181,7 @@ pub(crate) async fn launch_plan_implementation_turn(
             &TranscriptMirrorEntry {
                 timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 session_id: existing_thread_id.to_owned(),
+                turn_id: None,
                 origin: TranscriptMirrorOrigin::Telegram,
                 role: TranscriptMirrorRole::User,
                 delivery: TranscriptMirrorDelivery::Final,
@@ -2229,13 +2292,13 @@ mod tests {
     fn thread_flow_module_compiles_without_attach_helpers() {}
 
     #[test]
-    fn launch_command_parser_accepts_new_current_and_resume() {
+    fn launch_command_parser_accepts_new_continue_current_and_resume() {
         assert_eq!(
             parse_launch_command_target("new"),
             Some(LaunchCommandTarget::New)
         );
         assert_eq!(
-            parse_launch_command_target("current"),
+            parse_launch_command_target("continue_current"),
             Some(LaunchCommandTarget::Current)
         );
         assert_eq!(

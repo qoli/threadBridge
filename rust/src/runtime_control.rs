@@ -11,10 +11,16 @@ use crate::app_server_runtime::{WorkspaceRuntimeManager, WorkspaceRuntimeState};
 use crate::codex::{CodexRunner, CodexWorkspace};
 use crate::config::RuntimeConfig;
 use crate::delivery_bus::DeliveryBusCoordinator;
-use crate::execution_mode::{ExecutionMode, workspace_execution_mode};
+use crate::execution_mode::{
+    ExecutionMode, workspace_execution_mode, write_workspace_execution_config,
+};
 use crate::hcodex_ingress::HcodexIngressManager;
 use crate::repository::{
     LogDirection, RecentCodexSessionEntry, SessionBinding, ThreadRecord, ThreadRepository,
+};
+use crate::runtime_protocol::{
+    LaunchLocalSessionTarget, RuntimeControlAction, RuntimeControlActionEnvelope,
+    RuntimeControlActionRequest, RuntimeControlActionResult,
 };
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 use crate::workspace_status::{
@@ -293,6 +299,155 @@ impl SharedControlHandle {
             )
             .await?;
         Ok(result)
+    }
+
+    pub async fn execute_runtime_control_action(
+        &self,
+        thread_key: &str,
+        request: RuntimeControlActionRequest,
+        origin: &str,
+    ) -> Result<RuntimeControlActionEnvelope> {
+        request.validate()?;
+        let action = request.action();
+        match request {
+            RuntimeControlActionRequest::StartFreshSession => {
+                let record = self.active_thread(thread_key).await?;
+                let session = self.ctx.repository.read_session_binding(&record).await?;
+                let binding = session
+                    .as_ref()
+                    .context("This thread is not bound to a workspace yet.")?;
+                let workspace_path = workspace_path_from_binding(binding)?;
+                let updated = self
+                    .ctx
+                    .workspace_session_service()
+                    .start_fresh_session(record, workspace_path)
+                    .await?;
+                self.ctx
+                    .repository
+                    .append_log(
+                        &updated,
+                        LogDirection::System,
+                        format!(
+                            "Action `{}` started a fresh Codex session from {origin}.",
+                            RuntimeControlAction::StartFreshSession.as_str()
+                        ),
+                        None,
+                    )
+                    .await?;
+                let updated_binding = self.ctx.repository.read_session_binding(&updated).await?;
+                Ok(RuntimeControlActionEnvelope {
+                    ok: true,
+                    action,
+                    result: RuntimeControlActionResult::StartFreshSession {
+                        thread_key: updated.metadata.thread_key,
+                        current_codex_thread_id: updated_binding
+                            .and_then(|binding| binding.current_codex_thread_id),
+                    },
+                })
+            }
+            RuntimeControlActionRequest::RepairSessionBinding => {
+                let repaired = self.repair_session_binding(thread_key, origin).await?;
+                let updated_binding = self
+                    .ctx
+                    .repository
+                    .read_session_binding(&repaired.record)
+                    .await?;
+                Ok(RuntimeControlActionEnvelope {
+                    ok: true,
+                    action,
+                    result: RuntimeControlActionResult::RepairSessionBinding {
+                        thread_key: repaired.record.metadata.thread_key,
+                        verified: repaired.verified,
+                        session_broken_reason: updated_binding
+                            .and_then(|binding| binding.session_broken_reason),
+                    },
+                })
+            }
+            RuntimeControlActionRequest::SetWorkspaceExecutionMode { execution_mode } => {
+                let current = self.workspace_execution_mode_view(thread_key).await?;
+                write_workspace_execution_config(Path::new(&current.workspace_cwd), execution_mode)
+                    .await?;
+                let updated = self.workspace_execution_mode_view(thread_key).await?;
+                let record = self.active_thread(thread_key).await?;
+                self.ctx
+                    .repository
+                    .append_log(
+                        &record,
+                        LogDirection::System,
+                        format!(
+                            "Action `{}` changed workspace execution mode to `{}` from {origin}.",
+                            RuntimeControlAction::SetWorkspaceExecutionMode.as_str(),
+                            execution_mode.as_str()
+                        ),
+                        None,
+                    )
+                    .await?;
+                Ok(RuntimeControlActionEnvelope {
+                    ok: true,
+                    action,
+                    result: RuntimeControlActionResult::SetWorkspaceExecutionMode {
+                        thread_key: updated.thread_key,
+                        workspace_cwd: updated.workspace_cwd,
+                        workspace_execution_mode: updated.workspace_execution_mode,
+                        current_execution_mode: updated.current_execution_mode,
+                        current_approval_policy: updated.current_approval_policy,
+                        current_sandbox_policy: updated.current_sandbox_policy,
+                        mode_drift: updated.mode_drift,
+                    },
+                })
+            }
+            RuntimeControlActionRequest::LaunchLocalSession { target, session_id } => {
+                let config = self.workspace_launch_config(thread_key).await?;
+                if !config.hcodex_available {
+                    bail!("Managed hcodex is unavailable for this workspace.");
+                }
+                let normalized_session_id = session_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let command =
+                    match target {
+                        LaunchLocalSessionTarget::New => config.launch_new_command.clone(),
+                        LaunchLocalSessionTarget::ContinueCurrent => config
+                            .launch_current_command
+                            .clone()
+                            .context("managed workspace is missing a current Telegram session")?,
+                        LaunchLocalSessionTarget::Resume => hcodex_launch_command(
+                            Path::new(&config.hcodex_path),
+                            thread_key,
+                            config.workspace_execution_mode,
+                            Some(normalized_session_id.context(
+                                "launch_local_session resume target requires session_id",
+                            )?),
+                        ),
+                    };
+                launch_hcodex_via_terminal(&command).await?;
+                let record = self.active_thread(thread_key).await?;
+                self.ctx
+                    .repository
+                    .append_log(
+                        &record,
+                        LogDirection::System,
+                        format!(
+                            "Action `{}` launched local hcodex via `{}` from {origin}.",
+                            RuntimeControlAction::LaunchLocalSession.as_str(),
+                            target.as_str()
+                        ),
+                        None,
+                    )
+                    .await?;
+                Ok(RuntimeControlActionEnvelope {
+                    ok: true,
+                    action,
+                    result: RuntimeControlActionResult::LaunchLocalSession {
+                        thread_key: thread_key.to_owned(),
+                        target,
+                        command,
+                        launched: true,
+                    },
+                })
+            }
+        }
     }
 
     pub async fn workspace_execution_mode_view(

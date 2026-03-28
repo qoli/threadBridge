@@ -25,8 +25,8 @@ mod macos_app {
     use threadbridge_rust::hcodex_ws_bridge;
     use threadbridge_rust::logging::init_runtime_json_logs;
     use threadbridge_rust::management_api::{
-        ManagedWorkspaceView, ManagementApiHandle, RuntimeHealthView, SetupStateView,
-        spawn_management_api,
+        LaunchLocalSessionTarget, ManagedWorkspaceView, ManagementApiHandle,
+        RuntimeControlActionRequest, RuntimeHealthView, SetupStateView, spawn_management_api,
     };
     use threadbridge_rust::runtime_control::{
         RuntimeControlContext, RuntimeOwnershipMode, SharedControlHandle,
@@ -510,7 +510,16 @@ mod macos_app {
                 let management_api = app.management_api.clone();
                 let proxy = proxy.clone();
                 runtime.spawn(async move {
-                    if let Err(error) = management_api.launch_hcodex_new(&thread_key).await {
+                    if let Err(error) = management_api
+                        .run_runtime_control_action(
+                            &thread_key,
+                            RuntimeControlActionRequest::LaunchLocalSession {
+                                target: LaunchLocalSessionTarget::New,
+                                session_id: None,
+                            },
+                        )
+                        .await
+                    {
                         warn!(
                             event = "desktop_runtime.launch_new.failed",
                             error = %error,
@@ -526,7 +535,13 @@ mod macos_app {
                 let proxy = proxy.clone();
                 runtime.spawn(async move {
                     if let Err(error) = management_api
-                        .launch_hcodex_continue_current(&thread_key)
+                        .run_runtime_control_action(
+                            &thread_key,
+                            RuntimeControlActionRequest::LaunchLocalSession {
+                                target: LaunchLocalSessionTarget::ContinueCurrent,
+                                session_id: None,
+                            },
+                        )
                         .await
                     {
                         warn!(

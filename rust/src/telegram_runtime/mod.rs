@@ -56,7 +56,7 @@ pub enum Command {
     #[command(description = "Add a workspace and create or reuse its Telegram thread")]
     AddWorkspace,
     #[command(description = "Start a fresh Codex session for this workspace")]
-    NewSession,
+    StartFreshSession,
     #[command(description = "Rename the current workspace from chat history")]
     RenameWorkspace,
     #[command(description = "Archive the current workspace")]
@@ -64,13 +64,15 @@ pub enum Command {
     #[command(description = "Show archived workspaces and restore one interactively")]
     RestoreWorkspace,
     #[command(description = "Repair the current workspace's Codex session continuity")]
-    RepairSession,
+    RepairSessionBinding,
     #[command(description = "Show this workspace's key, path, session, and local session state")]
     WorkspaceInfo,
     #[command(description = "Launch the managed local hcodex session for this workspace")]
-    Launch,
-    #[command(description = "Show or change this workspace's execution mode")]
-    ExecutionMode,
+    LaunchLocalSession,
+    #[command(description = "Show this workspace's execution mode")]
+    GetWorkspaceExecutionMode,
+    #[command(description = "Set this workspace's execution mode")]
+    SetWorkspaceExecutionMode,
     #[command(description = "List recent working sessions for this workspace")]
     Sessions,
     #[command(description = "Show recent records for a specific session")]
@@ -914,7 +916,7 @@ fn healthy_binding_hint(session: Option<&SessionBinding>) -> &'static str {
     if current_bound_session_id(session).is_some() {
         "This workspace already has a usable Codex session."
     } else {
-        "This workspace is missing a usable Codex session id. Use /new_session to start a fresh one."
+        "This workspace is missing a usable Codex session id. Use /start_fresh_session to start a fresh one."
     }
 }
 
@@ -941,7 +943,7 @@ pub(crate) fn session_binding_hint_for_state(
 ) -> &'static str {
     match state.binding_status {
         BindingStatus::Broken => {
-            "This workspace's Codex session is invalid. Use /repair_session to verify it again or /new_session to start a fresh one for the same workspace."
+            "This workspace's Codex session is invalid. Use /repair_session_binding to verify it again or /start_fresh_session to start a fresh one for the same workspace."
         }
         BindingStatus::Unbound => {
             "This workspace thread is not bound yet. Archive it and re-add the workspace from the control chat with /add_workspace <absolute-path>."
@@ -1197,11 +1199,28 @@ mod tests {
             .map(|command| command.command)
             .collect::<Vec<_>>();
 
-        assert!(commands.iter().any(|command| command == "/new_session"));
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == "/start_fresh_session")
+        );
         assert!(commands.iter().any(|command| command == "/add_workspace"));
         assert!(commands.iter().any(|command| command == "/workspace_info"));
-        assert!(commands.iter().any(|command| command == "/launch"));
-        assert!(commands.iter().any(|command| command == "/execution_mode"));
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == "/launch_local_session")
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == "/get_workspace_execution_mode")
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == "/set_workspace_execution_mode")
+        );
         assert!(commands.iter().any(|command| command == "/sessions"));
         assert!(commands.iter().any(|command| command == "/session_log"));
         assert!(commands.iter().any(|command| command == "/stop"));
@@ -1222,7 +1241,11 @@ mod tests {
                 .iter()
                 .any(|command| command == "/rename_workspace")
         );
-        assert!(commands.iter().any(|command| command == "/repair_session"));
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == "/repair_session_binding")
+        );
         assert!(
             !commands
                 .iter()
@@ -1264,8 +1287,8 @@ mod tests {
             run_phase: crate::workspace_status::WorkspaceStatusPhase::Idle,
         };
         let hint = session_binding_hint_for_state(state, None);
-        assert!(hint.contains("/repair_session"));
-        assert!(hint.contains("/new_session"));
+        assert!(hint.contains("/repair_session_binding"));
+        assert!(hint.contains("/start_fresh_session"));
     }
 
     #[test]
@@ -1423,8 +1446,8 @@ mod tests {
     #[test]
     fn command_parser_uses_workspace_first_names() {
         assert!(matches!(
-            Command::parse("/new_session", ""),
-            Ok(Command::NewSession)
+            Command::parse("/start_fresh_session", ""),
+            Ok(Command::StartFreshSession)
         ));
         assert!(matches!(
             Command::parse("/add_workspace", ""),
@@ -1447,13 +1470,20 @@ mod tests {
             Ok(Command::RenameWorkspace)
         ));
         assert!(matches!(
-            Command::parse("/repair_session", ""),
-            Ok(Command::RepairSession)
+            Command::parse("/repair_session_binding", ""),
+            Ok(Command::RepairSessionBinding)
         ));
-        assert!(matches!(Command::parse("/launch", ""), Ok(Command::Launch)));
         assert!(matches!(
-            Command::parse("/execution_mode", ""),
-            Ok(Command::ExecutionMode)
+            Command::parse("/launch_local_session", ""),
+            Ok(Command::LaunchLocalSession)
+        ));
+        assert!(matches!(
+            Command::parse("/get_workspace_execution_mode", ""),
+            Ok(Command::GetWorkspaceExecutionMode)
+        ));
+        assert!(matches!(
+            Command::parse("/set_workspace_execution_mode", ""),
+            Ok(Command::SetWorkspaceExecutionMode)
         ));
         assert!(matches!(
             Command::parse("/sessions", ""),
@@ -1494,8 +1524,8 @@ mod tests {
             Some(Command::DefaultMode)
         ));
         assert!(matches!(
-            parse_fallback_command_text("/launch@threadbridge_bot current"),
-            Some(Command::Launch)
+            parse_fallback_command_text("/launch_local_session@threadbridge_bot continue_current"),
+            Some(Command::LaunchLocalSession)
         ));
         assert!(matches!(
             parse_fallback_command_text("/stop@threadbridge_bot"),

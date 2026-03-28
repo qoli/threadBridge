@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -97,6 +97,108 @@ impl RuntimeControlAction {
             Self::RepairWorkspaceRuntime => "repair_workspace_runtime",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchLocalSessionTarget {
+    New,
+    ContinueCurrent,
+    Resume,
+}
+
+impl LaunchLocalSessionTarget {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::ContinueCurrent => "continue_current",
+            Self::Resume => "resume",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum RuntimeControlActionRequest {
+    StartFreshSession,
+    RepairSessionBinding,
+    SetWorkspaceExecutionMode {
+        execution_mode: ExecutionMode,
+    },
+    LaunchLocalSession {
+        target: LaunchLocalSessionTarget,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
+}
+
+impl RuntimeControlActionRequest {
+    pub fn action(&self) -> RuntimeControlAction {
+        match self {
+            Self::StartFreshSession => RuntimeControlAction::StartFreshSession,
+            Self::RepairSessionBinding => RuntimeControlAction::RepairSessionBinding,
+            Self::SetWorkspaceExecutionMode { .. } => {
+                RuntimeControlAction::SetWorkspaceExecutionMode
+            }
+            Self::LaunchLocalSession { .. } => RuntimeControlAction::LaunchLocalSession,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let Self::LaunchLocalSession { target, session_id } = self else {
+            return Ok(());
+        };
+        let has_session_id = session_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        match target {
+            LaunchLocalSessionTarget::Resume => ensure!(
+                has_session_id,
+                "launch_local_session target=resume requires a non-empty session_id"
+            ),
+            LaunchLocalSessionTarget::New | LaunchLocalSessionTarget::ContinueCurrent => ensure!(
+                !has_session_id,
+                "launch_local_session only accepts session_id when target=resume"
+            ),
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum RuntimeControlActionResult {
+    StartFreshSession {
+        thread_key: String,
+        current_codex_thread_id: Option<String>,
+    },
+    RepairSessionBinding {
+        thread_key: String,
+        verified: bool,
+        session_broken_reason: Option<String>,
+    },
+    SetWorkspaceExecutionMode {
+        thread_key: String,
+        workspace_cwd: String,
+        workspace_execution_mode: ExecutionMode,
+        current_execution_mode: Option<ExecutionMode>,
+        current_approval_policy: Option<String>,
+        current_sandbox_policy: Option<String>,
+        mode_drift: bool,
+    },
+    LaunchLocalSession {
+        thread_key: String,
+        target: LaunchLocalSessionTarget,
+        command: String,
+        launched: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeControlActionEnvelope {
+    pub ok: bool,
+    pub action: RuntimeControlAction,
+    pub result: RuntimeControlActionResult,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1086,7 +1188,8 @@ pub fn workspace_mode_drift(
 #[cfg(test)]
 mod tests {
     use super::{
-        ManagedCodexBuildDefaultsView, ManagedCodexView, ManagedWorkspaceView, ThreadStateView,
+        LaunchLocalSessionTarget, ManagedCodexBuildDefaultsView, ManagedCodexView,
+        ManagedWorkspaceView, RuntimeControlActionRequest, ThreadStateView,
         WorkingSessionRecordKind, aggregate_runtime_readiness, build_runtime_health,
         build_thread_views, build_working_session_records, build_working_session_summaries,
         build_workspace_views,
@@ -1542,6 +1645,7 @@ mod tests {
             TranscriptMirrorEntry {
                 timestamp: "2026-03-24T10:00:00.000Z".to_owned(),
                 session_id: "thr_current".to_owned(),
+                turn_id: Some("turn-1".to_owned()),
                 origin: TranscriptMirrorOrigin::Telegram,
                 role: TranscriptMirrorRole::User,
                 delivery: TranscriptMirrorDelivery::Final,
@@ -1551,6 +1655,7 @@ mod tests {
             TranscriptMirrorEntry {
                 timestamp: "2026-03-24T10:00:01.000Z".to_owned(),
                 session_id: "thr_current".to_owned(),
+                turn_id: None,
                 origin: TranscriptMirrorOrigin::Telegram,
                 role: TranscriptMirrorRole::Assistant,
                 delivery: TranscriptMirrorDelivery::Process,
@@ -1560,6 +1665,7 @@ mod tests {
             TranscriptMirrorEntry {
                 timestamp: "2026-03-24T10:00:02.000Z".to_owned(),
                 session_id: "thr_current".to_owned(),
+                turn_id: Some("turn-1".to_owned()),
                 origin: TranscriptMirrorOrigin::Telegram,
                 role: TranscriptMirrorRole::Assistant,
                 delivery: TranscriptMirrorDelivery::Final,
@@ -1569,6 +1675,7 @@ mod tests {
             TranscriptMirrorEntry {
                 timestamp: "2026-03-24T09:00:00.000Z".to_owned(),
                 session_id: "thr_old".to_owned(),
+                turn_id: Some("turn-old".to_owned()),
                 origin: TranscriptMirrorOrigin::Tui,
                 role: TranscriptMirrorRole::User,
                 delivery: TranscriptMirrorDelivery::Final,
@@ -1636,6 +1743,7 @@ mod tests {
             &TranscriptMirrorEntry {
                 timestamp: "2026-03-24T10:00:00.000Z".to_owned(),
                 session_id: "thr_current".to_owned(),
+                turn_id: Some("turn-1".to_owned()),
                 origin: TranscriptMirrorOrigin::Telegram,
                 role: TranscriptMirrorRole::User,
                 delivery: TranscriptMirrorDelivery::Final,
@@ -1685,6 +1793,52 @@ mod tests {
             records
                 .iter()
                 .any(|record| { record.kind == WorkingSessionRecordKind::UserPrompt })
+        );
+    }
+
+    #[test]
+    fn launch_local_session_resume_requires_session_id() {
+        let missing = RuntimeControlActionRequest::LaunchLocalSession {
+            target: LaunchLocalSessionTarget::Resume,
+            session_id: None,
+        };
+        assert!(missing.validate().is_err());
+
+        let provided = RuntimeControlActionRequest::LaunchLocalSession {
+            target: LaunchLocalSessionTarget::Resume,
+            session_id: Some("thr_123".to_owned()),
+        };
+        assert!(provided.validate().is_ok());
+    }
+
+    #[test]
+    fn launch_local_session_non_resume_rejects_session_id() {
+        let invalid = RuntimeControlActionRequest::LaunchLocalSession {
+            target: LaunchLocalSessionTarget::New,
+            session_id: Some("thr_123".to_owned()),
+        };
+        assert!(invalid.validate().is_err());
+
+        let valid = RuntimeControlActionRequest::LaunchLocalSession {
+            target: LaunchLocalSessionTarget::ContinueCurrent,
+            session_id: None,
+        };
+        assert!(valid.validate().is_ok());
+    }
+
+    #[test]
+    fn runtime_control_action_request_serializes_with_tagged_shape() {
+        let request = RuntimeControlActionRequest::SetWorkspaceExecutionMode {
+            execution_mode: ExecutionMode::Yolo,
+        };
+        let value =
+            serde_json::to_value(request).expect("serialize runtime control action request");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "action": "set_workspace_execution_mode",
+                "execution_mode": "yolo"
+            })
         );
     }
 }

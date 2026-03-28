@@ -22,21 +22,20 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::config::{RuntimeConfig, load_optional_telegram_config};
-use crate::execution_mode::{ExecutionMode, write_workspace_execution_config};
 use crate::local_control::{
     TelegramControlBridgeHandle, ensure_archived_thread, resolve_workspace_argument,
 };
 use crate::repository::{ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry};
 use crate::runtime_control::{
-    HcodexLaunchConfigView, SharedControlHandle, WorkspaceExecutionModeView, hcodex_launch_command,
-    launch_hcodex_via_terminal,
+    HcodexLaunchConfigView, SharedControlHandle, WorkspaceExecutionModeView,
 };
 use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus};
 pub use crate::runtime_protocol::{
-    ArchivedThreadView, ManagedCodexBuildDefaultsView, ManagedCodexBuildInfoView, ManagedCodexView,
-    ManagedWorkspaceView, RuntimeControlAction, RuntimeEvent, RuntimeEventKind,
-    RuntimeEventOperation, RuntimeHealthView, ThreadStateView, WorkingSessionRecordView,
-    WorkingSessionSummaryView,
+    ArchivedThreadView, LaunchLocalSessionTarget, ManagedCodexBuildDefaultsView,
+    ManagedCodexBuildInfoView, ManagedCodexView, ManagedWorkspaceView, RuntimeControlAction,
+    RuntimeControlActionEnvelope, RuntimeControlActionRequest, RuntimeControlActionResult,
+    RuntimeEvent, RuntimeEventKind, RuntimeEventOperation, RuntimeHealthView, ThreadStateView,
+    WorkingSessionRecordView, WorkingSessionSummaryView,
 };
 use crate::runtime_protocol::{
     build_archived_thread_views, build_runtime_health, build_thread_views,
@@ -139,39 +138,14 @@ impl ManagementApiHandle {
         self.state.workspace_execution_mode_view(thread_key).await
     }
 
-    pub async fn update_workspace_execution_mode(
+    pub async fn run_runtime_control_action(
         &self,
         thread_key: &str,
-        execution_mode: ExecutionMode,
-    ) -> Result<WorkspaceExecutionModeView> {
+        request: RuntimeControlActionRequest,
+    ) -> Result<RuntimeControlActionEnvelope> {
         self.state
-            .update_workspace_execution_mode(thread_key, execution_mode)
+            .run_runtime_control_action(thread_key, request)
             .await
-    }
-
-    pub async fn launch_hcodex_new(&self, thread_key: &str) -> Result<LaunchWorkspaceResponse> {
-        self.state.launch_hcodex_new(thread_key).await
-    }
-
-    pub async fn launch_hcodex_continue_current(
-        &self,
-        thread_key: &str,
-    ) -> Result<LaunchWorkspaceResponse> {
-        self.state.launch_hcodex_continue_current(thread_key).await
-    }
-
-    pub async fn launch_hcodex_resume(
-        &self,
-        thread_key: &str,
-        session_id: &str,
-    ) -> Result<LaunchWorkspaceResponse> {
-        self.state
-            .launch_hcodex_resume(thread_key, session_id)
-            .await
-    }
-
-    pub async fn repair_session_binding(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
-        self.state.repair_session_binding(thread_key).await
     }
 
     pub async fn add_workspace(&self, workspace_cwd: &str) -> Result<AddWorkspaceResult> {
@@ -234,29 +208,11 @@ struct PickAndAddWorkspaceResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct LaunchResumeRequest {
-    session_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct UpdateWorkspaceExecutionModeRequest {
-    execution_mode: ExecutionMode,
-}
-
-#[derive(Debug, Deserialize)]
 struct TranscriptQuery {
     #[serde(default)]
     delivery: Option<TranscriptMirrorDelivery>,
     #[serde(default = "default_transcript_limit")]
     limit: usize,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LaunchWorkspaceResponse {
-    pub launched: bool,
-    pub thread_key: String,
-    pub command: String,
-    pub action: RuntimeControlAction,
 }
 
 #[derive(Debug, Clone)]
@@ -425,11 +381,11 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         )
         .route(
             "/api/workspaces/:thread_key/execution-mode",
-            get(get_workspace_execution_mode).put(put_workspace_execution_mode),
+            get(get_workspace_execution_mode),
         )
         .route(
-            "/api/threads/:thread_key/repair-session-binding",
-            post(post_repair_session_binding),
+            "/api/threads/:thread_key/actions",
+            post(post_runtime_control_action),
         )
         .route(
             "/api/workspaces/:thread_key/open",
@@ -438,18 +394,6 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         .route(
             "/api/workspaces/:thread_key/repair-runtime",
             post(post_repair_workspace_runtime),
-        )
-        .route(
-            "/api/workspaces/:thread_key/launch-hcodex-new",
-            post(post_launch_hcodex_new),
-        )
-        .route(
-            "/api/workspaces/:thread_key/launch-hcodex-continue-current",
-            post(post_launch_hcodex_continue_current),
-        )
-        .route(
-            "/api/workspaces/:thread_key/launch-hcodex-resume",
-            post(post_launch_hcodex_resume),
         )
         .route(
             "/api/threads/:thread_key/archive",
@@ -646,23 +590,16 @@ async fn get_workspace_execution_mode(
     ))
 }
 
-async fn put_workspace_execution_mode(
+async fn post_runtime_control_action(
     State(state): State<Arc<ManagementApiState>>,
     AxumPath(thread_key): AxumPath<String>,
-    Json(payload): Json<UpdateWorkspaceExecutionModeRequest>,
-) -> Result<Json<WorkspaceExecutionModeView>, ManagementApiError> {
+    Json(payload): Json<RuntimeControlActionRequest>,
+) -> Result<Json<RuntimeControlActionEnvelope>, ManagementApiError> {
     Ok(Json(
         state
-            .update_workspace_execution_mode(&thread_key, payload.execution_mode)
+            .run_runtime_control_action(&thread_key, payload)
             .await?,
     ))
-}
-
-async fn post_repair_session_binding(
-    State(state): State<Arc<ManagementApiState>>,
-    AxumPath(thread_key): AxumPath<String>,
-) -> Result<Json<ThreadMutationResponse>, ManagementApiError> {
-    Ok(Json(state.repair_session_binding(&thread_key).await?))
 }
 
 async fn post_open_workspace(
@@ -677,34 +614,6 @@ async fn post_repair_workspace_runtime(
     AxumPath(thread_key): AxumPath<String>,
 ) -> Result<Json<ThreadMutationResponse>, ManagementApiError> {
     Ok(Json(state.repair_workspace_runtime(&thread_key).await?))
-}
-
-async fn post_launch_hcodex_new(
-    State(state): State<Arc<ManagementApiState>>,
-    AxumPath(thread_key): AxumPath<String>,
-) -> Result<Json<LaunchWorkspaceResponse>, ManagementApiError> {
-    Ok(Json(state.launch_hcodex_new(&thread_key).await?))
-}
-
-async fn post_launch_hcodex_continue_current(
-    State(state): State<Arc<ManagementApiState>>,
-    AxumPath(thread_key): AxumPath<String>,
-) -> Result<Json<LaunchWorkspaceResponse>, ManagementApiError> {
-    Ok(Json(
-        state.launch_hcodex_continue_current(&thread_key).await?,
-    ))
-}
-
-async fn post_launch_hcodex_resume(
-    State(state): State<Arc<ManagementApiState>>,
-    AxumPath(thread_key): AxumPath<String>,
-    Json(payload): Json<LaunchResumeRequest>,
-) -> Result<Json<LaunchWorkspaceResponse>, ManagementApiError> {
-    Ok(Json(
-        state
-            .launch_hcodex_resume(&thread_key, &payload.session_id)
-            .await?,
-    ))
 }
 
 async fn post_archive_thread(
@@ -1558,21 +1467,53 @@ impl ManagementApiState {
             .await
     }
 
-    async fn update_workspace_execution_mode(
-        &self,
-        thread_key: &str,
-        execution_mode: ExecutionMode,
-    ) -> Result<WorkspaceExecutionModeView> {
-        let current = self.workspace_execution_mode_view(thread_key).await?;
-        write_workspace_execution_config(Path::new(&current.workspace_cwd), execution_mode).await?;
-        self.workspace_execution_mode_view(thread_key).await
-    }
-
     async fn workspace_launch_config(&self, thread_key: &str) -> Result<HcodexLaunchConfigView> {
         self.shared_control()
             .await?
             .workspace_launch_config(thread_key)
             .await
+    }
+
+    async fn run_runtime_control_action(
+        &self,
+        thread_key: &str,
+        request: RuntimeControlActionRequest,
+    ) -> Result<RuntimeControlActionEnvelope> {
+        if matches!(&request, RuntimeControlActionRequest::RepairSessionBinding) {
+            let config = self.workspace_launch_config(thread_key).await?;
+            self.maybe_reconcile_owner_workspace(&config.workspace_cwd)
+                .await?;
+        }
+        let control = self.shared_control().await?;
+        let result = control
+            .execute_runtime_control_action(thread_key, request, "local management UI")
+            .await?;
+        if let Some(bridge) = self.telegram_bridge.read().await.clone() {
+            match &result.result {
+                RuntimeControlActionResult::StartFreshSession { .. } => {
+                    if let Ok(Some(record)) =
+                        self.repository.find_active_thread_by_key(thread_key).await
+                    {
+                        let _ = bridge.refresh_thread_title(&record, "new").await;
+                    }
+                }
+                RuntimeControlActionResult::RepairSessionBinding { verified, .. } => {
+                    if let Ok(Some(record)) =
+                        self.repository.find_active_thread_by_key(thread_key).await
+                    {
+                        let source = if *verified {
+                            "reconnect_codex_verified"
+                        } else {
+                            "reconnect_codex_broken"
+                        };
+                        let _ = bridge.refresh_thread_title(&record, source).await;
+                    }
+                }
+                RuntimeControlActionResult::SetWorkspaceExecutionMode { .. }
+                | RuntimeControlActionResult::LaunchLocalSession { .. } => {}
+            }
+        }
+        Ok(result)
     }
 
     async fn archive_thread(&self, thread_key: &str) -> Result<ArchiveThreadResponse> {
@@ -1611,29 +1552,6 @@ impl ManagementApiState {
             ok: true,
             thread_key: restored.metadata.thread_key,
             action: RuntimeControlAction::RestoreThread,
-        })
-    }
-
-    async fn repair_session_binding(&self, thread_key: &str) -> Result<ThreadMutationResponse> {
-        let config = self.workspace_launch_config(thread_key).await?;
-        self.maybe_reconcile_owner_workspace(&config.workspace_cwd)
-            .await?;
-        let control = self.shared_control().await?;
-        let result = control
-            .repair_session_binding(thread_key, "local management UI")
-            .await?;
-        if let Some(bridge) = self.telegram_bridge.read().await.clone() {
-            let source = if result.verified {
-                "reconnect_codex_verified"
-            } else {
-                "reconnect_codex_broken"
-            };
-            let _ = bridge.refresh_thread_title(&result.record, source).await;
-        }
-        Ok(ThreadMutationResponse {
-            ok: true,
-            thread_key: result.record.metadata.thread_key,
-            action: RuntimeControlAction::RepairSessionBinding,
         })
     }
 
@@ -1694,56 +1612,6 @@ impl ManagementApiState {
         };
         let _ = owner.reconcile_managed_workspaces([workspace_cwd]).await?;
         Ok(())
-    }
-
-    async fn launch_hcodex_new(&self, thread_key: &str) -> Result<LaunchWorkspaceResponse> {
-        let config = self.workspace_launch_config(thread_key).await?;
-        launch_hcodex_via_terminal(&config.launch_new_command).await?;
-        Ok(LaunchWorkspaceResponse {
-            launched: true,
-            thread_key: thread_key.to_owned(),
-            command: config.launch_new_command,
-            action: RuntimeControlAction::LaunchLocalSession,
-        })
-    }
-
-    async fn launch_hcodex_continue_current(
-        &self,
-        thread_key: &str,
-    ) -> Result<LaunchWorkspaceResponse> {
-        let config = self.workspace_launch_config(thread_key).await?;
-        let command = config
-            .launch_current_command
-            .clone()
-            .context("managed workspace is missing a current Telegram session")?;
-        launch_hcodex_via_terminal(&command).await?;
-        Ok(LaunchWorkspaceResponse {
-            launched: true,
-            thread_key: thread_key.to_owned(),
-            command,
-            action: RuntimeControlAction::LaunchLocalSession,
-        })
-    }
-
-    async fn launch_hcodex_resume(
-        &self,
-        thread_key: &str,
-        session_id: &str,
-    ) -> Result<LaunchWorkspaceResponse> {
-        let config = self.workspace_launch_config(thread_key).await?;
-        let command = hcodex_launch_command(
-            Path::new(&config.hcodex_path),
-            thread_key,
-            config.workspace_execution_mode,
-            Some(session_id),
-        );
-        launch_hcodex_via_terminal(&command).await?;
-        Ok(LaunchWorkspaceResponse {
-            launched: true,
-            thread_key: thread_key.to_owned(),
-            command,
-            action: RuntimeControlAction::LaunchLocalSession,
-        })
     }
 
     async fn write_telegram_setup(&self, payload: UpdateTelegramSetupRequest) -> Result<()> {
@@ -2329,6 +2197,7 @@ mod tests {
             TranscriptMirrorEntry {
                 timestamp: "2026-03-24T10:00:00.000Z".to_owned(),
                 session_id: "thr_current".to_owned(),
+                turn_id: Some("turn-1".to_owned()),
                 origin: TranscriptMirrorOrigin::Telegram,
                 role: TranscriptMirrorRole::User,
                 delivery: TranscriptMirrorDelivery::Final,
@@ -2338,6 +2207,7 @@ mod tests {
             TranscriptMirrorEntry {
                 timestamp: "2026-03-24T10:00:01.000Z".to_owned(),
                 session_id: "thr_current".to_owned(),
+                turn_id: Some("turn-1".to_owned()),
                 origin: TranscriptMirrorOrigin::Telegram,
                 role: TranscriptMirrorRole::Assistant,
                 delivery: TranscriptMirrorDelivery::Final,
@@ -2390,13 +2260,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn renamed_control_routes_exist_and_legacy_routes_are_gone() {
+    async fn runtime_control_action_route_exists_and_legacy_routes_are_gone() {
         let root = temp_path();
         fs::create_dir_all(&root).await.unwrap();
         let handle = spawn_management_api(runtime_config(&root)).await.unwrap();
         let client = reqwest::Client::new();
 
-        let repair = client
+        let actions = client
+            .post(format!("{}/api/threads/thread-1/actions", handle.base_url))
+            .json(&serde_json::json!({ "action": "repair_session_binding" }))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(actions.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let legacy_repair = client
             .post(format!(
                 "{}/api/threads/thread-1/repair-session-binding",
                 handle.base_url
@@ -2404,9 +2282,9 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_ne!(repair.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(legacy_repair.status(), reqwest::StatusCode::NOT_FOUND);
 
-        let launch_new = client
+        let legacy_launch_new = client
             .post(format!(
                 "{}/api/workspaces/thread-1/launch-hcodex-new",
                 handle.base_url
@@ -2414,27 +2292,47 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_ne!(launch_new.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(legacy_launch_new.status(), reqwest::StatusCode::NOT_FOUND);
 
-        let legacy_repair = client
+        let legacy_launch_current = client
             .post(format!(
-                "{}/api/workspaces/thread-1/reconnect",
+                "{}/api/workspaces/thread-1/launch-hcodex-continue-current",
                 handle.base_url
             ))
             .send()
             .await
             .unwrap();
-        assert_eq!(legacy_repair.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(
+            legacy_launch_current.status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
 
-        let legacy_launch = client
+        let legacy_launch_resume = client
             .post(format!(
-                "{}/api/workspaces/thread-1/launch-current",
+                "{}/api/workspaces/thread-1/launch-hcodex-resume",
                 handle.base_url
             ))
             .send()
             .await
             .unwrap();
-        assert_eq!(legacy_launch.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(
+            legacy_launch_resume.status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+
+        let legacy_set_mode = client
+            .put(format!(
+                "{}/api/workspaces/thread-1/execution-mode",
+                handle.base_url
+            ))
+            .json(&serde_json::json!({ "execution_mode": "full_auto" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            legacy_set_mode.status(),
+            reqwest::StatusCode::METHOD_NOT_ALLOWED
+        );
     }
 
     #[tokio::test]
