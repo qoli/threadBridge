@@ -9,6 +9,7 @@ use tokio::process::Command;
 use tracing::info;
 
 use crate::app_server_runtime::{WorkspaceRuntimeManager, WorkspaceRuntimeState};
+use crate::collaboration_mode::CollaborationMode;
 use crate::codex::{CodexRunner, CodexWorkspace};
 use crate::config::RuntimeConfig;
 use crate::delivery_bus::DeliveryBusCoordinator;
@@ -20,12 +21,14 @@ use crate::repository::{
     LogDirection, RecentCodexSessionEntry, SessionBinding, ThreadRecord, ThreadRepository,
 };
 use crate::runtime_protocol::{
-    LaunchLocalSessionTarget, RuntimeControlAction, RuntimeControlActionEnvelope,
-    RuntimeControlActionRequest, RuntimeControlActionResult,
+    InterruptRunningTurnState, LaunchLocalSessionTarget, RuntimeControlAction,
+    RuntimeControlActionEnvelope, RuntimeControlActionRequest, RuntimeControlActionResult,
 };
+use crate::thread_state::{effective_busy_snapshot_for_binding, resolve_thread_state};
 use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
 use crate::workspace_status::{
     SessionActivitySource, read_local_tui_session_claim, read_session_status,
+    record_managed_runtime_interrupt_requested,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -584,6 +587,99 @@ impl SharedControlHandle {
         Ok(result)
     }
 
+    pub async fn set_thread_collaboration_mode(
+        &self,
+        thread_key: &str,
+        mode: CollaborationMode,
+        origin: &str,
+    ) -> Result<ThreadRecord> {
+        let record = self.active_thread(thread_key).await?;
+        let updated = self
+            .ctx
+            .repository
+            .update_session_collaboration_mode(record, mode)
+            .await?;
+        self.ctx
+            .repository
+            .append_log(
+                &updated,
+                LogDirection::System,
+                format!(
+                    "Action `{}` changed collaboration mode to `{}` from {origin}.",
+                    RuntimeControlAction::SetThreadCollaborationMode.as_str(),
+                    mode.as_str()
+                ),
+                None,
+            )
+            .await?;
+        Ok(updated)
+    }
+
+    pub async fn interrupt_running_turn(
+        &self,
+        thread_key: &str,
+        origin: &str,
+    ) -> Result<RuntimeControlActionResult> {
+        let record = self.active_thread(thread_key).await?;
+        let binding = self
+            .ctx
+            .repository
+            .read_session_binding(&record)
+            .await?
+            .context("This thread is not bound to a workspace yet.")?;
+        let resolved_state = resolve_thread_state(&record.metadata, Some(&binding)).await?;
+        if !resolved_state.is_running() {
+            bail!("No active turn is running for this workspace.");
+        }
+        let busy = effective_busy_snapshot_for_binding(Some(&binding))
+            .await?
+            .context("No active turn is running for this workspace.")?;
+        if busy.phase == crate::workspace_status::WorkspaceStatusPhase::TurnFinalizing {
+            return Ok(RuntimeControlActionResult::InterruptRunningTurn {
+                thread_key: record.metadata.thread_key,
+                session_id: busy.session_id,
+                turn_id: busy.turn_id,
+                state: InterruptRunningTurnState::AlreadyRequested,
+            });
+        }
+        let turn_id = busy.turn_id.as_deref().context(format!(
+            "A turn is running for session `{}`, but its turn id is unavailable, so it cannot be interrupted yet.",
+            busy.session_id
+        ))?;
+        let workspace_path = workspace_path_from_binding(&binding)?;
+        let codex_workspace = self
+            .ctx
+            .workspace_runtime_service()
+            .shared_codex_workspace(workspace_path.clone())
+            .await?;
+        self.ctx
+            .codex
+            .interrupt_turn(&codex_workspace, &busy.session_id, turn_id)
+            .await?;
+        record_managed_runtime_interrupt_requested(&workspace_path, &busy.session_id, turn_id)
+            .await?;
+        self.ctx
+            .repository
+            .append_log(
+                &record,
+                LogDirection::System,
+                format!(
+                    "Action `{}` requested interrupt for session `{}` turn `{}` from {origin}.",
+                    RuntimeControlAction::InterruptRunningTurn.as_str(),
+                    busy.session_id,
+                    turn_id
+                ),
+                None,
+            )
+            .await?;
+        Ok(RuntimeControlActionResult::InterruptRunningTurn {
+            thread_key: record.metadata.thread_key,
+            session_id: busy.session_id,
+            turn_id: Some(turn_id.to_owned()),
+            state: InterruptRunningTurnState::Requested,
+        })
+    }
+
     pub async fn execute_runtime_control_action(
         &self,
         thread_key: &str,
@@ -730,6 +826,26 @@ impl SharedControlHandle {
                     },
                 })
             }
+            RuntimeControlActionRequest::SetThreadCollaborationMode { mode } => {
+                let updated = self
+                    .set_thread_collaboration_mode(thread_key, mode, origin)
+                    .await?;
+                Ok(RuntimeControlActionEnvelope {
+                    ok: true,
+                    action,
+                    result: RuntimeControlActionResult::SetThreadCollaborationMode {
+                        thread_key: updated.metadata.thread_key,
+                        mode,
+                    },
+                })
+            }
+            RuntimeControlActionRequest::InterruptRunningTurn => Ok(
+                RuntimeControlActionEnvelope {
+                    ok: true,
+                    action,
+                    result: self.interrupt_running_turn(thread_key, origin).await?,
+                },
+            ),
         }
     }
 

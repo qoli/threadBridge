@@ -875,6 +875,14 @@ pub async fn record_bot_interrupt_requested(
     .await
 }
 
+pub async fn record_managed_runtime_interrupt_requested(
+    workspace_path: &Path,
+    session_id: &str,
+    turn_id: &str,
+) -> Result<SessionCurrentStatus> {
+    record_bot_interrupt_requested(workspace_path, session_id, turn_id).await
+}
+
 pub async fn finalize_pending_bot_interrupt_if_still_busy(
     workspace_path: &Path,
     session_id: &str,

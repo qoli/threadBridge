@@ -826,6 +826,7 @@ mod macos_app {
                 current_execution_mode: Some(ExecutionMode::FullAuto),
                 current_approval_policy: Some("on-request".to_owned()),
                 current_sandbox_policy: Some("workspace-write".to_owned()),
+                current_collaboration_mode: None,
                 mode_drift: true,
                 binding_status: "healthy",
                 run_status: "idle",

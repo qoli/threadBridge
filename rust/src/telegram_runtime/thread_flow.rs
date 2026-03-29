@@ -30,10 +30,9 @@ use crate::runtime_control::{
     workspace_thread_title,
 };
 use crate::runtime_protocol::{
-    LaunchLocalSessionTarget, RuntimeControlAction, RuntimeControlActionEnvelope,
-    RuntimeControlActionRequest, RuntimeControlActionResult, WorkingSessionRecordKind,
-    WorkingSessionRecordView, WorkingSessionSummaryView, build_working_session_records,
-    build_working_session_summaries,
+    LaunchLocalSessionTarget, RuntimeControlActionEnvelope, RuntimeControlActionRequest,
+    RuntimeControlActionResult, WorkingSessionRecordKind, WorkingSessionRecordView,
+    WorkingSessionSummaryView, build_working_session_records, build_working_session_summaries,
 };
 use crate::turn_completion::compose_visible_final_reply;
 
@@ -78,24 +77,31 @@ async fn persist_collaboration_mode_change(
     record: ThreadRecord,
     mode: CollaborationMode,
 ) -> Result<ThreadRecord> {
-    let record = state
-        .repository
-        .update_session_collaboration_mode(record, mode)
-        .await?;
+    let thread_key = record.metadata.thread_key.clone();
+    let result = execute_runtime_control_action(
+        state,
+        &thread_key,
+        RuntimeControlActionRequest::SetThreadCollaborationMode { mode },
+        "telegram collaboration_mode",
+    )
+    .await?;
+    let RuntimeControlActionResult::SetThreadCollaborationMode {
+        mode: updated_mode, ..
+    } = result.result
+    else {
+        unreachable!("unexpected runtime control result for set_thread_collaboration_mode");
+    };
+    anyhow::ensure!(
+        updated_mode == mode,
+        "collaboration mode action returned `{}` instead of `{}`",
+        updated_mode.as_str(),
+        mode.as_str()
+    );
     state
         .repository
-        .append_log(
-            &record,
-            LogDirection::System,
-            format!(
-                "Action `{}` changed collaboration mode to `{}`.",
-                RuntimeControlAction::SetThreadCollaborationMode.as_str(),
-                mode.as_str()
-            ),
-            None,
-        )
-        .await?;
-    Ok(record)
+        .find_active_thread_by_key(&thread_key)
+        .await?
+        .context("thread_key is not an active thread after collaboration mode change")
 }
 
 async fn render_thread_info(state: &AppState, record: &ThreadRecord) -> Result<String> {
@@ -396,6 +402,20 @@ fn render_stop_started_message(snapshot: &SessionCurrentStatus) -> String {
         crate::workspace_status::SessionActivitySource::ManagedRuntime => format!(
             "Interrupt requested for Telegram session `{}`. Wait for the current turn to settle.",
             snapshot.session_id
+        ),
+    }
+}
+
+fn render_stop_action_message(
+    session_id: &str,
+    state: crate::runtime_protocol::InterruptRunningTurnState,
+) -> String {
+    match state {
+        crate::runtime_protocol::InterruptRunningTurnState::Requested => format!(
+            "Interrupt requested for Telegram session `{session_id}`. Wait for the current turn to settle."
+        ),
+        crate::runtime_protocol::InterruptRunningTurnState::AlreadyRequested => format!(
+            "Interrupt was already requested for Telegram session `{session_id}`. Wait for the current turn to settle."
         ),
     }
 }
@@ -1204,91 +1224,55 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             }
-            let Some(binding) = session.as_ref() else {
-                send_scoped_message(
-                    bot,
-                    msg.chat.id,
-                    Some(thread_id),
-                    "This workspace thread is not bound yet.",
-                )
-                .await?;
-                return Ok(());
-            };
-            let Some(busy) = blocking_snapshot.as_ref() else {
-                send_scoped_message(
-                    bot,
-                    msg.chat.id,
-                    Some(thread_id),
-                    "No active turn is running for this workspace.",
-                )
-                .await?;
-                return Ok(());
-            };
-            if busy.phase == crate::workspace_status::WorkspaceStatusPhase::TurnFinalizing {
-                send_scoped_message(
-                    bot,
-                    msg.chat.id,
-                    Some(thread_id),
-                    render_stop_started_message(busy),
-                )
-                .await?;
-                return Ok(());
-            }
-            let Some(turn_id) = busy.turn_id.as_deref() else {
-                send_scoped_warning_message(
-                    bot,
-                    msg.chat.id,
-                    Some(thread_id),
-                    format!(
-                        "A turn is running for session `{}`, but its turn id is unavailable, so `/stop` cannot interrupt it yet.",
-                        busy.session_id
-                    ),
-                )
-                .await?;
-                return Ok(());
-            };
-            let workspace_path = workspace_path_from_binding(binding)?;
-            let codex_workspace = state
-                .control
-                .workspace_runtime_service()
-                .shared_codex_workspace(workspace_path.clone())
-                .await?;
-            state
-                .codex
-                .interrupt_turn(&codex_workspace, &busy.session_id, turn_id)
-                .await?;
-            crate::workspace_status::record_bot_interrupt_requested(
-                &workspace_path,
-                &busy.session_id,
-                turn_id,
+            let result = match execute_runtime_control_action(
+                state,
+                &record.metadata.thread_key,
+                RuntimeControlActionRequest::InterruptRunningTurn,
+                "telegram /stop",
             )
-            .await?;
-            state
-                .repository
-                .append_log(
-                    &record,
-                    LogDirection::System,
-                    format!(
-                        "Action `{}` requested interrupt for session `{}` turn `{}` via `/stop`.",
-                        RuntimeControlAction::InterruptRunningTurn.as_str(),
-                        busy.session_id,
-                        turn_id
-                    ),
-                    None,
-                )
-                .await?;
-            spawn_stop_interrupt_watchdog(
-                state.clone(),
-                record.clone(),
-                workspace_path,
-                busy.session_id.clone(),
-                turn_id.to_owned(),
-            );
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    send_scoped_warning_message(
+                        bot,
+                        msg.chat.id,
+                        Some(thread_id),
+                        format!("{error:#}"),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
+            let RuntimeControlActionResult::InterruptRunningTurn {
+                session_id,
+                turn_id,
+                state: interrupt_state,
+                ..
+            } = result.result
+            else {
+                unreachable!("unexpected runtime control result for interrupt_running_turn");
+            };
+            if interrupt_state == crate::runtime_protocol::InterruptRunningTurnState::Requested
+                && let (Some(binding), Some(turn_id)) = (session.as_ref(), turn_id.as_deref())
+            {
+                let workspace_path = workspace_path_from_binding(binding)?;
+                spawn_stop_interrupt_watchdog(
+                    state.clone(),
+                    record.clone(),
+                    workspace_path,
+                    session_id.clone(),
+                    turn_id.to_owned(),
+                );
+            }
             send_scoped_message(
                 bot,
                 msg.chat.id,
                 Some(thread_id),
-                render_stop_started_message(busy),
+                blocking_snapshot
+                    .as_ref()
+                    .map(render_stop_started_message)
+                    .unwrap_or_else(|| render_stop_action_message(&session_id, interrupt_state)),
             )
             .await?;
         }
@@ -2571,7 +2555,9 @@ mod tests {
         );
 
         let content = tokio::fs::read_to_string(&record.log_path).await.unwrap();
-        assert!(content.contains("Collaboration mode changed to `plan`."));
+        assert!(content.contains(
+            "Action `set_thread_collaboration_mode` changed collaboration mode to `plan` from telegram collaboration_mode."
+        ));
     }
 
     #[tokio::test]

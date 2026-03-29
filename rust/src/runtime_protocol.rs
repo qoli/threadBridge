@@ -5,6 +5,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::collaboration_mode::CollaborationMode;
 use crate::execution_mode::{ExecutionMode, workspace_execution_mode};
 use crate::repository::{
     RecentCodexSessionEntry, SessionBinding, ThreadRecord, ThreadRepository,
@@ -117,6 +118,22 @@ impl LaunchLocalSessionTarget {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptRunningTurnState {
+    Requested,
+    AlreadyRequested,
+}
+
+impl InterruptRunningTurnState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Requested => "requested",
+            Self::AlreadyRequested => "already_requested",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum RuntimeControlActionRequest {
@@ -130,6 +147,10 @@ pub enum RuntimeControlActionRequest {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
     },
+    SetThreadCollaborationMode {
+        mode: CollaborationMode,
+    },
+    InterruptRunningTurn,
 }
 
 impl RuntimeControlActionRequest {
@@ -141,25 +162,30 @@ impl RuntimeControlActionRequest {
                 RuntimeControlAction::SetWorkspaceExecutionMode
             }
             Self::LaunchLocalSession { .. } => RuntimeControlAction::LaunchLocalSession,
+            Self::SetThreadCollaborationMode { .. } => {
+                RuntimeControlAction::SetThreadCollaborationMode
+            }
+            Self::InterruptRunningTurn => RuntimeControlAction::InterruptRunningTurn,
         }
     }
 
     pub fn validate(&self) -> Result<()> {
-        let Self::LaunchLocalSession { target, session_id } = self else {
-            return Ok(());
-        };
-        let has_session_id = session_id
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty());
-        match target {
-            LaunchLocalSessionTarget::Resume => ensure!(
-                has_session_id,
-                "launch_local_session target=resume requires a non-empty session_id"
-            ),
-            LaunchLocalSessionTarget::New | LaunchLocalSessionTarget::ContinueCurrent => ensure!(
-                !has_session_id,
-                "launch_local_session only accepts session_id when target=resume"
-            ),
+        if let Self::LaunchLocalSession { target, session_id } = self {
+            let has_session_id = session_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty());
+            match target {
+                LaunchLocalSessionTarget::Resume => ensure!(
+                    has_session_id,
+                    "launch_local_session target=resume requires a non-empty session_id"
+                ),
+                LaunchLocalSessionTarget::New | LaunchLocalSessionTarget::ContinueCurrent => {
+                    ensure!(
+                        !has_session_id,
+                        "launch_local_session only accepts session_id when target=resume"
+                    )
+                }
+            }
         }
         Ok(())
     }
@@ -191,6 +217,17 @@ pub enum RuntimeControlActionResult {
         target: LaunchLocalSessionTarget,
         command: String,
         launched: bool,
+    },
+    SetThreadCollaborationMode {
+        thread_key: String,
+        mode: CollaborationMode,
+    },
+    InterruptRunningTurn {
+        thread_key: String,
+        session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        state: InterruptRunningTurnState,
     },
 }
 
@@ -276,6 +313,7 @@ pub struct ManagedWorkspaceView {
     pub current_execution_mode: Option<ExecutionMode>,
     pub current_approval_policy: Option<String>,
     pub current_sandbox_policy: Option<String>,
+    pub current_collaboration_mode: Option<CollaborationMode>,
     pub mode_drift: bool,
     pub binding_status: &'static str,
     pub run_status: &'static str,
@@ -309,6 +347,7 @@ pub struct ThreadStateView {
     pub current_execution_mode: Option<ExecutionMode>,
     pub current_approval_policy: Option<String>,
     pub current_sandbox_policy: Option<String>,
+    pub current_collaboration_mode: Option<CollaborationMode>,
     pub lifecycle_status: &'static str,
     pub binding_status: &'static str,
     pub run_status: &'static str,
@@ -513,6 +552,7 @@ pub async fn build_workspace_views(
             current_execution_mode: binding.current_execution_mode,
             current_approval_policy: binding.current_approval_policy.clone(),
             current_sandbox_policy: binding.current_sandbox_policy.clone(),
+            current_collaboration_mode: binding.current_collaboration_mode,
             mode_drift: workspace_mode_drift(workspace_execution_mode, &binding),
             binding_status: resolve_binding_status(&record.metadata, Some(&binding)).as_str(),
             run_status,
@@ -613,6 +653,9 @@ pub async fn build_thread_views(repository: &ThreadRepository) -> Result<Vec<Thr
             current_sandbox_policy: binding
                 .as_ref()
                 .and_then(|binding| binding.current_sandbox_policy.clone()),
+            current_collaboration_mode: binding
+                .as_ref()
+                .and_then(|binding| binding.current_collaboration_mode),
             lifecycle_status: lifecycle_status.as_str(),
             binding_status: binding_status.as_str(),
             run_status,
@@ -1195,6 +1238,7 @@ mod tests {
         build_workspace_views,
     };
     use crate::app_server_runtime::WorkspaceRuntimeState;
+    use crate::collaboration_mode::CollaborationMode;
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
     use crate::repository::{
         ThreadMetadata, ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry,
@@ -1326,6 +1370,7 @@ mod tests {
             current_execution_mode: Some(ExecutionMode::FullAuto),
             current_approval_policy: Some("on-request".to_owned()),
             current_sandbox_policy: Some("workspace-write".to_owned()),
+            current_collaboration_mode: Some(CollaborationMode::Plan),
             lifecycle_status: "active",
             binding_status: "healthy",
             run_status: "idle",
@@ -1347,6 +1392,7 @@ mod tests {
         assert_eq!(value["binding_status"], "healthy");
         assert_eq!(value["run_status"], "idle");
         assert_eq!(value["run_phase"], "idle");
+        assert_eq!(value["current_collaboration_mode"], "plan");
         assert_eq!(value["last_verified_at"], "2026-03-24T09:00:00.000Z");
         assert_eq!(value["last_codex_turn_at"], "2026-03-24T10:00:00.000Z");
         assert_eq!(value["last_used_at"], "2026-03-24T10:00:00.000Z");
@@ -1363,6 +1409,7 @@ mod tests {
             current_execution_mode: Some(ExecutionMode::Yolo),
             current_approval_policy: Some("on-request".to_owned()),
             current_sandbox_policy: Some("workspace-write".to_owned()),
+            current_collaboration_mode: Some(CollaborationMode::Default),
             mode_drift: true,
             binding_status: "broken",
             run_status: "idle",
@@ -1389,6 +1436,7 @@ mod tests {
         assert_eq!(value["binding_status"], "broken");
         assert_eq!(value["run_status"], "idle");
         assert_eq!(value["run_phase"], "idle");
+        assert_eq!(value["current_collaboration_mode"], "default");
         assert_eq!(value["current_codex_thread_id"], "thr_current");
         assert_eq!(value["hcodex_ingress_status"], "running");
         assert!(value.get("tui_proxy_status").is_none());
@@ -1542,6 +1590,7 @@ mod tests {
                 current_execution_mode: Some(ExecutionMode::FullAuto),
                 current_approval_policy: None,
                 current_sandbox_policy: None,
+                current_collaboration_mode: Some(CollaborationMode::Default),
                 mode_drift: false,
                 binding_status: "healthy",
                 run_status: "running",
@@ -1571,6 +1620,7 @@ mod tests {
                 current_execution_mode: Some(ExecutionMode::Yolo),
                 current_approval_policy: None,
                 current_sandbox_policy: None,
+                current_collaboration_mode: Some(CollaborationMode::Plan),
                 mode_drift: false,
                 binding_status: "broken",
                 run_status: "idle",
@@ -1838,6 +1888,22 @@ mod tests {
             serde_json::json!({
                 "action": "set_workspace_execution_mode",
                 "execution_mode": "yolo"
+            })
+        );
+    }
+
+    #[test]
+    fn collaboration_mode_action_request_serializes_with_tagged_shape() {
+        let request = RuntimeControlActionRequest::SetThreadCollaborationMode {
+            mode: CollaborationMode::Plan,
+        };
+        let value =
+            serde_json::to_value(request).expect("serialize collaboration mode action request");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "action": "set_thread_collaboration_mode",
+                "mode": "plan"
             })
         );
     }

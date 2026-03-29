@@ -1568,8 +1568,16 @@ impl ManagementApiState {
                         let _ = bridge.refresh_thread_title(&record, source).await;
                     }
                 }
+                RuntimeControlActionResult::SetThreadCollaborationMode { .. } => {
+                    if let Ok(Some(record)) =
+                        self.repository.find_active_thread_by_key(thread_key).await
+                    {
+                        let _ = bridge.refresh_thread_title(&record, "collaboration_mode").await;
+                    }
+                }
                 RuntimeControlActionResult::SetWorkspaceExecutionMode { .. }
-                | RuntimeControlActionResult::LaunchLocalSession { .. } => {}
+                | RuntimeControlActionResult::LaunchLocalSession { .. }
+                | RuntimeControlActionResult::InterruptRunningTurn { .. } => {}
             }
         }
         Ok(result)
@@ -2167,6 +2175,7 @@ mod tests {
         WorkingSessionSummaryView, diff_management_event_snapshots, spawn_management_api,
     };
     use crate::app_server_runtime::WorkspaceRuntimeManager;
+    use crate::collaboration_mode::CollaborationMode;
     use crate::config::RuntimeConfig;
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
     use crate::repository::{
@@ -2391,6 +2400,53 @@ mod tests {
         assert_eq!(
             legacy_set_mode.status(),
             reqwest::StatusCode::METHOD_NOT_ALLOWED
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_control_action_route_updates_collaboration_mode() {
+        let root = temp_path();
+        fs::create_dir_all(&root).await.unwrap();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).await.unwrap();
+        let handle = spawn_management_api(runtime_config(&root)).await.unwrap();
+        install_shared_control(&handle, &root).await;
+        let repo: ThreadRepository = handle.state.repository.clone();
+        let record = repo
+            .create_thread(1, 7, "Workspace".to_owned())
+            .await
+            .unwrap();
+        let record = repo
+            .bind_workspace(
+                record,
+                workspace.display().to_string(),
+                "thr_current".to_owned(),
+                full_auto_snapshot(),
+            )
+            .await
+            .unwrap();
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/api/threads/{}/actions",
+                handle.base_url, record.metadata.thread_key
+            ))
+            .json(&serde_json::json!({
+                "action": "set_thread_collaboration_mode",
+                "mode": "plan"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let value: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(value["action"], "set_thread_collaboration_mode");
+        assert_eq!(value["result"]["mode"], "plan");
+
+        let binding = repo.read_session_binding(&record).await.unwrap().unwrap();
+        assert_eq!(
+            binding.current_collaboration_mode,
+            Some(CollaborationMode::Plan)
         );
     }
 
