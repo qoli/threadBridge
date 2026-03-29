@@ -9,8 +9,8 @@ use tokio::process::Command;
 use tracing::info;
 
 use crate::app_server_runtime::{WorkspaceRuntimeManager, WorkspaceRuntimeState};
-use crate::collaboration_mode::CollaborationMode;
 use crate::codex::{CodexRunner, CodexWorkspace};
+use crate::collaboration_mode::CollaborationMode;
 use crate::config::RuntimeConfig;
 use crate::delivery_bus::DeliveryBusCoordinator;
 use crate::execution_mode::{
@@ -839,13 +839,11 @@ impl SharedControlHandle {
                     },
                 })
             }
-            RuntimeControlActionRequest::InterruptRunningTurn => Ok(
-                RuntimeControlActionEnvelope {
-                    ok: true,
-                    action,
-                    result: self.interrupt_running_turn(thread_key, origin).await?,
-                },
-            ),
+            RuntimeControlActionRequest::InterruptRunningTurn => Ok(RuntimeControlActionEnvelope {
+                ok: true,
+                action,
+                result: self.interrupt_running_turn(thread_key, origin).await?,
+            }),
         }
     }
 
