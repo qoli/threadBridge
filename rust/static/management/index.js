@@ -484,7 +484,7 @@ function formatSessionSummary(summary, threadKey) {
     </div>
     ${summary.last_error ? `<div class="hint">Last error: ${escapeHtml(summary.last_error)}</div>` : ''}
     <div class="toolbar">
-      <button class="secondary" onclick="selectWorkingSession('${threadKey}', '${summary.session_id}')">View Records</button>
+      <button class="btn btn-outline-primary btn-sm secondary" onclick="selectWorkingSession('${threadKey}', '${summary.session_id}')">View Records</button>
     </div>
   </div>`;
 }
@@ -533,14 +533,14 @@ function renderWorkingSessions(threadKey) {
     return `<p class="hint">${escapeHtml(cache.error)}</p>`;
   }
   if (!cache.loaded) {
-    return `<div class="toolbar"><button class="secondary" onclick="loadWorkingSessions('${threadKey}', true)">Load Sessions</button></div>`;
+    return `<div class="toolbar"><button class="btn btn-outline-primary btn-sm secondary" onclick="loadWorkingSessions('${threadKey}', true)">Load Sessions</button></div>`;
   }
   if (!cache.summaries.length) {
     return '<p class="muted">No sessions available for this workspace yet.</p>';
   }
   return `
     <div class="toolbar">
-      <button class="secondary" onclick="loadWorkingSessions('${threadKey}', true)">Refresh Sessions</button>
+      <button class="btn btn-outline-primary btn-sm secondary" onclick="loadWorkingSessions('${threadKey}', true)">Refresh Sessions</button>
       <span class="muted">Session summaries and records are derived from transcript mirror and runtime session status.</span>
     </div>
     <div class="subsection">
@@ -599,7 +599,7 @@ function renderWorkspaceCards(items) {
   root.innerHTML = filtered.map(item => {
     const selectedExecutionMode = effectiveExecutionModeValue(item);
     return `
-    <article class="entity-card">
+    <article class="card entity-card">
       <div class="entity-head">
         <div>
           <div class="entity-title">${escapeHtml(workspacePrimaryLabel(item))}</div>
@@ -625,11 +625,11 @@ function renderWorkspaceCards(items) {
 
       <div class="toolbar">
         <label class="muted" for="mode-${item.thread_key}">Execution Mode</label>
-        <select id="mode-${item.thread_key}" ${item.conflict ? 'disabled' : ''} onchange="setExecutionModeDraft('${item.thread_key}', this.value)">
+        <select id="mode-${item.thread_key}" class="form-select" ${item.conflict ? 'disabled' : ''} onchange="setExecutionModeDraft('${item.thread_key}', this.value)">
           <option value="full_auto" ${selectedExecutionMode === 'full_auto' ? 'selected' : ''}>full_auto</option>
           <option value="yolo" ${selectedExecutionMode === 'yolo' ? 'selected' : ''}>yolo</option>
         </select>
-        <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="updateExecutionMode('${item.thread_key}')">Save Mode</button>
+        <button class="btn btn-outline-primary secondary" ${item.conflict ? 'disabled' : ''} onclick="updateExecutionMode('${item.thread_key}')">Save Mode</button>
       </div>
 
       <div class="stack">
@@ -639,26 +639,26 @@ function renderWorkspaceCards(items) {
             <span class="session-pill">
               <code>${escapeHtml(session.session_id)}</code>
               <span class="muted">${escapeHtml(session.execution_mode || 'unknown')}</span>
-              <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="launchHcodexResumeWithSession('${item.thread_key}', '${session.session_id}')">Resume</button>
+              <button class="btn btn-outline-primary btn-sm secondary" ${item.conflict ? 'disabled' : ''} onclick="launchHcodexResumeWithSession('${item.thread_key}', '${session.session_id}')">Resume</button>
             </span>
           `).join('') || '<span class="muted">No recent sessions to resume.</span>'}
         </div>
       </div>
 
       <div class="actions-grid">
-        <button class="secondary" onclick="openWorkspace('${item.thread_key}')">Open Workspace</button>
-        <button ${item.conflict ? 'disabled' : ''} onclick="startFreshSession('${item.thread_key}')">Start Fresh Session</button>
-        <button ${item.conflict ? 'disabled' : ''} onclick="launchHcodexNew('${item.thread_key}')">Launch Local Session (new)</button>
-        <button ${item.conflict || !item.current_codex_thread_id ? 'disabled' : ''} onclick="launchHcodexContinueCurrent('${item.thread_key}')">Launch Local Session (continue_current)</button>
-        <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="repairContinuity('${item.thread_key}', '${item.binding_status}', ${item.tui_session_adoption_pending ? 'true' : 'false'})">${item.tui_session_adoption_pending ? 'Adopt TUI' : 'Repair Session'}</button>
-        <button class="secondary" onclick="repairRuntime('${item.thread_key}')">Repair Runtime</button>
-        <button ${item.conflict ? 'disabled' : ''} onclick="showLaunchConfig('${item.thread_key}')">Show Launch Commands</button>
-        <button onclick='archiveThread(${JSON.stringify(item.thread_key)}, ${JSON.stringify(workspacePrimaryLabel(item))})'>Archive</button>
+        <button class="btn btn-outline-primary secondary" onclick="openWorkspace('${item.thread_key}')">Open Workspace</button>
+        <button class="btn btn-primary" ${item.conflict ? 'disabled' : ''} onclick="startFreshSession('${item.thread_key}')">Start Fresh Session</button>
+        <button class="btn btn-primary" ${item.conflict ? 'disabled' : ''} onclick="launchHcodexNew('${item.thread_key}')">Launch Local Session (new)</button>
+        <button class="btn btn-primary" ${item.conflict || !item.current_codex_thread_id ? 'disabled' : ''} onclick="launchHcodexContinueCurrent('${item.thread_key}')">Launch Local Session (continue_current)</button>
+        <button class="btn btn-outline-primary secondary" ${item.conflict ? 'disabled' : ''} onclick="repairContinuity('${item.thread_key}', '${item.binding_status}', ${item.tui_session_adoption_pending ? 'true' : 'false'})">${item.tui_session_adoption_pending ? 'Adopt TUI' : 'Repair Session'}</button>
+        <button class="btn btn-outline-primary secondary" onclick="repairRuntime('${item.thread_key}')">Repair Runtime</button>
+        <button class="btn btn-outline-primary secondary" ${item.conflict ? 'disabled' : ''} onclick="showLaunchConfig('${item.thread_key}')">Show Launch Commands</button>
+        <button class="btn btn-outline-danger" onclick='archiveThread(${JSON.stringify(item.thread_key)}, ${JSON.stringify(workspacePrimaryLabel(item))})'>Archive</button>
       </div>
 
       <div class="toolbar">
-        <input id="resume-${item.thread_key}" type="text" placeholder="session id to resume" />
-        <button class="secondary" ${item.conflict ? 'disabled' : ''} onclick="launchHcodexResume('${item.thread_key}')">Launch Local Session (resume)</button>
+        <input id="resume-${item.thread_key}" class="form-control" type="text" placeholder="session id to resume" />
+        <button class="btn btn-outline-primary secondary" ${item.conflict ? 'disabled' : ''} onclick="launchHcodexResume('${item.thread_key}')">Launch Local Session (resume)</button>
       </div>
 
       <details class="raw-panel" data-thread-key="${item.thread_key}" data-panel-key="advanced" ${panelOpenAttr(item.thread_key, 'advanced')}>
@@ -680,7 +680,7 @@ function renderWorkspaceCards(items) {
           ${metaItem('last_used_at', item.last_used_at || 'unknown')}
           ${metaItem('hcodex_path', item.hcodex_path)}
         </div>
-        ${item.tui_active_codex_thread_id ? `<div class="toolbar"><button class="secondary" onclick="rejectTuiSession('${item.thread_key}')">Keep Original Binding</button></div>` : ''}
+        ${item.tui_active_codex_thread_id ? `<div class="toolbar"><button class="btn btn-outline-primary secondary" onclick="rejectTuiSession('${item.thread_key}')">Keep Original Binding</button></div>` : ''}
       </details>
 
       <details id="launch-wrap-${item.thread_key}" class="raw-panel" data-thread-key="${item.thread_key}" data-panel-key="launch" ${panelOpenAttr(item.thread_key, 'launch')}>
@@ -698,7 +698,7 @@ function renderWorkspaceCards(items) {
       <details class="raw-panel transcript-panel" data-thread-key="${item.thread_key}" data-panel-key="transcript" ${panelOpenAttr(item.thread_key, 'transcript')}>
         <summary>Transcript</summary>
         <div class="toolbar">
-          <button class="secondary" onclick="loadTranscript('${item.thread_key}', true)">Refresh Transcript</button>
+          <button class="btn btn-outline-primary btn-sm secondary" onclick="loadTranscript('${item.thread_key}', true)">Refresh Transcript</button>
           <span class="muted">Latest 40 transcript mirror entries.</span>
         </div>
         <div id="transcript-${item.thread_key}" class="stack">
@@ -719,7 +719,7 @@ function renderWorkspaceTranscript(threadKey) {
     return `<p class="hint">${escapeHtml(cache.error)}</p>`;
   }
   if (!cache.loaded) {
-    return `<div class="toolbar"><button class="secondary" onclick="loadTranscript('${threadKey}', true)">Load Transcript</button></div>`;
+    return `<div class="toolbar"><button class="btn btn-outline-primary btn-sm secondary" onclick="loadTranscript('${threadKey}', true)">Load Transcript</button></div>`;
   }
   return `
     <div class="subsection">
@@ -745,7 +745,7 @@ function renderArchivedThreads(items) {
     return;
   }
   root.innerHTML = items.map(item => `
-    <article class="entity-card">
+    <article class="card entity-card">
       <div class="entity-head">
         <div>
           <div class="entity-title">${escapeHtml(workspacePrimaryLabel(item))}</div>
@@ -762,7 +762,7 @@ function renderArchivedThreads(items) {
         ${metaItem('previous_topics', (item.previous_message_thread_ids || []).join(', ') || 'none')}
       </div>
       <div class="actions-grid">
-        <button onclick='restoreThread(${JSON.stringify(item.thread_key)}, ${JSON.stringify(item.title || item.thread_key)})'>Restore</button>
+        <button class="btn btn-outline-primary secondary" onclick='restoreThread(${JSON.stringify(item.thread_key)}, ${JSON.stringify(item.title || item.thread_key)})'>Restore</button>
       </div>
     </article>
   `).join('');

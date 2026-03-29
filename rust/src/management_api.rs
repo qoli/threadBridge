@@ -49,6 +49,7 @@ const MANAGED_CODEX_CACHE_BINARY: &str = ".threadbridge/codex/codex";
 const MANAGED_CODEX_BUILD_INFO_FILE: &str = ".threadbridge/codex/build-info.txt";
 const MANAGED_CODEX_BUILD_CONFIG_FILE: &str = ".threadbridge/codex/build-config.json";
 const MANAGEMENT_UI_HTML: &str = include_str!("../static/management/index.html");
+const MANAGEMENT_UI_TABLER_CSS: &str = include_str!("../static/management/vendor/tabler.min.css");
 const MANAGEMENT_UI_CSS: &str = include_str!("../static/management/index.css");
 const MANAGEMENT_UI_JS: &str = include_str!("../static/management/index.js");
 
@@ -330,6 +331,7 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
     let base_url = format!("http://{}", listener.local_addr()?);
     let router = Router::new()
         .route("/", get(index))
+        .route("/assets/tabler.min.css", get(management_tabler_css))
         .route("/assets/management.css", get(management_css))
         .route("/assets/management.js", get(management_js))
         .route("/api/setup", get(get_setup))
@@ -438,6 +440,13 @@ async fn management_css() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
         MANAGEMENT_UI_CSS,
+    )
+}
+
+async fn management_tabler_css() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        MANAGEMENT_UI_TABLER_CSS,
     )
 }
 
@@ -1572,7 +1581,9 @@ impl ManagementApiState {
                     if let Ok(Some(record)) =
                         self.repository.find_active_thread_by_key(thread_key).await
                     {
-                        let _ = bridge.refresh_thread_title(&record, "collaboration_mode").await;
+                        let _ = bridge
+                            .refresh_thread_title(&record, "collaboration_mode")
+                            .await;
                     }
                 }
                 RuntimeControlActionResult::SetWorkspaceExecutionMode { .. }

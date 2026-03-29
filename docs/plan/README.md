@@ -169,7 +169,7 @@
   - management health view 已改成 owner heartbeat 為主的 desktop-first 模型
   - management UI 已補上 transcript observability pane、workspace-card `Sessions` pane 與 inline records timeline，且 adoption/repair action 已改成 owner-canonical 語義
   - management UI 已補上 workspace execution mode 切換、mode drift 提示，以及 mode-aware launch/resume commands
-  - web 管理面新增確認的 UI 收斂方向是可評估以 HeroUI 重構
+  - web 管理面新增確認的 UI 收斂方向是本地 vendored、無 build 的 Tabler 風格 CSS 重構，且 dark mode 固定跟隨系統
   - 目前新增確認的收斂方向是 `workspace = thread` 主模型、desktop-only 啟動與移除暫不可用的 onboarding
 - [working-session-observability.md](management-desktop-surface/working-session-observability.md)
   - doc kind: `plan`
