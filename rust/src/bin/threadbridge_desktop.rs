@@ -831,6 +831,8 @@ mod macos_app {
                 binding_status: "healthy",
                 run_status: "idle",
                 run_phase: "idle",
+                interrupt_status: "unavailable",
+                interrupt_note: None,
                 current_codex_thread_id: Some("thr_current".to_owned()),
                 tui_active_codex_thread_id: None,
                 tui_session_adoption_pending: false,

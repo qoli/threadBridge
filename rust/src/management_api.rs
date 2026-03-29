@@ -49,7 +49,6 @@ const MANAGED_CODEX_CACHE_BINARY: &str = ".threadbridge/codex/codex";
 const MANAGED_CODEX_BUILD_INFO_FILE: &str = ".threadbridge/codex/build-info.txt";
 const MANAGED_CODEX_BUILD_CONFIG_FILE: &str = ".threadbridge/codex/build-config.json";
 const MANAGEMENT_UI_HTML: &str = include_str!("../static/management/index.html");
-const MANAGEMENT_UI_TABLER_CSS: &str = include_str!("../static/management/vendor/tabler.min.css");
 const MANAGEMENT_UI_CSS: &str = include_str!("../static/management/index.css");
 const MANAGEMENT_UI_JS: &str = include_str!("../static/management/index.js");
 
@@ -187,6 +186,11 @@ pub struct SetupStateView {
 struct ArchiveThreadResponse {
     archived: bool,
     thread_key: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PurgeArchivedThreadsResponse {
+    purged: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -331,7 +335,6 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
     let base_url = format!("http://{}", listener.local_addr()?);
     let router = Router::new()
         .route("/", get(index))
-        .route("/assets/tabler.min.css", get(management_tabler_css))
         .route("/assets/management.css", get(management_css))
         .route("/assets/management.js", get(management_js))
         .route("/api/setup", get(get_setup))
@@ -376,6 +379,10 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
             post(post_pick_and_add_workspace),
         )
         .route("/api/archived-threads", get(get_archived_threads))
+        .route(
+            "/api/archived-threads/purge",
+            post(post_purge_archived_threads),
+        )
         .route(
             "/api/threads/:thread_key/adopt-tui",
             post(post_adopt_tui_session),
@@ -440,13 +447,6 @@ async fn management_css() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
         MANAGEMENT_UI_CSS,
-    )
-}
-
-async fn management_tabler_css() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        MANAGEMENT_UI_TABLER_CSS,
     )
 }
 
@@ -574,6 +574,14 @@ async fn get_archived_threads(
     State(state): State<Arc<ManagementApiState>>,
 ) -> Result<Json<Vec<ArchivedThreadView>>, ManagementApiError> {
     Ok(Json(state.archived_thread_views().await?))
+}
+
+async fn post_purge_archived_threads(
+    State(state): State<Arc<ManagementApiState>>,
+) -> Result<Json<PurgeArchivedThreadsResponse>, ManagementApiError> {
+    Ok(Json(PurgeArchivedThreadsResponse {
+        purged: state.purge_all_archived_threads().await?,
+    }))
 }
 
 async fn post_adopt_tui_session(

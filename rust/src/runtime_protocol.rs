@@ -318,6 +318,8 @@ pub struct ManagedWorkspaceView {
     pub binding_status: &'static str,
     pub run_status: &'static str,
     pub run_phase: &'static str,
+    pub interrupt_status: &'static str,
+    pub interrupt_note: Option<String>,
     pub current_codex_thread_id: Option<String>,
     pub tui_active_codex_thread_id: Option<String>,
     pub tui_session_adoption_pending: bool,
@@ -457,6 +459,48 @@ impl WorkspaceRuntimeHealth {
     }
 }
 
+async fn workspace_interrupt_view(
+    binding: &SessionBinding,
+    run_status: &str,
+) -> (&'static str, Option<String>) {
+    if run_status != "running" {
+        return ("unavailable", None);
+    }
+
+    match effective_busy_snapshot_for_binding(Some(binding)).await {
+        Ok(Some(snapshot)) => {
+            if snapshot.phase == WorkspaceStatusPhase::TurnFinalizing {
+                return (
+                    "pending",
+                    Some("Interrupt has already been requested for the active turn.".to_owned()),
+                );
+            }
+            if snapshot
+                .turn_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                return ("available", None);
+            }
+            (
+                "unavailable",
+                Some(format!(
+                    "A turn is running for session `{}`, but its turn id is unavailable, so it cannot be interrupted yet.",
+                    snapshot.session_id
+                )),
+            )
+        }
+        Ok(None) => (
+            "unavailable",
+            Some("No active turn is currently visible for this workspace.".to_owned()),
+        ),
+        Err(error) => (
+            "unavailable",
+            Some(format!("Interrupt status is unavailable: {error}")),
+        ),
+    }
+}
+
 fn canonical_binding_broken_reason(
     metadata: &crate::repository::ThreadMetadata,
     binding: Option<&SessionBinding>,
@@ -544,6 +588,8 @@ pub async fn build_workspace_views(
             binding.tui_session_adoption_pending,
             binding.tui_active_codex_thread_id.as_deref(),
         );
+        let (interrupt_status, interrupt_note) =
+            workspace_interrupt_view(&binding, run_status).await;
         aggregate.items.push(ManagedWorkspaceView {
             workspace_cwd: workspace_cwd.clone(),
             title: record.metadata.title.clone(),
@@ -557,6 +603,8 @@ pub async fn build_workspace_views(
             binding_status: resolve_binding_status(&record.metadata, Some(&binding)).as_str(),
             run_status,
             run_phase,
+            interrupt_status,
+            interrupt_note,
             current_codex_thread_id: binding.current_codex_thread_id.clone(),
             tui_active_codex_thread_id: binding.tui_active_codex_thread_id.clone(),
             tui_session_adoption_pending: binding.tui_session_adoption_pending,
@@ -1414,6 +1462,8 @@ mod tests {
             binding_status: "broken",
             run_status: "idle",
             run_phase: "idle",
+            interrupt_status: "unavailable",
+            interrupt_note: None,
             current_codex_thread_id: Some("thr_current".to_owned()),
             tui_active_codex_thread_id: Some("thr_tui".to_owned()),
             tui_session_adoption_pending: false,
@@ -1436,6 +1486,7 @@ mod tests {
         assert_eq!(value["binding_status"], "broken");
         assert_eq!(value["run_status"], "idle");
         assert_eq!(value["run_phase"], "idle");
+        assert_eq!(value["interrupt_status"], "unavailable");
         assert_eq!(value["current_collaboration_mode"], "default");
         assert_eq!(value["current_codex_thread_id"], "thr_current");
         assert_eq!(value["hcodex_ingress_status"], "running");
@@ -1534,6 +1585,7 @@ mod tests {
         let views = build_workspace_views(&repo, None).await.unwrap();
         assert_eq!(views[0].run_status, "unavailable");
         assert_eq!(views[0].run_phase, "unavailable");
+        assert_eq!(views[0].interrupt_status, "unavailable");
 
         let _ = fs::remove_dir_all(root).await;
         let _ = fs::remove_dir_all(workspace).await;
@@ -1595,6 +1647,8 @@ mod tests {
                 binding_status: "healthy",
                 run_status: "running",
                 run_phase: "turn_running",
+                interrupt_status: "available",
+                interrupt_note: None,
                 current_codex_thread_id: Some("thr-a".to_owned()),
                 tui_active_codex_thread_id: None,
                 tui_session_adoption_pending: false,
@@ -1625,6 +1679,8 @@ mod tests {
                 binding_status: "broken",
                 run_status: "idle",
                 run_phase: "idle",
+                interrupt_status: "unavailable",
+                interrupt_note: None,
                 current_codex_thread_id: Some("thr-b".to_owned()),
                 tui_active_codex_thread_id: None,
                 tui_session_adoption_pending: false,
