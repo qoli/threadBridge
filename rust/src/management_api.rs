@@ -28,6 +28,7 @@ use crate::local_control::{
 use crate::repository::{ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry};
 use crate::runtime_control::{
     HcodexLaunchConfigView, SharedControlHandle, WorkspaceExecutionModeView,
+    preflight_workspace_add, reset_workspace_runtime_surface, workspace_thread_title,
 };
 use crate::runtime_owner::{DesktopRuntimeOwner, RuntimeOwnerStatus};
 pub use crate::runtime_protocol::{
@@ -151,6 +152,10 @@ impl ManagementApiHandle {
     pub async fn add_workspace(&self, workspace_cwd: &str) -> Result<AddWorkspaceResult> {
         self.state.add_workspace(workspace_cwd).await
     }
+
+    pub async fn purge_all_archived_threads(&self) -> Result<usize> {
+        self.state.purge_all_archived_threads().await
+    }
 }
 
 #[derive(Clone)]
@@ -205,6 +210,7 @@ struct PickAndAddWorkspaceResponse {
     thread_key: Option<String>,
     title: Option<String>,
     workspace_cwd: Option<String>,
+    probe_report: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -221,6 +227,7 @@ pub struct AddWorkspaceResult {
     pub thread_key: String,
     pub title: Option<String>,
     pub workspace_cwd: Option<String>,
+    pub probe_report: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1342,59 +1349,109 @@ impl ManagementApiState {
     }
 
     async fn add_workspace(&self, workspace_cwd: &str) -> Result<AddWorkspaceResult> {
-        let control = self.shared_control().await?;
         let workspace_path = resolve_workspace_argument(workspace_cwd).await?;
-        let (created, record, bound_workspace_cwd) =
-            match control.resolve_workspace_add(&workspace_path).await? {
-                crate::runtime_control::WorkspaceAddResolution::Existing(record) => {
-                    let binding = self.repository.read_session_binding(&record).await?;
-                    let bound_workspace_cwd = binding
-                        .as_ref()
-                        .and_then(|binding| binding.workspace_cwd.clone())
-                        .or_else(|| Some(workspace_path.display().to_string()));
-                    (false, record, bound_workspace_cwd)
-                }
-                crate::runtime_control::WorkspaceAddResolution::Create {
-                    canonical_workspace_cwd,
-                    suggested_title,
-                } => {
-                    let bridge = self.telegram_bridge().await?;
-                    let created_thread = bridge
-                        .create_workspace_thread(Some(suggested_title), "local management UI")
-                        .await?;
-                    let record = control
-                        .create_thread(
-                            created_thread.chat_id,
-                            created_thread.message_thread_id,
-                            created_thread.title.clone(),
-                        )
-                        .await?;
-                    let record = control
-                        .bind_workspace_record(
-                            record,
-                            Path::new(&canonical_workspace_cwd),
-                            "local management UI",
-                        )
-                        .await?;
-                    bridge
-                        .notify_workspace_bound(
-                            &record,
-                            Path::new(&canonical_workspace_cwd),
-                            "local_bind_workspace",
-                        )
-                        .await?;
-                    (true, record, Some(canonical_workspace_cwd))
-                }
-            };
-        if let Some(workspace_cwd) = bound_workspace_cwd.as_deref() {
-            self.maybe_reconcile_owner_workspace(workspace_cwd).await?;
+        let preflight = preflight_workspace_add(&self.repository, &workspace_path).await?;
+        if let Some(reason) = preflight.blocking_reason() {
+            anyhow::bail!("{}\n\n{}", reason, preflight.render_text());
         }
+        let control = self.shared_control().await?;
+        let bridge = self.telegram_bridge().await?;
+        let created = bridge
+            .create_workspace_thread(
+                Some(workspace_thread_title(&workspace_path)),
+                "local management UI",
+            )
+            .await?;
+        let record = control
+            .create_thread(
+                created.chat_id,
+                created.message_thread_id,
+                created.title.clone(),
+            )
+            .await?;
+        let reset_performed = match reset_workspace_runtime_surface(&workspace_path).await {
+            Ok(value) => value,
+            Err(error) => {
+                self.rollback_failed_workspace_add(&bridge, record, &workspace_path, &error)
+                    .await;
+                return Err(error);
+            }
+        };
+        let bound = match control
+            .bind_workspace_record(record.clone(), &workspace_path, "local management UI")
+            .await
+        {
+            Ok(record) => record,
+            Err(error) => {
+                self.rollback_failed_workspace_add(&bridge, record, &workspace_path, &error)
+                    .await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = bridge
+            .notify_workspace_bound(&bound, &workspace_path, "bind")
+            .await
+        {
+            warn!(
+                event = "management_api.add_workspace.notify_bound_failed",
+                thread_key = %bound.metadata.thread_key,
+                workspace = %workspace_path.display(),
+                error = %error,
+                "workspace was bound but Telegram notification failed"
+            );
+        }
+        let mut report_lines = vec![preflight.render_text()];
+        report_lines.push(format!(
+            "reset_performed: {}",
+            if reset_performed { "yes" } else { "no" }
+        ));
+        report_lines.push(format!("thread_key: {}", bound.metadata.thread_key));
         Ok(AddWorkspaceResult {
-            created,
-            thread_key: record.metadata.thread_key.clone(),
-            title: record.metadata.title.clone(),
-            workspace_cwd: bound_workspace_cwd,
+            created: true,
+            thread_key: bound.metadata.thread_key.clone(),
+            title: bound.metadata.title.clone(),
+            workspace_cwd: Some(workspace_path.display().to_string()),
+            probe_report: Some(report_lines.join("\n")),
         })
+    }
+
+    async fn purge_all_archived_threads(&self) -> Result<usize> {
+        self.repository.purge_all_archived_threads().await
+    }
+
+    #[allow(dead_code)]
+    async fn rollback_failed_workspace_add(
+        &self,
+        bridge: &TelegramControlBridgeHandle,
+        record: crate::repository::ThreadRecord,
+        workspace_path: &Path,
+        error: &anyhow::Error,
+    ) {
+        warn!(
+            event = "management_api.add_workspace.rollback_started",
+            thread_key = %record.metadata.thread_key,
+            workspace = %workspace_path.display(),
+            error = %error,
+            "rolling back failed workspace add after thread creation"
+        );
+        if let Err(delete_error) = bridge.delete_thread_topic(&record).await {
+            warn!(
+                event = "management_api.add_workspace.rollback_topic_delete_failed",
+                thread_key = %record.metadata.thread_key,
+                workspace = %workspace_path.display(),
+                error = %delete_error,
+                "failed to delete Telegram topic during workspace-add rollback"
+            );
+        }
+        if let Err(archive_error) = self.repository.archive_thread(record.clone()).await {
+            warn!(
+                event = "management_api.add_workspace.rollback_archive_failed",
+                thread_key = %record.metadata.thread_key,
+                workspace = %workspace_path.display(),
+                error = %archive_error,
+                "failed to archive local thread during workspace-add rollback"
+            );
+        }
     }
 
     async fn pick_and_add_workspace(&self) -> Result<PickAndAddWorkspaceResponse> {
@@ -1410,6 +1467,7 @@ impl ManagementApiState {
                 thread_key: None,
                 title: None,
                 workspace_cwd: None,
+                probe_report: None,
             });
         };
         let result = self.add_workspace(&workspace_cwd).await?;
@@ -1417,9 +1475,10 @@ impl ManagementApiState {
             ok: true,
             created: result.created,
             cancelled: false,
-            thread_key: Some(result.thread_key),
+            thread_key: (!result.thread_key.is_empty()).then_some(result.thread_key),
             title: result.title,
             workspace_cwd: result.workspace_cwd,
+            probe_report: result.probe_report,
         })
     }
 
@@ -2336,7 +2395,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn existing_workspace_add_works_without_telegram_bridge() {
+    async fn existing_workspace_add_blocks_existing_active_binding_without_telegram_bridge() {
         let root = temp_path();
         fs::create_dir_all(&root).await.unwrap();
         let handle = spawn_management_api(runtime_config(&root)).await.unwrap();
@@ -2358,16 +2417,13 @@ mod tests {
             .await
             .unwrap();
 
-        let result = handle
+        let error = handle
             .add_workspace(&workspace.display().to_string())
             .await
-            .unwrap();
-        assert!(!result.created);
-        assert_eq!(result.thread_key, record.metadata.thread_key);
-        assert_eq!(
-            result.workspace_cwd.as_deref(),
-            Some(workspace.to_str().unwrap())
-        );
+            .unwrap_err();
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("blocked_by_active_binding"));
+        assert!(rendered.contains(&record.metadata.thread_key));
     }
 
     #[tokio::test]

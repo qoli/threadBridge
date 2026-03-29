@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::hcodex_ingress::HcodexIngressManager;
 use crate::repository::ThreadRepository;
@@ -173,7 +173,7 @@ async fn run_worker(config: WorkerCli) -> Result<()> {
         let mut stderr_lines = BufReader::new(stderr).lines();
         tokio::spawn(async move {
             while let Ok(Some(line)) = stderr_lines.next_line().await {
-                debug!(event = "app_server_ws_worker.codex.stderr", line = %line);
+                eprintln!("codex app-server stderr: {line}");
             }
         });
     }

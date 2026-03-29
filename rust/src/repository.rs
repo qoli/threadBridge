@@ -1044,6 +1044,46 @@ impl ThreadRepository {
         Ok(records)
     }
 
+    pub async fn find_archived_threads_by_workspace(
+        &self,
+        workspace_cwd: &str,
+    ) -> Result<Vec<ThreadRecord>> {
+        let target = canonical_workspace_string(workspace_cwd);
+        let mut records = Vec::new();
+        for record in self.list_all_archived_threads().await? {
+            let Some(binding) = self.read_session_binding(&record).await? else {
+                continue;
+            };
+            let Some(bound_workspace) = binding.workspace_cwd.as_deref() else {
+                continue;
+            };
+            if canonical_workspace_string(bound_workspace) == target {
+                records.push(record);
+            }
+        }
+        Ok(records)
+    }
+
+    pub async fn purge_all_archived_threads(&self) -> Result<usize> {
+        let archived = self.list_all_archived_threads().await?;
+        let mut purged = 0usize;
+        for record in archived {
+            match fs::remove_dir_all(&record.folder_path).await {
+                Ok(()) => purged += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to purge archived thread record {}",
+                            record.folder_path.display()
+                        )
+                    });
+                }
+            }
+        }
+        Ok(purged)
+    }
+
     pub fn data_root_path(&self) -> &Path {
         &self.data_root_path
     }
@@ -1669,6 +1709,90 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(records.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn find_archived_threads_by_workspace_returns_workspace_matches() {
+        let root = temp_path();
+        let workspace = temp_path();
+        fs::create_dir_all(&workspace).await.unwrap();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+
+        let archived = repo
+            .create_thread(1, 7, "Archived".to_owned())
+            .await
+            .unwrap();
+        let archived = repo
+            .bind_workspace(
+                archived,
+                workspace.display().to_string(),
+                "thr_archived".to_owned(),
+                full_auto_snapshot(),
+            )
+            .await
+            .unwrap();
+        let _ = repo.archive_thread(archived).await.unwrap();
+
+        let other = repo.create_thread(1, 8, "Other".to_owned()).await.unwrap();
+        let _ = repo
+            .bind_workspace(
+                other,
+                temp_path().display().to_string(),
+                "thr_other".to_owned(),
+                full_auto_snapshot(),
+            )
+            .await
+            .unwrap();
+
+        let archived = repo
+            .find_archived_threads_by_workspace(&workspace.display().to_string())
+            .await
+            .unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].metadata.title.as_deref(), Some("Archived"));
+    }
+
+    #[tokio::test]
+    async fn purge_all_archived_threads_removes_archived_records_only() {
+        let root = temp_path();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+
+        let active = repo.create_thread(1, 7, "Active".to_owned()).await.unwrap();
+        let active = repo
+            .bind_workspace(
+                active,
+                "/tmp/active".to_owned(),
+                "thr_active".to_owned(),
+                full_auto_snapshot(),
+            )
+            .await
+            .unwrap();
+
+        let archived = repo
+            .create_thread(1, 8, "Archived".to_owned())
+            .await
+            .unwrap();
+        let archived = repo
+            .bind_workspace(
+                archived,
+                "/tmp/archived".to_owned(),
+                "thr_archived".to_owned(),
+                full_auto_snapshot(),
+            )
+            .await
+            .unwrap();
+        let archived = repo.archive_thread(archived).await.unwrap();
+
+        let purged = repo.purge_all_archived_threads().await.unwrap();
+        assert_eq!(purged, 1);
+        assert!(
+            repo.find_active_thread_by_key(&active.metadata.thread_key)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(repo.list_all_archived_threads().await.unwrap().is_empty());
+        assert!(!fs::try_exists(&archived.folder_path).await.unwrap());
     }
 
     #[tokio::test]

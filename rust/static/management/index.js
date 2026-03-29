@@ -1117,6 +1117,13 @@ async function pickAndAddWorkspace() {
     status.textContent = 'Workspace selection cancelled.';
     return;
   }
+  if (data.probe_report) {
+    status.textContent = data.probe_report;
+    if (data.thread_key) {
+      await refresh();
+    }
+    return;
+  }
   const label = workspacePrimaryLabel(data);
   status.textContent = data.created
     ? `Added workspace: ${label}`

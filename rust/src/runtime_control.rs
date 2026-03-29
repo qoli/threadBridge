@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::anyhow;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use tokio::fs;
 use tokio::net::TcpStream;
 use tokio::process::Command;
 use tracing::info;
@@ -119,6 +120,288 @@ pub struct WorkspaceExecutionModeView {
     pub current_approval_policy: Option<String>,
     pub current_sandbox_policy: Option<String>,
     pub mode_drift: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceSurfaceProbeFile {
+    pub path: String,
+    pub exists: bool,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceSurfaceProbe {
+    pub canonical_workspace_cwd: String,
+    pub threadbridge_exists: bool,
+    pub bin_exists: bool,
+    pub state_exists: bool,
+    pub tool_requests_exists: bool,
+    pub tool_results_exists: bool,
+    pub workspace_config: WorkspaceSurfaceProbeFile,
+    pub app_server_current: WorkspaceSurfaceProbeFile,
+    pub runtime_observer_current: WorkspaceSurfaceProbeFile,
+    pub runtime_observer_events: WorkspaceSurfaceProbeFile,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceBindingSummary {
+    pub thread_key: String,
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceAddPreflight {
+    pub probe: WorkspaceSurfaceProbe,
+    pub active_threads: Vec<WorkspaceBindingSummary>,
+    pub archived_threads: Vec<WorkspaceBindingSummary>,
+}
+
+impl WorkspaceSurfaceProbe {
+    pub fn render_text(&self) -> String {
+        let mut lines = vec![
+            "Workspace surface probe.".to_owned(),
+            format!("workspace: {}", self.canonical_workspace_cwd),
+            format!(
+                ".threadbridge/: {}",
+                present_label(self.threadbridge_exists)
+            ),
+            format!(".threadbridge/bin/: {}", present_label(self.bin_exists)),
+            format!(".threadbridge/state/: {}", present_label(self.state_exists)),
+            format!(
+                ".threadbridge/tool_requests/: {}",
+                present_label(self.tool_requests_exists)
+            ),
+            format!(
+                ".threadbridge/tool_results/: {}",
+                present_label(self.tool_results_exists)
+            ),
+            String::new(),
+        ];
+        append_probe_file_lines(&mut lines, "workspace-config.json", &self.workspace_config);
+        append_probe_file_lines(
+            &mut lines,
+            "app-server/current.json",
+            &self.app_server_current,
+        );
+        append_probe_file_lines(
+            &mut lines,
+            "runtime-observer/current.json",
+            &self.runtime_observer_current,
+        );
+        append_probe_file_lines(
+            &mut lines,
+            "runtime-observer/events.jsonl",
+            &self.runtime_observer_events,
+        );
+        lines.join("\n")
+    }
+}
+
+impl WorkspaceAddPreflight {
+    pub fn reset_required(&self) -> bool {
+        self.probe.threadbridge_exists
+    }
+
+    pub fn blocking_reason(&self) -> Option<String> {
+        if !self.active_threads.is_empty() {
+            return Some(format!(
+                "blocked_by_active_binding: workspace `{}` is already bound to active thread(s): {}",
+                self.probe.canonical_workspace_cwd,
+                render_binding_summaries(&self.active_threads)
+            ));
+        }
+        if !self.archived_threads.is_empty() {
+            return Some(format!(
+                "blocked_by_archived_binding: workspace `{}` still has archived thread history: {}. Purge archived threads from the desktop tray before re-adding this workspace.",
+                self.probe.canonical_workspace_cwd,
+                render_binding_summaries(&self.archived_threads)
+            ));
+        }
+        None
+    }
+
+    pub fn render_text(&self) -> String {
+        let mut lines = vec![
+            "Workspace add preflight.".to_owned(),
+            format!("workspace: {}", self.probe.canonical_workspace_cwd),
+            format!(
+                "active_bindings: {}",
+                if self.active_threads.is_empty() {
+                    "none".to_owned()
+                } else {
+                    render_binding_summaries(&self.active_threads)
+                }
+            ),
+            format!(
+                "archived_bindings: {}",
+                if self.archived_threads.is_empty() {
+                    "none".to_owned()
+                } else {
+                    render_binding_summaries(&self.archived_threads)
+                }
+            ),
+            format!("reset_required: {}", yes_no_label(self.reset_required())),
+        ];
+        if let Some(reason) = self.blocking_reason() {
+            lines.push(format!("reset_allowed: no ({reason})"));
+        } else {
+            lines.push("reset_allowed: yes".to_owned());
+        }
+        lines.join("\n")
+    }
+}
+
+fn present_label(value: bool) -> &'static str {
+    if value { "present" } else { "missing" }
+}
+
+fn yes_no_label(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn workspace_binding_summary(record: &ThreadRecord) -> WorkspaceBindingSummary {
+    WorkspaceBindingSummary {
+        thread_key: record.metadata.thread_key.clone(),
+        title: record.metadata.title.clone(),
+    }
+}
+
+fn render_binding_summaries(bindings: &[WorkspaceBindingSummary]) -> String {
+    bindings
+        .iter()
+        .map(|binding| {
+            binding
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|title| format!("{} ({title})", binding.thread_key))
+                .unwrap_or_else(|| binding.thread_key.clone())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn append_probe_file_lines(lines: &mut Vec<String>, label: &str, file: &WorkspaceSurfaceProbeFile) {
+    lines.push(format!("{label}: {}", present_label(file.exists)));
+    lines.push(format!("path: {}", file.path));
+    if let Some(summary) = file.summary.as_deref() {
+        lines.push(format!("summary: {summary}"));
+    }
+    lines.push(String::new());
+}
+
+pub async fn probe_workspace_surface(workspace_path: &Path) -> Result<WorkspaceSurfaceProbe> {
+    let canonical_workspace = workspace_path
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_path.to_path_buf());
+    let canonical_workspace_cwd = canonical_workspace.display().to_string();
+    let threadbridge_dir = canonical_workspace.join(".threadbridge");
+    let state_dir = threadbridge_dir.join("state");
+    Ok(WorkspaceSurfaceProbe {
+        canonical_workspace_cwd,
+        threadbridge_exists: tokio::fs::try_exists(&threadbridge_dir)
+            .await
+            .unwrap_or(false),
+        bin_exists: tokio::fs::try_exists(threadbridge_dir.join("bin"))
+            .await
+            .unwrap_or(false),
+        state_exists: tokio::fs::try_exists(&state_dir).await.unwrap_or(false),
+        tool_requests_exists: tokio::fs::try_exists(threadbridge_dir.join("tool_requests"))
+            .await
+            .unwrap_or(false),
+        tool_results_exists: tokio::fs::try_exists(threadbridge_dir.join("tool_results"))
+            .await
+            .unwrap_or(false),
+        workspace_config: probe_json_file(state_dir.join("workspace-config.json")).await,
+        app_server_current: probe_json_file(state_dir.join("app-server").join("current.json"))
+            .await,
+        runtime_observer_current: probe_json_file(
+            state_dir.join("runtime-observer").join("current.json"),
+        )
+        .await,
+        runtime_observer_events: probe_events_file(
+            state_dir.join("runtime-observer").join("events.jsonl"),
+        )
+        .await,
+    })
+}
+
+async fn probe_json_file(path: PathBuf) -> WorkspaceSurfaceProbeFile {
+    let summary = match tokio::fs::read_to_string(&path).await {
+        Ok(contents) => compact_probe_text(&contents),
+        Err(_) => None,
+    };
+    WorkspaceSurfaceProbeFile {
+        path: path.display().to_string(),
+        exists: summary.is_some(),
+        summary,
+    }
+}
+
+async fn probe_events_file(path: PathBuf) -> WorkspaceSurfaceProbeFile {
+    let summary = match tokio::fs::read_to_string(&path).await {
+        Ok(contents) => Some(format!(
+            "{} lines, {} bytes",
+            contents.lines().count(),
+            contents.len()
+        )),
+        Err(_) => None,
+    };
+    WorkspaceSurfaceProbeFile {
+        path: path.display().to_string(),
+        exists: summary.is_some(),
+        summary,
+    }
+}
+
+pub async fn preflight_workspace_add(
+    repository: &ThreadRepository,
+    workspace_path: &Path,
+) -> Result<WorkspaceAddPreflight> {
+    let probe = probe_workspace_surface(workspace_path).await?;
+    let active_threads = repository
+        .find_active_threads_by_workspace(&probe.canonical_workspace_cwd)
+        .await?
+        .iter()
+        .map(workspace_binding_summary)
+        .collect();
+    let archived_threads = repository
+        .find_archived_threads_by_workspace(&probe.canonical_workspace_cwd)
+        .await?
+        .iter()
+        .map(workspace_binding_summary)
+        .collect();
+    Ok(WorkspaceAddPreflight {
+        probe,
+        active_threads,
+        archived_threads,
+    })
+}
+
+pub async fn reset_workspace_runtime_surface(workspace_path: &Path) -> Result<bool> {
+    let runtime_dir = workspace_path.join(".threadbridge");
+    if !fs::try_exists(&runtime_dir).await.unwrap_or(false) {
+        return Ok(false);
+    }
+    fs::remove_dir_all(&runtime_dir)
+        .await
+        .with_context(|| format!("failed to remove {}", runtime_dir.display()))?;
+    Ok(true)
+}
+
+fn compact_probe_text(contents: &str) -> Option<String> {
+    let compact = contents.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return None;
+    }
+    let truncated = compact.chars().take(220).collect::<String>();
+    let needs_ellipsis = compact.chars().count() > truncated.chars().count();
+    Some(if needs_ellipsis {
+        format!("{truncated}...")
+    } else {
+        truncated
+    })
 }
 
 #[derive(Clone)]
@@ -497,17 +780,7 @@ impl WorkspaceRuntimeService {
             owner_managed = self.ctx.runtime_is_owner_managed(),
             "runtime control ensured bound workspace surface"
         );
-        if self.ctx.runtime_is_owner_managed() {
-            let _ = self
-                .read_owner_managed_workspace_runtime(&workspace)
-                .await?;
-        } else {
-            let _ = self
-                .ctx
-                .app_server_runtime
-                .ensure_workspace_daemon(&workspace)
-                .await?;
-        }
+        let _ = self.resolve_shared_runtime_state(&workspace).await?;
         Ok(workspace)
     }
 
@@ -541,7 +814,7 @@ impl WorkspaceRuntimeService {
         workspace: &Path,
     ) -> Result<WorkspaceRuntimeState> {
         if self.ctx.runtime_is_owner_managed() {
-            return self.read_owner_managed_workspace_runtime(workspace).await;
+            return self.ensure_owner_managed_workspace_runtime(workspace).await;
         }
 
         self.ensure_self_managed_control_runtime(workspace).await
@@ -552,13 +825,40 @@ impl WorkspaceRuntimeService {
         workspace: &Path,
     ) -> Result<WorkspaceRuntimeState> {
         if self.ctx.runtime_is_owner_managed() {
-            return self.read_owner_managed_workspace_runtime(workspace).await;
+            return self.ensure_owner_managed_workspace_runtime(workspace).await;
         }
 
         self.ctx
             .app_server_runtime
             .ensure_workspace_daemon(workspace)
             .await
+    }
+
+    async fn ensure_owner_managed_workspace_runtime(
+        &self,
+        workspace: &Path,
+    ) -> Result<WorkspaceRuntimeState> {
+        match self.read_owner_managed_workspace_runtime(workspace).await {
+            Ok(state) => Ok(state),
+            Err(error) => {
+                info!(
+                    event = "runtime_control.workspace.owner_runtime_recover",
+                    workspace = %workspace.display(),
+                    error = %error,
+                    "owner-managed workspace runtime state was unavailable; recovering via runtime manager"
+                );
+                self.ctx
+                    .app_server_runtime
+                    .ensure_workspace_daemon(workspace)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to recover owner-managed runtime state for {}",
+                            workspace.display()
+                        )
+                    })
+            }
+        }
     }
 
     async fn ensure_self_managed_control_runtime(
@@ -654,23 +954,12 @@ impl WorkspaceSessionService {
         &self,
         workspace_path: &Path,
     ) -> Result<WorkspaceAddResolution> {
-        let canonical_workspace_cwd = workspace_path.display().to_string();
-        let active_threads = self
-            .ctx
-            .repository
-            .find_active_threads_by_workspace(&canonical_workspace_cwd)
-            .await?;
-        if active_threads.len() > 1 {
-            bail!(
-                "Workspace already has multiple active thread bindings: {}",
-                canonical_workspace_cwd
-            );
-        }
-        if let Some(record) = active_threads.into_iter().next() {
-            return Ok(WorkspaceAddResolution::Existing(record));
+        let preflight = preflight_workspace_add(&self.ctx.repository, workspace_path).await?;
+        if let Some(reason) = preflight.blocking_reason() {
+            bail!(reason);
         }
         Ok(WorkspaceAddResolution::Create {
-            canonical_workspace_cwd,
+            canonical_workspace_cwd: preflight.probe.canonical_workspace_cwd,
             suggested_title: workspace_thread_title(workspace_path),
         })
     }
@@ -1150,4 +1439,186 @@ fn shell_quote_path(path: &Path) -> String {
 
 fn apple_script_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        preflight_workspace_add, probe_workspace_surface, reset_workspace_runtime_surface,
+    };
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::fs;
+
+    use crate::repository::ThreadRepository;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock drift")
+            .as_nanos();
+        std::env::temp_dir().join(format!("threadbridge-runtime-control-{name}-{unique}"))
+    }
+
+    fn full_auto_snapshot() -> crate::execution_mode::SessionExecutionSnapshot {
+        crate::execution_mode::SessionExecutionSnapshot {
+            execution_mode: Some(crate::execution_mode::ExecutionMode::FullAuto),
+            approval_policy: Some("never".to_owned()),
+            sandbox_policy: Some("danger-full-access".to_owned()),
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_surface_probe_reports_threadbridge_state_files() {
+        let workspace = temp_dir("probe");
+        let state_dir = workspace.join(".threadbridge/state/runtime-observer");
+        let app_server_dir = workspace.join(".threadbridge/state/app-server");
+        fs::create_dir_all(&state_dir)
+            .await
+            .expect("create state dir");
+        fs::create_dir_all(&app_server_dir)
+            .await
+            .expect("create app server dir");
+        fs::write(
+            workspace.join(".threadbridge/state/workspace-config.json"),
+            "{\n  \"execution_mode\": \"full_auto\"\n}\n",
+        )
+        .await
+        .expect("write workspace config");
+        fs::write(
+            app_server_dir.join("current.json"),
+            "{\n  \"daemon_ws_url\": \"ws://127.0.0.1:62012\"\n}\n",
+        )
+        .await
+        .expect("write app server state");
+        fs::write(
+            workspace.join(".threadbridge/state/runtime-observer/current.json"),
+            "{\n  \"live_tui_session_ids\": []\n}\n",
+        )
+        .await
+        .expect("write observer state");
+        fs::write(
+            workspace.join(".threadbridge/state/runtime-observer/events.jsonl"),
+            "{\"event\":\"started\"}\n",
+        )
+        .await
+        .expect("write observer events");
+
+        let probe = probe_workspace_surface(&workspace)
+            .await
+            .expect("probe workspace");
+
+        assert!(probe.threadbridge_exists);
+        assert!(probe.state_exists);
+        assert!(probe.workspace_config.exists);
+        assert!(probe.app_server_current.exists);
+        assert!(probe.runtime_observer_current.exists);
+        assert!(probe.runtime_observer_events.exists);
+        assert!(
+            probe
+                .workspace_config
+                .summary
+                .as_deref()
+                .unwrap_or("")
+                .contains("full_auto")
+        );
+        assert_eq!(
+            probe.runtime_observer_events.summary.as_deref(),
+            Some("1 lines, 20 bytes")
+        );
+
+        let _ = fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn preflight_blocks_active_workspace_bindings() {
+        let root = temp_dir("preflight-active-root");
+        let workspace = temp_dir("preflight-active-workspace");
+        fs::create_dir_all(&workspace).await.unwrap();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+        let record = repo.create_thread(1, 7, "Active".to_owned()).await.unwrap();
+        let _ = repo
+            .bind_workspace(
+                record,
+                workspace.display().to_string(),
+                "thr_active".to_owned(),
+                full_auto_snapshot(),
+            )
+            .await
+            .unwrap();
+
+        let preflight = preflight_workspace_add(&repo, &workspace).await.unwrap();
+        assert_eq!(preflight.active_threads.len(), 1);
+        assert!(
+            preflight
+                .blocking_reason()
+                .unwrap()
+                .contains("blocked_by_active_binding")
+        );
+
+        let _ = fs::remove_dir_all(root).await;
+        let _ = fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn preflight_blocks_archived_workspace_bindings() {
+        let root = temp_dir("preflight-archived-root");
+        let workspace = temp_dir("preflight-archived-workspace");
+        fs::create_dir_all(&workspace).await.unwrap();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+        let record = repo
+            .create_thread(1, 7, "Archived".to_owned())
+            .await
+            .unwrap();
+        let record = repo
+            .bind_workspace(
+                record,
+                workspace.display().to_string(),
+                "thr_archived".to_owned(),
+                full_auto_snapshot(),
+            )
+            .await
+            .unwrap();
+        let _ = repo.archive_thread(record).await.unwrap();
+
+        let preflight = preflight_workspace_add(&repo, &workspace).await.unwrap();
+        assert_eq!(preflight.archived_threads.len(), 1);
+        assert!(
+            preflight
+                .blocking_reason()
+                .unwrap()
+                .contains("blocked_by_archived_binding")
+        );
+
+        let _ = fs::remove_dir_all(root).await;
+        let _ = fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn reset_workspace_runtime_surface_removes_threadbridge_only() {
+        let workspace = temp_dir("reset-runtime-surface");
+        fs::create_dir_all(workspace.join(".threadbridge/bin"))
+            .await
+            .unwrap();
+        fs::write(workspace.join("AGENTS.md"), "workspace instructions\n")
+            .await
+            .unwrap();
+        fs::write(
+            workspace.join(".threadbridge/bin/hcodex"),
+            "#!/bin/sh\nexit 0\n",
+        )
+        .await
+        .unwrap();
+
+        let removed = reset_workspace_runtime_surface(&workspace).await.unwrap();
+        assert!(removed);
+        assert!(
+            !fs::try_exists(workspace.join(".threadbridge"))
+                .await
+                .unwrap()
+        );
+        assert!(fs::try_exists(workspace.join("AGENTS.md")).await.unwrap());
+
+        let _ = fs::remove_dir_all(workspace).await;
+    }
 }

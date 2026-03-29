@@ -121,9 +121,10 @@ impl HcodexIngressManager {
                     schema_version: 3,
                     workspace_cwd: existing.workspace_path.display().to_string(),
                     daemon_ws_url: existing.daemon_ws_url.clone(),
-                    worker_ws_url: existing_runtime_state
-                        .as_ref()
-                        .and_then(|state| state.worker_ws_url.clone()),
+                    worker_ws_url: ingress_worker_ws_url(
+                        existing_runtime_state.as_ref(),
+                        &existing.observer_ws_url,
+                    ),
                     worker_pid: existing_runtime_state.and_then(|state| state.worker_pid),
                     hcodex_ws_url: Some(existing.proxy_base_ws_url.clone()),
                 };
@@ -205,9 +206,7 @@ impl HcodexIngressManager {
             schema_version: 3,
             workspace_cwd: workspace_path.display().to_string(),
             daemon_ws_url: runtime.daemon_ws_url.clone(),
-            worker_ws_url: existing_runtime_state
-                .as_ref()
-                .and_then(|state| state.worker_ws_url.clone()),
+            worker_ws_url: ingress_worker_ws_url(existing_runtime_state.as_ref(), &observer_ws_url),
             worker_pid: existing_runtime_state.and_then(|state| state.worker_pid),
             hcodex_ws_url: Some(runtime.proxy_base_ws_url.clone()),
         };
@@ -241,6 +240,15 @@ fn should_reuse_existing_ingress(
     existing_daemon_ws_url == requested_daemon_ws_url
         && existing_observer_ws_url == requested_observer_ws_url
         && proxy_alive
+}
+
+fn ingress_worker_ws_url(
+    existing_runtime_state: Option<&WorkspaceRuntimeState>,
+    observer_ws_url: &str,
+) -> Option<String> {
+    existing_runtime_state
+        .and_then(|state| state.worker_ws_url.clone())
+        .or_else(|| (!observer_ws_url.trim().is_empty()).then(|| observer_ws_url.to_owned()))
 }
 
 async fn run_ingress_listener(
@@ -677,7 +685,8 @@ fn canonical_workspace_key(workspace_path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        TrackedRequestMethod, maybe_extract_completed_plan_text, maybe_extract_plan_delta,
+        TrackedRequestMethod, WorkspaceRuntimeState, ingress_worker_ws_url,
+        maybe_extract_completed_plan_text, maybe_extract_plan_delta,
         should_reset_assistant_preview_segment, should_reuse_existing_ingress,
         track_client_request,
     };
@@ -799,5 +808,22 @@ mod tests {
         );
         let extracted = maybe_extract_completed_plan_text(&message).unwrap();
         assert_eq!(extracted.as_deref(), Some("# Final plan\n- one"));
+    }
+
+    #[test]
+    fn ingress_state_falls_back_to_observer_ws_url_when_worker_url_is_missing() {
+        let state = WorkspaceRuntimeState {
+            schema_version: 3,
+            workspace_cwd: "/tmp/workspace".to_owned(),
+            daemon_ws_url: "ws://127.0.0.1:41001".to_owned(),
+            worker_ws_url: None,
+            worker_pid: None,
+            hcodex_ws_url: Some("ws://127.0.0.1:41003".to_owned()),
+        };
+
+        assert_eq!(
+            ingress_worker_ws_url(Some(&state), "ws://127.0.0.1:41002").as_deref(),
+            Some("ws://127.0.0.1:41002")
+        );
     }
 }

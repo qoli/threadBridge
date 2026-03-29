@@ -71,6 +71,7 @@ mod macos_app {
     enum TrayAction {
         OpenSettings,
         OpenAddWorkspace,
+        PurgeArchivedThreads,
         Quit,
         LaunchNew { thread_key: String },
         ContinueCurrent { thread_key: String },
@@ -394,11 +395,16 @@ mod macos_app {
         }
         let add_workspace = MenuItem::new("Add Workspace", true, None);
         actions.insert(add_workspace.id().clone(), TrayAction::OpenAddWorkspace);
+        let purge_archived = MenuItem::new("Purge Archived Threads", true, None);
+        actions.insert(
+            purge_archived.id().clone(),
+            TrayAction::PurgeArchivedThreads,
+        );
         let settings = MenuItem::new("Settings", true, None);
         actions.insert(settings.id().clone(), TrayAction::OpenSettings);
         let quit = MenuItem::new("Quit", true, None);
         actions.insert(quit.id().clone(), TrayAction::Quit);
-        menu.append_items(&[&add_workspace, &settings, &quit])?;
+        menu.append_items(&[&add_workspace, &purge_archived, &settings, &quit])?;
         Ok(MenuModel { menu, actions })
     }
 
@@ -501,6 +507,27 @@ mod macos_app {
                     let _ = proxy.send_event(UserEvent::Refresh);
                 });
             }
+            TrayAction::PurgeArchivedThreads => {
+                let runtime = app.runtime.clone();
+                let management_api = app.management_api.clone();
+                let proxy = proxy.clone();
+                runtime.spawn(async move {
+                    if let Err(error) = purge_archived_threads_via_tray(&management_api).await {
+                        warn!(
+                            event = "desktop_runtime.purge_archived_threads.failed",
+                            error = %error
+                        );
+                        let _ = show_desktop_notification(
+                            "threadBridge",
+                            &format!(
+                                "Purge archived threads failed: {}",
+                                short_error_message(&error)
+                            ),
+                        );
+                    }
+                    let _ = proxy.send_event(UserEvent::Refresh);
+                });
+            }
             TrayAction::Quit => {
                 let _ = proxy.send_event(UserEvent::Quit);
                 *control_flow = ControlFlow::Exit;
@@ -587,6 +614,20 @@ mod macos_app {
         Ok(())
     }
 
+    async fn purge_archived_threads_via_tray(management_api: &ManagementApiHandle) -> Result<()> {
+        let confirmed = tokio::task::spawn_blocking(confirm_purge_archived_threads).await??;
+        if !confirmed {
+            info!(event = "desktop_runtime.purge_archived_threads.cancelled");
+            return Ok(());
+        }
+        let purged = management_api.purge_all_archived_threads().await?;
+        show_desktop_notification(
+            "threadBridge",
+            &format!("Purged {purged} archived thread record(s)."),
+        )?;
+        Ok(())
+    }
+
     fn open_management_url(
         management_api: &ManagementApiHandle,
         anchor: Option<&str>,
@@ -639,6 +680,25 @@ mod macos_app {
     fn apple_script_user_cancelled(status_code: Option<i32>, stderr: &str) -> bool {
         matches!(status_code, Some(1) | Some(-128))
             && stderr.to_ascii_lowercase().contains("user canceled")
+    }
+
+    fn confirm_purge_archived_threads() -> Result<bool> {
+        let script = r#"button returned of (display dialog "Purge all archived threadBridge Telegram thread data? This cannot be undone." buttons {"Cancel", "Purge"} default button "Cancel" cancel button "Cancel" with icon caution)"#;
+        let output = Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .output()?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).contains("Purge"));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if apple_script_user_cancelled(output.status.code(), &stderr) {
+            return Ok(false);
+        }
+        Err(anyhow!(
+            "purge confirmation failed: {}",
+            stderr.trim().if_empty("unknown osascript error")
+        ))
     }
 
     fn show_desktop_notification(title: &str, body: &str) -> Result<()> {

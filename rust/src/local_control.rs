@@ -91,6 +91,17 @@ impl TelegramControlBridgeHandle {
         Ok(())
     }
 
+    pub async fn delete_created_thread(&self, created: &CreatedTelegramThread) -> Result<()> {
+        let _ = self
+            .bot
+            .delete_forum_topic(
+                ChatId(created.chat_id),
+                ThreadId(MessageId(created.message_thread_id)),
+            )
+            .await;
+        Ok(())
+    }
+
     pub async fn refresh_thread_title(
         &self,
         record: &ThreadRecord,

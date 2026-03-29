@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use teloxide::payloads::setters::*;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::final_reply::send_final_assistant_reply;
 use super::media::{self, dispatch_workspace_telegram_outbox};
@@ -24,8 +24,10 @@ use crate::local_control::{TelegramControlBridgeHandle, resolve_workspace_argume
 use crate::process_transcript::process_entry_from_codex_event;
 use crate::runtime_control::{
     HcodexLaunchConfigView, SharedControlHandle, WorkspaceExecutionModeView,
+    preflight_workspace_add, reset_workspace_runtime_surface,
     workspace_execution_mode_view_for_record,
     workspace_launch_config_for_record as shared_workspace_launch_config_for_record,
+    workspace_thread_title,
 };
 use crate::runtime_protocol::{
     LaunchLocalSessionTarget, RuntimeControlAction, RuntimeControlActionEnvelope,
@@ -226,6 +228,41 @@ async fn execute_runtime_control_action(
     SharedControlHandle::new(state.control.clone())
         .execute_runtime_control_action(thread_key, request, origin)
         .await
+}
+
+#[allow(dead_code)]
+async fn rollback_failed_workspace_add(
+    repository: &crate::repository::ThreadRepository,
+    bridge: &TelegramControlBridgeHandle,
+    record: ThreadRecord,
+    workspace_path: &Path,
+    error: &anyhow::Error,
+) {
+    warn!(
+        event = "telegram.add_workspace.rollback_started",
+        thread_key = %record.metadata.thread_key,
+        workspace = %workspace_path.display(),
+        error = %error,
+        "rolling back failed workspace add after thread creation"
+    );
+    if let Err(delete_error) = bridge.delete_thread_topic(&record).await {
+        warn!(
+            event = "telegram.add_workspace.rollback_topic_delete_failed",
+            thread_key = %record.metadata.thread_key,
+            workspace = %workspace_path.display(),
+            error = %delete_error,
+            "failed to delete Telegram topic during workspace-add rollback"
+        );
+    }
+    if let Err(archive_error) = repository.archive_thread(record.clone()).await {
+        warn!(
+            event = "telegram.add_workspace.rollback_archive_failed",
+            thread_key = %record.metadata.thread_key,
+            workspace = %workspace_path.display(),
+            error = %archive_error,
+            "failed to archive local thread during workspace-add rollback"
+        );
+    }
 }
 
 fn render_workspace_execution_mode_view(view: &WorkspaceExecutionModeView) -> String {
@@ -455,79 +492,87 @@ pub(crate) async fn run_command(
                 return Ok(());
             };
             let workspace_path = resolve_workspace_argument(argument).await?;
+            let preflight = preflight_workspace_add(&state.repository, &workspace_path).await?;
+            if let Some(reason) = preflight.blocking_reason() {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    None,
+                    format!("{}\n\n{}", reason, preflight.render_text()),
+                )
+                .await?;
+                return Ok(());
+            }
             let bridge = TelegramControlBridgeHandle::new(bot.clone(), state.repository.clone());
-            match state
-                .control
-                .workspace_session_service()
-                .resolve_workspace_add(&workspace_path)
+            let control = SharedControlHandle::new(state.control.clone());
+            let created = bridge
+                .create_workspace_thread(
+                    Some(workspace_thread_title(&workspace_path)),
+                    "telegram /add_workspace",
+                )
+                .await?;
+            let record = control
+                .create_thread(
+                    created.chat_id,
+                    created.message_thread_id,
+                    created.title.clone(),
+                )
+                .await?;
+            let reset_performed = match reset_workspace_runtime_surface(&workspace_path).await {
+                Ok(value) => value,
+                Err(error) => {
+                    rollback_failed_workspace_add(
+                        &state.repository,
+                        &bridge,
+                        record,
+                        &workspace_path,
+                        &error,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
+            let bound = match control
+                .bind_workspace_record(record.clone(), &workspace_path, "telegram /add_workspace")
                 .await
             {
-                Ok(crate::runtime_control::WorkspaceAddResolution::Existing(record)) => {
-                    let binding = state.repository.read_session_binding(&record).await?;
-                    if let Some(workspace_cwd) = binding
-                        .as_ref()
-                        .and_then(|binding| binding.workspace_cwd.as_deref())
-                    {
-                        let _ = bridge
-                            .notify_workspace_bound(
-                                &record,
-                                Path::new(workspace_cwd),
-                                "telegram_bind_workspace",
-                            )
-                            .await;
-                    }
-                }
-                Ok(crate::runtime_control::WorkspaceAddResolution::Create {
-                    canonical_workspace_cwd,
-                    suggested_title,
-                }) => {
-                    let created = bridge
-                        .create_workspace_thread(Some(suggested_title), "Telegram /add_workspace")
-                        .await?;
-                    let record = state
-                        .control
-                        .repository
-                        .create_thread(
-                            created.chat_id,
-                            created.message_thread_id,
-                            created.title.clone(),
-                        )
-                        .await?;
-                    let record = state
-                        .control
-                        .workspace_session_service()
-                        .bind_workspace_record(record, Path::new(&canonical_workspace_cwd))
-                        .await?;
-                    state
-                        .repository
-                        .append_log(
-                            &record,
-                            LogDirection::System,
-                            format!(
-                                "Bound Telegram thread to workspace {} from Telegram /add_workspace.",
-                                canonical_workspace_cwd
-                            ),
-                            None,
-                        )
-                        .await?;
-                    bridge
-                        .notify_workspace_bound(
-                            &record,
-                            Path::new(&canonical_workspace_cwd),
-                            "telegram_bind_workspace",
-                        )
-                        .await?;
-                }
+                Ok(record) => record,
                 Err(error) => {
-                    send_scoped_warning_message(
-                        bot,
-                        msg.chat.id,
-                        None,
-                        format!("Add workspace failed: {error}"),
+                    rollback_failed_workspace_add(
+                        &state.repository,
+                        &bridge,
+                        record,
+                        &workspace_path,
+                        &error,
                     )
-                    .await?;
+                    .await;
+                    return Err(error);
                 }
+            };
+            if let Err(error) = bridge
+                .notify_workspace_bound(&bound, &workspace_path, "bind")
+                .await
+            {
+                warn!(
+                    event = "telegram.add_workspace.notify_bound_failed",
+                    thread_key = %bound.metadata.thread_key,
+                    workspace = %workspace_path.display(),
+                    error = %error,
+                    "workspace was bound but Telegram notification failed"
+                );
             }
+            send_scoped_message(
+                bot,
+                msg.chat.id,
+                None,
+                format!(
+                    "{}\nreset_performed: {}\nthread_key: {}",
+                    preflight.render_text(),
+                    if reset_performed { "yes" } else { "no" },
+                    bound.metadata.thread_key
+                ),
+            )
+            .await?;
         }
         Command::StartFreshSession => {
             if is_control_chat(msg) {

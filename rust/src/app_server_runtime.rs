@@ -14,7 +14,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tracing::{debug, info};
+use tracing::info;
 use uuid::Uuid;
 
 use crate::app_server_ws_worker::WorkerReadyState;
@@ -225,12 +225,26 @@ async fn spawn_workspace_runtime(
         let mut stderr_lines = BufReader::new(stderr).lines();
         tokio::spawn(async move {
             while let Ok(Some(line)) = stderr_lines.next_line().await {
-                debug!(event = "threadbridge.app_server_worker.stderr", line = %line);
+                info!(event = "threadbridge.app_server_worker.stderr", line = %line);
             }
         });
     }
 
-    let ready = wait_for_worker_ready(&ready_file, &mut child).await?;
+    let ready = match wait_for_worker_ready(&ready_file, &mut child).await {
+        Ok(ready) => ready,
+        Err(error) => {
+            let _ = cleanup_partial_workspace_runtime_state_file(&workspace_path, None).await;
+            return Err(error);
+        }
+    };
+    info!(
+        event = "app_server_runtime.worker_ready",
+        workspace = %workspace_path.display(),
+        daemon_ws_url = %ready.daemon_ws_url,
+        worker_ws_url = %ready.worker_ws_url,
+        hcodex_ws_url = %ready.hcodex_ws_url.as_deref().unwrap_or(""),
+        "shared app-server worker reported readiness"
+    );
     let child = Arc::new(Mutex::new(child));
     let runtime = WorkspaceRuntime {
         workspace_path,
@@ -239,7 +253,14 @@ async fn spawn_workspace_runtime(
         hcodex_url: ready.hcodex_ws_url,
         child,
     };
-    wait_for_daemon(&runtime).await?;
+    if let Err(error) = wait_for_daemon(&runtime).await {
+        let _ = cleanup_partial_workspace_runtime_state_file(
+            &runtime.workspace_path,
+            Some(&runtime.daemon_url),
+        )
+        .await;
+        return Err(error);
+    }
     Ok(runtime)
 }
 
@@ -357,27 +378,25 @@ fn resolve_worker_binary_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
+    Ok(resolve_worker_binary_path_from(&current_exe))
+}
+
+fn resolve_worker_binary_path_from(current_exe: &Path) -> PathBuf {
     let worker_name = if cfg!(windows) {
         "app_server_ws_worker.exe"
     } else {
         "app_server_ws_worker"
     };
-    let current_dir = current_exe
-        .parent()
-        .context("current executable has no parent directory")?;
-    let direct = current_dir.join(worker_name);
-    if direct.exists() {
-        return Ok(direct);
-    }
-    if current_dir.file_name().and_then(|name| name.to_str()) == Some("deps")
-        && let Some(parent) = current_dir.parent()
-    {
-        let sibling = parent.join(worker_name);
-        if sibling.exists() {
-            return Ok(sibling);
+    let Some(current_dir) = current_exe.parent() else {
+        return PathBuf::from(worker_name);
+    };
+    for ancestor in current_dir.ancestors() {
+        let candidate = ancestor.join(worker_name);
+        if candidate.exists() {
+            return candidate;
         }
     }
-    Ok(direct)
+    current_dir.join(worker_name)
 }
 
 async fn wait_for_worker_ready(ready_file: &Path, child: &mut Child) -> Result<WorkerReadyState> {
@@ -406,6 +425,109 @@ async fn wait_for_worker_ready(ready_file: &Path, child: &mut Child) -> Result<W
         "timed out waiting for app-server worker readiness at {}",
         ready_file.display()
     )
+}
+
+async fn cleanup_partial_workspace_runtime_state_file(
+    workspace_path: &Path,
+    daemon_ws_url: Option<&str>,
+) -> Result<()> {
+    let Some(state) = read_workspace_runtime_state_file(workspace_path).await? else {
+        return Ok(());
+    };
+    if state.worker_ws_url.is_some() {
+        return Ok(());
+    }
+    if daemon_ws_url.is_some_and(|expected| state.daemon_ws_url != expected) {
+        return Ok(());
+    }
+    let path = workspace_path
+        .join(APP_SERVER_STATE_DIR)
+        .join(APP_SERVER_STATE_FILE);
+    match tokio::fs::remove_file(&path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to remove {}", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_worker_binary_path_from;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock drift")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("threadbridge-{name}-{suffix}"));
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        dir
+    }
+
+    #[test]
+    fn resolves_worker_from_bundle_back_to_profile_dir() {
+        let root = unique_temp_dir("bundle-worker");
+        let profile_dir = root.join("target/debug");
+        let bundle_dir = profile_dir.join("bundle/osx/threadBridge.app/Contents/MacOS");
+        fs::create_dir_all(&bundle_dir).expect("failed to create bundle dir");
+        let worker = profile_dir.join("app_server_ws_worker");
+        fs::write(&worker, b"").expect("failed to create worker");
+
+        let current_exe = bundle_dir.join("threadbridge_desktop");
+        let resolved = resolve_worker_binary_path_from(&current_exe);
+
+        assert_eq!(resolved, worker);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolves_worker_from_deps_dir_to_parent_profile_dir() {
+        let root = unique_temp_dir("deps-worker");
+        let deps_dir = root.join("target/debug/deps");
+        fs::create_dir_all(&deps_dir).expect("failed to create deps dir");
+        let worker = root.join("target/debug/app_server_ws_worker");
+        fs::write(&worker, b"").expect("failed to create worker");
+
+        let current_exe = deps_dir.join("threadbridge_desktop-hash");
+        let resolved = resolve_worker_binary_path_from(&current_exe);
+
+        assert_eq!(resolved, worker);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn cleanup_partial_runtime_state_removes_half_written_state_for_attempted_daemon() {
+        let root = unique_temp_dir("cleanup-partial-state");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("failed to create workspace dir");
+        let state = super::WorkspaceRuntimeState {
+            schema_version: super::RUNTIME_STATE_SCHEMA_VERSION,
+            workspace_cwd: workspace.display().to_string(),
+            daemon_ws_url: "ws://127.0.0.1:61234".to_owned(),
+            worker_ws_url: None,
+            worker_pid: None,
+            hcodex_ws_url: Some("ws://127.0.0.1:61239".to_owned()),
+        };
+        super::write_workspace_runtime_state_file(&workspace, &state)
+            .await
+            .expect("write state");
+
+        super::cleanup_partial_workspace_runtime_state_file(
+            &workspace,
+            Some("ws://127.0.0.1:61234"),
+        )
+        .await
+        .expect("cleanup state");
+
+        let remaining = super::read_workspace_runtime_state_file(&workspace)
+            .await
+            .expect("read state");
+        assert!(remaining.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 async fn child_process_id(child: &Arc<Mutex<Child>>) -> Option<u32> {
