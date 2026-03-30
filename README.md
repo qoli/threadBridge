@@ -130,17 +130,29 @@ scripts/local_threadbridge.sh build --codex-source source
 - `source`: build `codex-cli` from a local Codex Rust workspace and cache it under `.threadbridge/codex/codex`
 
 That preference is persisted in `.threadbridge/codex/source.txt`.
-On macOS, `build` also refreshes the app icon assets from [`icon/round-04-no-tile-dark-bg-v1.png`](/Volumes/Data/Github/threadBridge/icon/round-04-no-tile-dark-bg-v1.png). The icon pipeline first scales the source to `150%`, center-crops back to `1024x1024`, then applies the macOS rounded mask before bundling.
+On macOS, `build` also refreshes the app icon assets. In `symbol` mode it starts from [`icon/round-04-no-tile-dark-bg-v1.png`](/Volumes/Data/Github/threadBridge/icon/round-04-no-tile-dark-bg-v1.png), scales the source to `150%`, center-crops back to `1024x1024`, then applies the macOS rounded mask before bundling. In `final-tile` mode it starts from a prebuilt tile image such as [`icon/p2-brand-loop-r1-tile-1024.png`](/Volumes/Data/Github/threadBridge/icon/p2-brand-loop-r1-tile-1024.png) and skips the extra zoom + mask pass.
 `start` now launches the bundled app executable from `threadBridge.app`, so the running desktop process can inherit the bundle icon instead of showing the generic bare-binary `exec` icon.
 
 ## Build macOS App Bundle Icon
 
-The app bundle icon is generated from [`icon/round-04-no-tile-dark-bg-v1.png`](/Volumes/Data/Github/threadBridge/icon/round-04-no-tile-dark-bg-v1.png). This is separate from the tray icon used by the running menu bar app.
+The app bundle icon can be generated from either a symbol-only source such as [`icon/round-04-no-tile-dark-bg-v1.png`](/Volumes/Data/Github/threadBridge/icon/round-04-no-tile-dark-bg-v1.png) or a prebuilt tile source such as [`icon/p2-brand-loop-r1-tile-1024.png`](/Volumes/Data/Github/threadBridge/icon/p2-brand-loop-r1-tile-1024.png). This is separate from the tray icon used by the running menu bar app.
+
+Extract the tile from the current reference screenshot and rebuild it as a reusable `1024x1024` source:
+
+```bash
+python3 scripts/extract_macos_icon_tile.py
+```
 
 Generate the macOS iconset and `.icns` directly:
 
 ```bash
 scripts/build_macos_app_icon.sh
+```
+
+Or build directly from the extracted tile source without adding another rounded mask:
+
+```bash
+scripts/build_macos_app_icon.sh --source-mode final-tile
 ```
 
 Or use the local helper to bundle the desktop app with the generated icon:
