@@ -12,6 +12,7 @@ icon = ["rust/static/app_icon/threadBridge.icns"]
 name = "threadBridge"
 identifier = "com.qoli.threadbridge"
 icon = ["rust/static/app_icon/threadBridge.icns"]
+osx_info_plist_exts = ["rust/static/macos/menubar-only.plist"]
 
 [lib]
 path = "rust/src/lib.rs"

@@ -131,7 +131,7 @@ scripts/local_threadbridge.sh build --codex-source source
 
 That preference is persisted in `.threadbridge/codex/source.txt`.
 On macOS, `build` also refreshes the app icon assets from the single approved source [`icon/EXPORT_mac_icon.png`](/Volumes/Data/Github/threadBridge/icon/EXPORT_mac_icon.png). This image is already a finished `1024x1024` macOS tile with the intended rounded corners and padding, so the icon pipeline no longer applies any extra zoom or rounded-mask step.
-`start` now launches the bundled app executable from `threadBridge.app`, so the running desktop process can inherit the bundle icon instead of showing the generic bare-binary `exec` icon.
+`start` now launches the bundled app executable from `threadBridge.app`, so the running desktop process can inherit the bundle icon instead of showing the generic bare-binary `exec` icon. The bundled desktop runtime is also marked as a menubar-only app, so normal operation stays out of the Dock.
 
 ## Build macOS App Bundle Icon
 
@@ -157,7 +157,7 @@ cargo install cargo-bundle
 cargo bundle --bin threadbridge_desktop
 ```
 
-The bundle metadata points to [`rust/static/app_icon/threadBridge.icns`](/Volumes/Data/Github/threadBridge/rust/static/app_icon/threadBridge.icns). The tray icon path in [`rust/src/bin/threadbridge_desktop.rs`](/Volumes/Data/Github/threadBridge/rust/src/bin/threadbridge_desktop.rs) stays unchanged.
+The bundle metadata points to [`rust/static/app_icon/threadBridge.icns`](/Volumes/Data/Github/threadBridge/rust/static/app_icon/threadBridge.icns) and injects the Dock-hiding `LSUIElement` flag from `rust/static/macos/menubar-only.plist`. The tray icon path in [`rust/src/bin/threadbridge_desktop.rs`](/Volumes/Data/Github/threadBridge/rust/src/bin/threadbridge_desktop.rs) stays unchanged.
 
 ## First Run Flow
 

@@ -40,6 +40,9 @@
   - macOS-first `tray-icon` 常駐入口
   - top-level tray menu 會列出 managed workspace submenu
   - 每個 workspace submenu 已收斂成 `New Session` 與 `Continue Telegram Session`
+- `threadbridge_desktop` 現在會以 menubar-only 形態啟動：
+  - bundle `Info.plist` 已固定注入 `LSUIElement = true`
+  - runtime event loop 已固定使用 macOS `Accessory` activation policy，而不是一般前台 Dock app
 - `Settings` 會在預設瀏覽器中打開本地 management UI
 - managed Codex health 已開始暴露真實 source / binary path / version，且本地管理面可切換 Codex source preference 並同步已綁定 workspace 的 launcher
 - desktop runtime owner 已開始在背景定期 reconcile 已管理 workspace，並主動 ensure shared app-server 與 hcodex ingress；同時也提供單 workspace 的 `repair runtime` control action
@@ -66,7 +69,7 @@
 - web 管理面已確認改走本地 vendored、無 React/Node build 的 Tabler 風格 CSS 重構路線
 - dark mode 先固定為跟隨系統，不新增手動 theme toggle 或前端 theme state
 - tray menu 已收斂；workspace submenu 在 v1 只保留 `New Session` 與 `Continue Telegram Session` 兩個入口，不再承擔 recent session browser 或其他 control action
-- macOS app 產品形態應優先收斂成 menubar-only 常駐工具；正常運行時預設隱藏 Dock 圖標，不把 Dock 當成主要入口
+- macOS app 產品形態已開始收斂成 menubar-only 常駐工具；正常運行時預設隱藏 Dock 圖標，不把 Dock 當成主要入口
 
 目前新增確認的優先級判斷是：
 

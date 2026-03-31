@@ -14,6 +14,7 @@ mod macos_app {
     use anyhow::{Result, anyhow};
     use tao::event::{Event, StartCause};
     use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
+    use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
     use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
     use tracing::{info, warn};
     use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
@@ -144,7 +145,10 @@ mod macos_app {
             );
         }
 
-        let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+        let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+        // Keep the desktop owner as a background menubar utility instead of a Dock app.
+        event_loop.set_activation_policy(ActivationPolicy::Accessory);
+        event_loop.set_activate_ignoring_other_apps(false);
         let proxy = event_loop.create_proxy();
         tray_icon::menu::MenuEvent::set_event_handler(Some({
             let proxy = proxy.clone();

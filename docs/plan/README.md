@@ -165,6 +165,7 @@
   - pick-and-add、adopt / reject TUI、runtime-owner reconcile、launch config 等 control 已進入 management API
   - managed Codex source build / cache refresh / build defaults 已進入 management API
   - tray menu 已收斂成 `New Session` 與 `Continue Telegram Session`
+  - `threadbridge_desktop` 已開始以 menubar-only 形態啟動，bundle `LSUIElement` 與 runtime `Accessory` activation policy 已落地
   - tray workspace label 現在已改成顯示 workspace execution mode，而不是 handoff `ready/degraded` 文案
   - management health view 已改成 owner heartbeat 為主的 desktop-first 模型
   - management UI 已補上 transcript observability pane、workspace-card `Sessions` pane 與 inline records timeline，且 adoption/repair action 已改成 owner-canonical 語義
