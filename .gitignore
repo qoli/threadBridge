@@ -19,3 +19,4 @@ skills-lock.json
 .grm-history/
 icon/
 fastlane/
+.playwright-cli/
