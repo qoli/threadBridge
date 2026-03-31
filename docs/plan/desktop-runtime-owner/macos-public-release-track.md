@@ -110,23 +110,23 @@
   - `build`
   - `sign`
   - `dmg`
+  - `notarize`
   - `publish`
   - `release`
-- `release` 只負責 committed shell path：`build -> sign -> dmg -> checksum handoff`
-- 私有 ignored Fastfile 負責 DMG notarization；完成後再回到 `publish`
+- `release` 負責完整 committed shell path：`build -> sign -> dmg -> notarize -> publish`
 - `threadBridge` 不新增 Xcode wrapper 專案；release build 保持 `cargo bundle + explicit codesign`，而不是切到 Xcode `signingStyle: automatic`
 - 若 operator 想保留 `fastlane` 作為私有本機 helper，可以自行維持 ignored Fastfile：
   - 但 repo 不提交任何 `fastlane/` 內容
-  - committed contract 仍以 `shell packaging/publish + private fastlane notarize` 為準
+  - committed contract 仍以 `shell release orchestrator + private fastlane bootstrap/match helper` 為準
 
 - pipeline 產物流程固定為：
   1. 產生 universal app bundle
      - app bundle 內需包含 `threadbridge_desktop` 與 `app_server_ws_worker`
   2. 對 app bundle 進行 codesign（hardened runtime）
   3. 建立 DMG
-  4. 以私有 ignored Fastfile 對 DMG 執行 notarization
+  4. 對 DMG 執行 notarization
   5. staple notarization ticket
-  6. verify（codesign / stapler / Gatekeeper 結果）
+  6. verify（codesign / stapler 結果）
 - DMG 是 GitHub Release 與 Homebrew 共同引用的單一 canonical binary artifact，不維護第二套獨立二進位。
 
 ### 4. Runtime Data Location
@@ -159,8 +159,8 @@
 - release script operator inputs 固定至少包含：
   - `--version`
   - `--codesign-identity`
-- `--notes-file` 是 `publish` 階段必填；`release` 只把它帶進 handoff 訊息
-- notarization 憑證由本機 `threadbridge-notary` Keychain profile 提供，並由私有 ignored Fastfile 消費；repo 不管理 secrets 檔案
+- `--notes-file` 是 `publish` / `release` 階段必填
+- notarization 憑證由本機 `threadbridge-notary` Keychain profile 提供；repo 不管理 secrets 檔案
 
 ### 6. Rollback / Yank
 
@@ -206,6 +206,6 @@ RC 發佈前，至少滿足：
 
 1. 先補齊 release discipline 文檔（本文件）與 `docs/plan/README.md` registry 對齊。
 2. 先完成本機 Apple release bootstrap：Developer ID Application identity + `threadbridge-notary` profile。
-3. 以 `scripts/release_threadbridge.sh release` + 私有 fastlane notarize lane + `publish` 做第一次真實 RC 演練，確認 codesign / notarize / GitHub draft prerelease 權限與 artifact 內容。
+3. 以 `scripts/release_threadbridge.sh release` 做第一次真實 RC 演練，確認 codesign / notarize / GitHub draft prerelease 權限與 artifact 內容。
 4. 建立 dedicated Homebrew tap repo，之後再把 cask publish 補回 `release` path。
 5. 再補 CI/workflow 或 release runbook 自動化，減少 operator 手動步驟。

@@ -157,12 +157,11 @@ Typical subcommands:
 scripts/release_threadbridge.sh build --version 0.1.0-rc.1
 scripts/release_threadbridge.sh sign --version 0.1.0-rc.1 --codesign-identity "Developer ID Application: Example, Inc. (TEAMID)"
 scripts/release_threadbridge.sh dmg --version 0.1.0-rc.1 --codesign-identity "Developer ID Application: Example, Inc. (TEAMID)"
+scripts/release_threadbridge.sh notarize --version 0.1.0-rc.1 --codesign-identity "Developer ID Application: Example, Inc. (TEAMID)"
 scripts/release_threadbridge.sh release --version 0.1.0-rc.1 --notes-file docs/releases/0.1.0-rc.1.md --codesign-identity "Developer ID Application: Example, Inc. (TEAMID)"
-# private ignored fastlane notarize here
-scripts/release_threadbridge.sh publish --version 0.1.0-rc.1 --notes-file docs/releases/0.1.0-rc.1.md
 ```
 
-The `release` command performs the committed shell path only: build -> sign -> DMG -> checksum handoff.
+The `release` command performs the full build -> sign -> DMG -> notarize -> publish pipeline.
 Artifacts are written to `dist/release/<version>/`.
 
 Current pipeline contract:
@@ -171,12 +170,12 @@ Current pipeline contract:
 - copies `app_server_ws_worker` into the bundled app so the distributed runtime can launch its workspace worker
 - signs the app with hardened runtime
 - creates a single canonical DMG and checksum
-- expects notarization to happen via your private ignored fastlane helper
+- submits that DMG with `notarytool`, then staples and validates it
 - publishes the notarized DMG and checksum to a GitHub draft prerelease
 - does not include Homebrew tap publication in the first RC path
 
 The release script is macOS-only and fails fast if the worktree is dirty or required CLIs are missing.
-It performs the committed path directly with `codesign`, `hdiutil`, and `gh`.
+It performs the committed path directly with `codesign`, `notarytool`, `stapler`, `hdiutil`, and `gh`.
 
 ## Private Fastfile Pattern
 
@@ -187,14 +186,14 @@ Recommended private helper responsibilities:
 ```bash
 apple_audit
 bootstrap_notary_profile
-notarize_dmg
+match_developer_id
 ```
 
 A private/local Fastfile can help with:
 
 - preflighting `Developer ID Application` visibility
 - creating the local `threadbridge-notary` profile with Apple ID + app-specific password
-- wrapping `notarytool` / `stapler` as the notarization layer between `release_threadbridge.sh release` and `release_threadbridge.sh publish`
+- syncing `Developer ID Application` into the local keychain when you prefer fastlane `match`
 
 The committed release contract does not depend on any tracked Fastfile.
 

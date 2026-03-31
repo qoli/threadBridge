@@ -13,6 +13,7 @@ APP_BUNDLE_NAME="threadBridge.app"
 APP_EXECUTABLE_NAME="threadbridge_desktop"
 WORKER_BINARY_NAME="app_server_ws_worker"
 DEFAULT_GITHUB_REPO="qoli/threadBridge"
+DEFAULT_NOTARY_PROFILE="${THREADBRIDGE_NOTARY_PROFILE:-threadbridge-notary}"
 APPLE_TARGETS=(
   "aarch64-apple-darwin"
   "x86_64-apple-darwin"
@@ -26,15 +27,19 @@ Commands:
   build       Build a universal release app bundle in dist/release/<version>/
   sign        Build and codesign the universal release app
   dmg         Build, sign, and package the DMG
-  release     Build, sign, package the DMG, and write the checksum
+  notarize    Build, sign, package, notarize, and staple the DMG
   publish     Publish the existing notarized DMG to a GitHub draft prerelease
+  release     Run the full build -> sign -> dmg -> notarize -> publish pipeline
   help        Show this help
 
 Required options:
   --version <version>                    Release version, e.g. 0.1.0-rc.1
 
-Options for sign/dmg/release:
+Options for sign/dmg/notarize/release:
   --codesign-identity <identity>         Developer ID Application identity name
+
+Options for notarize/release:
+  --notary-profile <profile>             Default: threadbridge-notary
 
 Options for publish/release:
   --notes-file <path>                    Release notes markdown file
@@ -225,6 +230,12 @@ verify_codesign_identity_available() {
     || fail "codesign identity not found in keychain: $CODESIGN_IDENTITY"
 }
 
+verify_notary_profile_available() {
+  require_command xcrun
+  xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 \
+    || fail "notarytool keychain profile is unavailable: $NOTARY_PROFILE"
+}
+
 sign_release_bundle() {
   require_codesign_identity
   require_command codesign
@@ -261,6 +272,20 @@ create_release_dmg() {
   rm -rf "$staging_dir"
 }
 
+notarize_release_dmg() {
+  verify_notary_profile_available
+  [[ -f "$(dmg_path)" ]] || create_release_dmg
+
+  log "submitting DMG for notarization"
+  xcrun notarytool submit "$(dmg_path)" --keychain-profile "$NOTARY_PROFILE" --wait
+
+  log "stapling DMG"
+  xcrun stapler staple "$(dmg_path)"
+
+  log "validating stapled DMG"
+  xcrun stapler validate "$(dmg_path)"
+}
+
 write_checksum() {
   local checksum
   checksum=$(shasum -a 256 "$(dmg_path)" | awk '{print $1}')
@@ -279,17 +304,6 @@ ensure_gh_authenticated() {
 ensure_release_assets_exist() {
   [[ -f "$(dmg_path)" ]] || fail "missing DMG: $(dmg_path)"
   [[ -f "$(checksum_path)" ]] || write_checksum
-}
-
-print_notarize_handoff() {
-  cat <<EOF
-[release-threadbridge] shell packaging complete
-[release-threadbridge] next step: notarize the DMG with your private ignored Fastfile
-[release-threadbridge] DMG: $(dmg_path)
-[release-threadbridge] checksum: $(checksum_path)
-[release-threadbridge] after notarization/stapling, run:
-[release-threadbridge]   scripts/release_threadbridge.sh publish --version $VERSION --notes-file $NOTES_FILE
-EOF
 }
 
 publish_github_release() {
@@ -326,14 +340,14 @@ publish_release() {
 
 run_release() {
   require_codesign_identity
+  require_notes_file
+  ensure_clean_worktree
+  build_universal_release_bundle
+  sign_release_bundle
   create_release_dmg
+  notarize_release_dmg
   write_checksum
-  if [[ -n "${NOTES_FILE:-}" ]]; then
-    print_notarize_handoff
-  else
-    NOTES_FILE="docs/releases/$VERSION.md"
-    print_notarize_handoff
-  fi
+  publish_release
 }
 
 parse_args() {
@@ -343,6 +357,7 @@ parse_args() {
   VERSION=""
   NOTES_FILE=""
   CODESIGN_IDENTITY=""
+  NOTARY_PROFILE="$DEFAULT_NOTARY_PROFILE"
   GITHUB_REPO="$DEFAULT_GITHUB_REPO"
 
   while [[ $# -gt 0 ]]; do
@@ -361,6 +376,11 @@ parse_args() {
         shift
         [[ $# -gt 0 ]] || fail "missing value for --codesign-identity"
         CODESIGN_IDENTITY=$1
+        ;;
+      --notary-profile)
+        shift
+        [[ $# -gt 0 ]] || fail "missing value for --notary-profile"
+        NOTARY_PROFILE=$1
         ;;
       --github-repo)
         shift
@@ -401,6 +421,11 @@ main() {
     dmg)
       require_version
       create_release_dmg
+      ;;
+    notarize)
+      require_version
+      notarize_release_dmg
+      write_checksum
       ;;
     publish)
       require_version
