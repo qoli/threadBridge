@@ -76,7 +76,12 @@ ensure_clean_worktree() {
 
 ensure_icon_assets() {
   local icon_script="$REPO_ROOT/scripts/build_macos_app_icon.sh"
+  local existing_icns="$REPO_ROOT/rust/static/app_icon/threadBridge.icns"
   [[ -x "$icon_script" ]] || fail "missing app icon build script: $icon_script"
+  if [[ -f "$existing_icns" ]]; then
+    log "using existing macOS app icon: $existing_icns"
+    return 0
+  fi
   log "building macOS app icon assets"
   (
     cd "$REPO_ROOT"
