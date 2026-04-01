@@ -49,7 +49,7 @@ The current runtime is organized like this:
 7. Each workspace gets a managed `.threadbridge/` surface plus an appended runtime block in `AGENTS.md`.
 8. Codex session continuity is stored in bot-local metadata under the runtime data root, for example `data/<thread-key>/session-binding.json` in debug builds.
 
-The supported startup path is desktop-first. Headless and probe binaries still exist as internal support surfaces, but they are not the intended operating model.
+The supported startup path is desktop-first. Any non-desktop compatibility paths are internal support surfaces, not the intended operating model.
 
 ## Workspace Execution Modes
 

@@ -22,18 +22,6 @@ name = "threadbridge_desktop"
 path = "rust/src/bin/threadbridge_desktop.rs"
 
 [[bin]]
-name = "min_chat_probe"
-path = "rust/src/bin/min_chat_probe.rs"
-
-[[bin]]
-name = "telegram_html_preview"
-path = "rust/src/bin/telegram_html_preview.rs"
-
-[[bin]]
-name = "telegram_html_probe"
-path = "rust/src/bin/telegram_html_probe.rs"
-
-[[bin]]
 name = "app_server_ws_worker"
 path = "rust/src/bin/app_server_ws_worker.rs"
 

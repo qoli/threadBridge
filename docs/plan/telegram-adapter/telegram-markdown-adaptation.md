@@ -32,7 +32,7 @@
 
 - 是否要建立更明確的中間表示，而不是目前 renderer 內部直接輸出 HTML
 - block quote / 更複雜 nested list / 更多 Telegram-specific layout 重建策略
-- 是否要把 debug dump、probe、preview exporter 收斂成正式診斷工具鏈
+- 是否要把目前保留的 debug dump 收斂成正式診斷工具鏈
 - diff artifact 是否應例外地以 URL 形式呈現，而不是和普通 Markdown link 一起被降級
 - 若 attachment fallback 遇到 Telegram 文件大小上限，是否應進一步走 artifact URL 或其他更穩定的內容載體
 
@@ -342,5 +342,5 @@ draft 的重點比較像：
 1. 繼續把更多非 final reply surface 收斂到同一套 renderer / formatter。
 2. 重新評估是否真的需要一個顯式中間表示，而不是持續在 renderer 內部直接輸出 HTML。
 3. 針對真實 `data/` 樣本持續收斂 Telegram-specific 排版問題，特別是 nested list、長 bullet、block quote。
-4. 視需要把 probe / html preview / final dump 收斂成更正式的診斷面。
+4. 視需要把仍保留的 final dump 收斂成更正式的診斷面。
 5. 把 `reply.md` attachment 與 Telegram 文件大小上限的關係，明確掛回 delivery 規格。

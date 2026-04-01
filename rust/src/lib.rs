@@ -24,7 +24,6 @@ pub mod runtime_owner;
 pub mod runtime_paths;
 pub mod runtime_protocol;
 pub mod runtime_support;
-pub mod telegram_probe;
 pub mod telegram_runtime;
 pub mod thread_state;
 pub mod thread_transition;
