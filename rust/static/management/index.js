@@ -108,10 +108,6 @@ function syncRouteWithSetup() {
     navigateToHash('#/welcome')
     return true
   }
-  if (!setup.first_run && route.page === 'welcome') {
-    navigateToHash('#/overview')
-    return true
-  }
   return false
 }
 
@@ -1013,12 +1009,17 @@ function renderWelcomePage() {
           <div class="eyebrow">First Run</div>
           <h1>Welcome to threadBridge</h1>
           <p class="section-lead">Finish the first local setup here. After you save the setup, threadBridge will move you into the regular management UI to open the bot, send <code>/start</code>, and add the first workspace.</p>
+          ${setup.first_run ? '' : `
+            <div class="button-row">
+              <a class="button button-secondary" href="#/overview">Open Overview</a>
+            </div>
+          `}
         </div>
       </section>
       <section class="section-block">
         <div class="section-head">
           <div class="section-copy">
-            <h2>A Steps</h2>
+            <h2>Set Up Telegram Access</h2>
             <p class="section-lead">Create the bot, collect user IDs, then save them into threadBridge.</p>
           </div>
         </div>

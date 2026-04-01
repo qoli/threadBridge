@@ -250,15 +250,15 @@ web 管理面中的 v1 action 以既有 lifecycle/control 語義為主：
 
 目前仍未提供完整 onboarding，但新增確認一條明確的 first-run flow 草稿。
 
-第一次使用引導建議拆成 `A Steps` 與 `B Steps` 兩段：
+第一次使用引導建議拆成 welcome 頁上的 setup 與 setup 儲存後的一般管理面後續操作：
 
 1. 啟動 desktop runtime 後先顯示 native welcome alert，再打開 web 管理面的 welcome 頁。
-2. `A Steps` 在 welcome 頁完成：
+2. welcome 頁完成 Telegram setup：
    - 引導使用者打開 `@BotFather` 建立 bot，並填寫 bot token
    - 引導使用者打開 `@userinfobot` 取得 Telegram user id
    - 儲存 token 與 authorized user ids
 3. setup 儲存成功後，離開 welcome 頁，回到一般管理面承接剩餘步驟。
-4. `B Steps` 在一般管理面完成：
+4. 一般管理面承接後續操作：
    - 給出 bot URL，讓使用者打開 bot 並發送第一條 `/start`
    - `control chat` ready 後，再新增第一個 workspace
    - 第一個 workspace 建立後，只提示使用者往該 workspace 發 `Hi`，不追蹤它是否已完成
@@ -269,8 +269,8 @@ web 管理面中的 v1 action 以既有 lifecycle/control 語義為主：
 
 - onboarding 的主承載面仍是 web 管理面，不是 tray menu
 - tray / alert 只負責 first-run 提示與導流，不承擔完整表單流程
-- `welcome` 頁只承載 `A Steps`，不把 `/start` 與 first workspace 一起塞進 first-run page
-- `B Steps` 交由一般管理面的 overview / workspaces 承接，而不是再開第二套 wizard
+- `welcome` 頁只承載 bot 與 authorized user setup，不把 `/start` 與 first workspace 一起塞進 first-run page
+- 一般管理面的 overview / workspaces 承接 setup 之後的後續提示，而不是再開第二套 wizard
 - 若使用者已完成 setup 存檔，就不應反覆彈出同樣的 first-run welcome
 
 first-run gate 也應固定一條明確規則：
@@ -283,7 +283,7 @@ first-run gate 也應固定一條明確規則：
 這樣做的原因是把「首次使用」和「setup / onboarding 是否完整」拆開：
 
 - `config.env.local` 是目前本機 Telegram setup 的持久化落點，`PUT /api/setup/telegram` 會直接寫入這個檔案
-- `GET /api/setup` 回傳的 `telegram_token_configured`、`control_chat_ready`、workspace 數量與 bot URL，應用於顯示 `A3` / `B Steps` 尚缺哪些步驟，而不是回頭重新判定 first-run
+- `GET /api/setup` 回傳的 `telegram_token_configured`、`control_chat_ready`、workspace 數量與 bot URL，應用於顯示 setup 儲存後與一般管理面中的剩餘步驟，而不是回頭重新判定 first-run
 
 ## 建議的資料模型
 
