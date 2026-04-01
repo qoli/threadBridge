@@ -81,7 +81,7 @@ This setting is sticky per workspace:
 
 ## Setup
 
-1. Copy `.env.example` to `.env.local`.
+1. Copy `.env.example` to `data/config.env.local`.
 2. Fill in at least:
    - `TELEGRAM_BOT_TOKEN`
    - `AUTHORIZED_TELEGRAM_USER_IDS`
@@ -98,7 +98,8 @@ Bot-local runtime state defaults by build profile:
 
 - debug builds use repo-local `./data`
 - release builds use the platform local app-data directory
-- on macOS, the release default is `~/Library/Application Support/threadBridge`
+- on macOS, the bundled release data root is `~/Library/Application Support/threadBridge/data`
+- bundled releases install runtime assets under `~/Library/Application Support/threadBridge/runtime_assets`
 - `DATA_ROOT` and `DEBUG_LOG_PATH` can override either mode explicitly
 
 Default local management address:
@@ -268,7 +269,7 @@ The real workspace is authoritative for project files. The bot-local runtime dat
 
 - plan registry and design references: [docs/plan/README.md](docs/plan/README.md)
 - maintainer guide: [AGENTS.md](AGENTS.md)
-- workspace runtime appendix source: [templates/AGENTS.md](templates/AGENTS.md)
+- workspace runtime appendix source: [runtime_assets/templates/AGENTS.md](runtime_assets/templates/AGENTS.md)
 - slash-command reference: [docs/telegram-slash-commands.md](docs/telegram-slash-commands.md)
 - release notes index: [docs/releases/README.md](docs/releases/README.md)
 
@@ -276,7 +277,7 @@ The plan directory contains a mix of landed work, partial work, and pure drafts.
 
 ## Security
 
-- Keep secrets in `.env.local`.
+- Keep secrets in `data/config.env.local`.
 - Do not commit repo-local `data/`, logs, generated images, or provider payloads unless they are intentional fixtures.
 - Bot-local state and workspace-local runtime artifacts may contain prompts, transcripts, image references, and provider metadata.
 

@@ -39,10 +39,11 @@ def load_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def load_repo_env(repo_root: Path) -> None:
-    for env_file in (repo_root / ".env.local", repo_root / ".env"):
-        for key, value in load_env_file(env_file).items():
-            os.environ.setdefault(key, value)
+def load_config_env(config_env_path: Optional[str]) -> None:
+    if not config_env_path:
+        return
+    for key, value in load_env_file(Path(config_env_path)).items():
+        os.environ.setdefault(key, value)
 
 
 def ensure_object(value, label: str) -> dict:
@@ -251,12 +252,11 @@ def now_utc() -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo-root", required=True)
+    parser.add_argument("--config-env")
     parser.add_argument("prompt_path", nargs="?")
     args = parser.parse_args()
 
-    repo_root = Path(args.repo_root)
-    load_repo_env(repo_root)
+    load_config_env(args.config_env)
 
     workspace_dir = Path.cwd()
     tool_results_dir = workspace_dir / ".threadbridge" / "tool_results"

@@ -11,7 +11,9 @@
 - repo 已有 Rust build/test/lint 基礎命令與既有維運腳本
 - bot-local runtime data root 已落地成雙模式契約：
   - debug build 預設 repo-local `./data`
-  - release build 預設 `~/Library/Application Support/threadBridge`
+  - bundled release build 預設 `~/Library/Application Support/threadBridge/data`
+- repo source assets 已開始收斂到 `runtime_assets/`
+- bundled app 已開始要求 seed runtime assets 進入 `Contents/Resources/runtime_assets/`
 - 已新增 `scripts/release_threadbridge.sh`，作為本地 operator 用的 public release pipeline 入口
 
 目前尚未完成：
@@ -45,6 +47,8 @@
 - 截至 2026-03-31，現行已發佈的 release 版本無法正常運行
 - 這代表目前的 release pipeline 尚不能被視為「已驗證可公開交付」
 - 在找到 root cause 並用修正版 RC 完成 smoke 驗證前，不應把現行 release artifact 視為可用基線
+- 目前已確認根因不是單獨的 port conflict，而是 runtime assets 與本地設定仍耦合 repo root / `cwd`
+- 既有 release app 在 repo 外啟動時，會把 `runtime_assets/templates`、`runtime_assets/tools`、`data/config.env.local` 解析到錯誤位置，導致啟動失敗
 
 ## 定位
 
@@ -56,7 +60,7 @@
 - `local_threadbridge.sh` 與 `release_threadbridge.sh` 的責任邊界
 - public artifact 契約（universal DMG + Homebrew cask）
 - signed + notarized 的最低要求
-- public app 的資料落點契約（`Application Support/threadBridge`）
+- public app 的資料與 runtime assets 落點契約（`Application Support/threadBridge/{data,runtime_assets}`）
 - GitHub Release 與 dedicated tap 的分發關係
 - 回滾與撤回策略
 

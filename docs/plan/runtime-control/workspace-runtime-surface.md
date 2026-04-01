@@ -19,7 +19,7 @@
   - `./.threadbridge/tool_requests/*`
   - `./.threadbridge/tool_results/*`
 - workspace bootstrap 與 surface materialization 已由 `rust/src/workspace.rs` 負責
-- appendix wording 與 surface 使用方式已由 `templates/AGENTS.md` 描述
+- appendix wording 與 surface 使用方式已由 `runtime_assets/templates/AGENTS.md` 描述
 - Phase 1 已新增一個明確定位：
   - `./.threadbridge/state/runtime-observer/*` 是 workspace-local observation / activity surface
   - desktop owner heartbeat 才是 managed runtime health 的 canonical authority
@@ -274,4 +274,4 @@ threadBridge 的一個重要特徵是：
 2. 決定穩定骨架與可選 capability 的邊界，先不要再把所有 wrapper 都默認成全 workspace 安裝。
 3. 定義一個最小 workspace surface profile 資料模型。
 4. 再決定 profile 是手動選擇、workspace template 派生，還是兩者並存。
-5. 等 profile 模型清楚後，再回頭整理 `templates/AGENTS.md`、workspace bootstrap 與 management surface。
+5. 等 profile 模型清楚後，再回頭整理 `runtime_assets/templates/AGENTS.md`、workspace bootstrap 與 management surface。

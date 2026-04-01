@@ -98,9 +98,8 @@ def load_existing_outbox(path: Path) -> list[dict]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo-root", required=True)
-    args = parser.parse_args()
-    _ = args
+    parser.add_argument("--config-env")
+    parser.parse_args()
 
     workspace_dir = Path.cwd()
     runtime_dir = workspace_dir / ".threadbridge"

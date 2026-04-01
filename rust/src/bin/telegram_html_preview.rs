@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     let runtime = load_runtime_config()?;
     let samples = collect_samples(&runtime.data_root_path)?;
     let html = render_page(&samples);
-    let output_path = runtime.codex_working_directory.join(OUTPUT_PATH);
+    let output_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(OUTPUT_PATH);
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;

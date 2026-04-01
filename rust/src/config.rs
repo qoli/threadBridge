@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::env;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
@@ -11,9 +11,34 @@ use crate::runtime_paths::{RuntimePathOverrides, resolve_runtime_paths};
 pub struct RuntimeConfig {
     pub data_root_path: PathBuf,
     pub debug_log_path: PathBuf,
-    pub codex_working_directory: PathBuf,
+    pub runtime_assets_root_path: PathBuf,
+    pub runtime_assets_seed_root_path: PathBuf,
     pub codex_model: Option<String>,
     pub management_bind_addr: SocketAddr,
+}
+
+impl RuntimeConfig {
+    pub fn config_env_path(&self) -> PathBuf {
+        self.data_root_path.join("config.env.local")
+    }
+
+    pub fn managed_codex_binary_path(&self) -> PathBuf {
+        self.data_root_path.join(".threadbridge/codex/codex")
+    }
+
+    pub fn managed_codex_root_path(&self) -> PathBuf {
+        self.data_root_path.join(".threadbridge/codex")
+    }
+
+    pub fn runtime_template_path(&self) -> PathBuf {
+        self.runtime_assets_root_path
+            .join("templates")
+            .join("AGENTS.md")
+    }
+
+    pub fn supports_runtime_assets_rebuild(&self) -> bool {
+        self.runtime_assets_root_path != self.runtime_assets_seed_root_path
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -33,11 +58,12 @@ pub struct AppConfig {
 }
 
 fn load_dotenv() {
-    let local = Path::new(".env.local");
-    if local.exists() {
-        let _ = dotenvy::from_path(local);
+    if let Ok(paths) = resolve_runtime_paths(RuntimePathOverrides::default()) {
+        let local = paths.data_root_path.join("config.env.local");
+        if local.exists() {
+            let _ = dotenvy::from_path(local);
+        }
     }
-    let _ = dotenvy::dotenv();
 }
 
 fn parse_positive_u64(name: &str, fallback: u64) -> u64 {
@@ -86,13 +112,6 @@ fn parse_authorized_users(raw: &str) -> Result<HashSet<i64>> {
     Ok(ids)
 }
 
-fn resolve_from_cwd(input: Option<String>, fallback: &str) -> Result<PathBuf> {
-    let cwd = env::current_dir().context("failed to read current working directory")?;
-    let value = input.unwrap_or_else(|| fallback.to_owned());
-    let joined = cwd.join(value);
-    Ok(joined.canonicalize().unwrap_or(joined))
-}
-
 pub fn load_runtime_config() -> Result<RuntimeConfig> {
     load_dotenv();
 
@@ -105,7 +124,8 @@ pub fn load_runtime_config() -> Result<RuntimeConfig> {
     Ok(RuntimeConfig {
         data_root_path: runtime_paths.data_root_path,
         debug_log_path: runtime_paths.debug_log_path,
-        codex_working_directory: resolve_from_cwd(env::var("CODEX_WORKING_DIRECTORY").ok(), ".")?,
+        runtime_assets_root_path: runtime_paths.runtime_assets_root_path,
+        runtime_assets_seed_root_path: runtime_paths.runtime_assets_seed_root_path,
         codex_model: env::var("CODEX_MODEL")
             .ok()
             .map(|value| value.trim().to_owned())

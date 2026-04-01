@@ -30,11 +30,12 @@
 
 ## 定位
 
-這份文件只定義 bot-local runtime state 的資料根目錄契約。
+這份文件定義 bot-local runtime state 與 installed runtime assets 的本地路徑契約。
 
 它處理：
 
 - 預設 data root 的 build-profile 規則
+- installed runtime assets root 的 build-profile / bundle 規則
 - 平台 local app-data dir 的映射
 - override precedence
 - no-migration / no-copy / no-fallback 邊界
@@ -51,12 +52,16 @@
 ### 1. 資料根目錄模式
 
 - `debug` build 預設使用 repo-local `./data`
-- `release` build 預設使用平台 local app-data dir 下的 `threadBridge/`
+- `debug` build 的 source assets 預設使用 repo-local `./runtime_assets`
+- bundled `release` build 預設使用平台 local app-data dir 下的 `threadBridge/data`
+- bundled `release` build 的 installed runtime assets 預設使用平台 local app-data dir 下的 `threadBridge/runtime_assets`
 - 這是 build-profile 規則，不額外引入新的 runtime mode enum
 
 ### 2. 平台映射
 
-- macOS: `~/Library/Application Support/threadBridge`
+- macOS:
+  - data root: `~/Library/Application Support/threadBridge/data`
+  - installed runtime assets root: `~/Library/Application Support/threadBridge/runtime_assets`
 - Linux: `$XDG_DATA_HOME/threadBridge`，否則 `~/.local/share/threadBridge`
 - Windows: `%LOCALAPPDATA%\\threadBridge`
 
@@ -70,7 +75,8 @@
 ### 4. Migration Policy
 
 - 不自動搬移既有 repo-local `data/`
-- 不自動複製到 app-data
+- 不自動搬移既有 repo-local `runtime_assets/`
+- bundled release 只在 installed runtime assets 缺檔時，從 app bundle seed assets 補建
 - 不建立 symlink
 - 不在 app-data 為空時回頭探測 repo-local `data/`
 - 若 `release` 預設模式無法取得平台 local app-data dir，應直接 fail fast，而不是退回 `./data`
@@ -78,14 +84,15 @@
 ### 5. 文件與工具表述
 
 - README、AGENTS、workspace appendix source、local helper script 都應採用 mode-aware wording
-- `data/` 只再表示 debug/development default，不再表示 universal runtime contract
+- `data/` 與 `runtime_assets/` 都要維持 repo/source 與 bundled/install layout 同構
 
 ## 驗收標準
 
 - `cargo run --bin threadbridge_desktop` 仍預設寫入 repo-local `data/`
-- `cargo run --release --bin threadbridge_desktop` 預設寫入平台 local app-data dir
+- `cargo run --release --bin threadbridge_desktop` 預設寫入平台 local app-data dir 下的 `threadBridge/data`
 - `DATA_ROOT` 能覆蓋兩種模式
 - release 模式不會自動讀取、複製或搬移 repo-local `data/`
+- bundled release 首次啟動可在 repo 外自動補齊缺失的 `runtime_assets/`
 - workspace runtime / `hcodex` / session continuity 在 repo 外的 bot-local data root 下仍可正常工作
 
 ## 與其他計劃的關係

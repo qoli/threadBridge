@@ -57,12 +57,7 @@ impl RuntimeControlContext {
         runtime_ownership_mode: RuntimeOwnershipMode,
     ) -> Result<Self> {
         let repository = ThreadRepository::open(&runtime.data_root_path).await?;
-        let seed_template_path = validate_seed_template(
-            &runtime
-                .codex_working_directory
-                .join("templates")
-                .join("AGENTS.md"),
-        )?;
+        let seed_template_path = validate_seed_template(&runtime.runtime_template_path())?;
         Ok(Self {
             delivery_bus: DeliveryBusCoordinator::new(&runtime.data_root_path).await?,
             codex: CodexRunner::new(runtime.codex_model.clone()),
@@ -882,7 +877,7 @@ impl WorkspaceRuntimeService {
     ) -> Result<PathBuf> {
         let workspace = workspace_path_from_binding(binding)?;
         ensure_workspace_runtime(
-            &self.ctx.runtime.codex_working_directory,
+            &self.ctx.runtime.runtime_assets_root_path,
             &self.ctx.runtime.data_root_path,
             &self.ctx.seed_template_path,
             &workspace,
@@ -1102,7 +1097,7 @@ impl WorkspaceSessionService {
         }
 
         ensure_workspace_runtime(
-            &self.ctx.runtime.codex_working_directory,
+            &self.ctx.runtime.runtime_assets_root_path,
             &self.ctx.runtime.data_root_path,
             &self.ctx.seed_template_path,
             &workspace_path,
@@ -1131,7 +1126,7 @@ impl WorkspaceSessionService {
         workspace_path: PathBuf,
     ) -> Result<ThreadRecord> {
         ensure_workspace_runtime(
-            &self.ctx.runtime.codex_working_directory,
+            &self.ctx.runtime.runtime_assets_root_path,
             &self.ctx.runtime.data_root_path,
             &self.ctx.seed_template_path,
             &workspace_path,

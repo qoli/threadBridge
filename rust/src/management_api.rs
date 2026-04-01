@@ -961,27 +961,27 @@ impl ManagementApiState {
     }
 
     async fn managed_codex_view(&self) -> Result<ManagedCodexView> {
-        let repo_root = &self.runtime.codex_working_directory;
-        let source = read_managed_codex_source_preference(repo_root).await?;
-        let binary_path = resolve_managed_codex_binary_path(repo_root, source).await?;
+        let data_root = &self.runtime.data_root_path;
+        let source = read_managed_codex_source_preference(data_root).await?;
+        let binary_path = resolve_managed_codex_binary_path(data_root, source).await?;
         let binary_ready = binary_path.as_ref().is_some_and(|path| path.exists());
-        let build_config_path = repo_root.join(MANAGED_CODEX_BUILD_CONFIG_FILE);
-        let build_info_path = repo_root.join(MANAGED_CODEX_BUILD_INFO_FILE);
-        let build_defaults = resolve_managed_codex_build_defaults(repo_root).await?;
+        let build_config_path = data_root.join(MANAGED_CODEX_BUILD_CONFIG_FILE);
+        let build_info_path = data_root.join(MANAGED_CODEX_BUILD_INFO_FILE);
+        let build_defaults = resolve_managed_codex_build_defaults(data_root).await?;
         let version = match binary_path.as_deref() {
             Some(path) if path.exists() => read_codex_version(path).await.ok(),
             _ => None,
         };
         Ok(ManagedCodexView {
             source: source.as_str(),
-            source_file_path: repo_root
+            source_file_path: data_root
                 .join(MANAGED_CODEX_SOURCE_FILE)
                 .display()
                 .to_string(),
             build_config_file_path: build_config_path.display().to_string(),
             build_info_file_path: build_info_path.display().to_string(),
             binary_path: binary_path
-                .unwrap_or_else(|| repo_root.join(MANAGED_CODEX_CACHE_BINARY))
+                .unwrap_or_else(|| data_root.join(MANAGED_CODEX_CACHE_BINARY))
                 .display()
                 .to_string(),
             binary_ready,
@@ -1000,15 +1000,8 @@ impl ManagementApiState {
         source: &str,
     ) -> Result<UpdateManagedCodexPreferenceResponse> {
         let source = ManagedCodexSourcePreference::parse(source)?;
-        write_managed_codex_source_preference(&self.runtime.codex_working_directory, source)
-            .await?;
-        let seed_template_path = validate_seed_template(
-            &self
-                .runtime
-                .codex_working_directory
-                .join("templates")
-                .join("AGENTS.md"),
-        )?;
+        write_managed_codex_source_preference(&self.runtime.data_root_path, source).await?;
+        let seed_template_path = validate_seed_template(&self.runtime.runtime_template_path())?;
         let mut synced_workspaces = 0usize;
         let mut seen = BTreeMap::new();
         for record in self.repository.list_active_threads().await? {
@@ -1022,7 +1015,7 @@ impl ManagementApiState {
                 continue;
             }
             ensure_workspace_runtime(
-                &self.runtime.codex_working_directory,
+                &self.runtime.runtime_assets_root_path,
                 &self.runtime.data_root_path,
                 &seed_template_path,
                 Path::new(&workspace_cwd),
@@ -1040,10 +1033,7 @@ impl ManagementApiState {
 
     async fn refresh_managed_codex_cache(&self) -> Result<RefreshManagedCodexCacheResponse> {
         let source_binary = resolve_codex_from_path().await?;
-        let dest_path = self
-            .runtime
-            .codex_working_directory
-            .join(MANAGED_CODEX_CACHE_BINARY);
+        let dest_path = self.runtime.managed_codex_binary_path();
         if let Some(parent) = dest_path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -1078,8 +1068,7 @@ impl ManagementApiState {
         &self,
         payload: Option<BuildManagedCodexSourceRequest>,
     ) -> Result<BuildManagedCodexSourceResponse> {
-        let defaults =
-            read_managed_codex_build_config(&self.runtime.codex_working_directory).await?;
+        let defaults = read_managed_codex_build_config(&self.runtime.data_root_path).await?;
         let build = ManagedCodexSourceBuild::from_sources(
             payload
                 .as_ref()
@@ -1140,17 +1129,11 @@ impl ManagementApiState {
             ));
         }
 
-        let managed_dir = self
-            .runtime
-            .codex_working_directory
-            .join(".threadbridge/codex");
+        let managed_dir = self.runtime.managed_codex_root_path();
         tokio::fs::create_dir_all(&managed_dir)
             .await
             .with_context(|| format!("failed to create {}", managed_dir.display()))?;
-        let dest_path = self
-            .runtime
-            .codex_working_directory
-            .join(MANAGED_CODEX_CACHE_BINARY);
+        let dest_path = self.runtime.managed_codex_binary_path();
         tokio::fs::copy(&source_binary, &dest_path)
             .await
             .with_context(|| {
@@ -1182,7 +1165,7 @@ impl ManagementApiState {
         );
         let build_info_path = self
             .runtime
-            .codex_working_directory
+            .data_root_path
             .join(MANAGED_CODEX_BUILD_INFO_FILE);
         tokio::fs::write(&build_info_path, build_info)
             .await
@@ -1209,7 +1192,7 @@ impl ManagementApiState {
             Some(payload.build_profile.trim()),
         )?;
         write_managed_codex_build_config(
-            &self.runtime.codex_working_directory,
+            &self.runtime.data_root_path,
             &ManagedCodexBuildConfigFile {
                 source_repo: Some(build.source_repo.display().to_string()),
                 source_rs_dir: Some(build.source_rs_dir.display().to_string()),
@@ -1713,12 +1696,17 @@ impl ManagementApiState {
             .collect::<Vec<_>>()
             .join(",");
         updates.insert("AUTHORIZED_TELEGRAM_USER_IDS".to_owned(), authorized);
-        let env_path = self.runtime.codex_working_directory.join(".env.local");
+        let env_path = self.runtime.config_env_path();
         write_env_file(&env_path, &updates).await
     }
 }
 
 async fn write_env_file(path: &Path, updates: &BTreeMap<String, String>) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
     let existing = match tokio::fs::read_to_string(path).await {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -2224,7 +2212,8 @@ mod tests {
         RuntimeConfig {
             data_root_path: root.join("data"),
             debug_log_path: root.join("debug.log"),
-            codex_working_directory: root.join("codex"),
+            runtime_assets_root_path: root.join("runtime_assets"),
+            runtime_assets_seed_root_path: root.join("runtime_assets"),
             codex_model: None,
             management_bind_addr: "127.0.0.1:0".parse().unwrap(),
         }
@@ -2235,7 +2224,7 @@ mod tests {
     }
 
     async fn install_shared_control(handle: &ManagementApiHandle, root: &PathBuf) {
-        let template_dir = root.join("codex").join("templates");
+        let template_dir = root.join("runtime_assets").join("templates");
         fs::create_dir_all(&template_dir).await.unwrap();
         fs::write(template_dir.join("AGENTS.md"), "test template")
             .await

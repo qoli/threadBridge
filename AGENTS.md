@@ -3,7 +3,7 @@
 ## Purpose
 This root `AGENTS.md` is the maintainer guide for `threadBridge`. It documents the repo layout, runtime boundaries, workspace lifecycle, and contributor conventions for the Telegram bot and its Codex app-server integration.
 
-It is not the runtime appendix followed inside a bound project workspace. That appendix lives in [templates/AGENTS.md](/Volumes/Data/Github/threadBridge/templates/AGENTS.md) and is appended into a workspace `AGENTS.md` by the runtime bootstrap.
+It is not the runtime appendix followed inside a bound project workspace. That appendix lives in [runtime_assets/templates/AGENTS.md](/Volumes/Data/Github/threadBridge/runtime_assets/templates/AGENTS.md) and is appended into a workspace `AGENTS.md` by the runtime bootstrap.
 
 ## Project Structure & Runtime Architecture
 The runtime is organized in four layers:
@@ -11,7 +11,7 @@ The runtime is organized in four layers:
 - Desktop runtime owner and management plane: the macOS desktop entrypoint owns the local management API, tray/web management UI, runtime-owner reconcile loop, managed Codex preferences/builds, and machine-level runtime health authority.
 - Shared runtime control and projection: internal services own workspace runtime ensure/repair, workspace session bind/new/repair, Telegram-to-live-TUI routing, and app-server observer projection. This layer is adapter-neutral and is where workspace control semantics now live.
 - Telegram adapter: the Rust bot receives Telegram updates, enforces authorization, routes commands into shared runtime control, streams live Codex previews, and sends results back to Telegram, but it is no longer the formal runtime owner nor the primary home of runtime control orchestration.
-- Tool executors: workspace-local wrapper commands under `.threadbridge/bin/` call Python scripts in `tools/` to materialize prompt configs, generated images, and Telegram outbox payloads.
+- Tool executors: workspace-local wrapper commands under `.threadbridge/bin/` call Python scripts in `runtime_assets/tools/` to materialize prompt configs, generated images, and Telegram outbox payloads.
 
 Important repo areas:
 
@@ -27,9 +27,9 @@ Important repo areas:
 - `rust/src/repository.rs`: persistent bot-local thread state for metadata, transcripts, session bindings, and image-state artifacts.
 - `rust/src/thread_state.rs`: canonical thread state resolver for `lifecycle_status`, `binding_status`, and `run_status`.
 - `rust/src/telegram_runtime/`: Telegram command handling, message flows, image handling, preview rendering, and adapter-owned interaction bridging.
-- `templates/AGENTS.md`: managed runtime appendix appended to real workspace `AGENTS.md` files.
-- `tools/`: Python executors invoked from `.threadbridge/bin/*`.
-- bot-local runtime data root: debug builds default to `data/`; release builds default to the platform local app-data directory. In debug mode, `data/main-thread/` stores the control console state and each thread maps to `data/<thread-key>/`.
+- `runtime_assets/templates/AGENTS.md`: managed runtime appendix appended to real workspace `AGENTS.md` files.
+- `runtime_assets/tools/`: Python executors invoked from `.threadbridge/bin/*`.
+- bot-local runtime data root: debug builds default to `data/`; bundled release builds default to the platform local app-data directory under `threadBridge/data`. In debug mode, `data/main-thread/` stores the control console state and each thread maps to `data/<thread-key>/`.
 
 Treat `target/` and most bot-local runtime state as generated output.
 
@@ -37,11 +37,11 @@ Treat `target/` and most bot-local runtime state as generated output.
 There are two relevant `AGENTS.md` roles now:
 
 - Root `AGENTS.md`: this maintainer guide.
-- `templates/AGENTS.md`: the workspace runtime appendix managed by threadBridge and appended into a real bound workspace `AGENTS.md`.
+- `runtime_assets/templates/AGENTS.md`: the workspace runtime appendix managed by threadBridge and appended into a real bound workspace `AGENTS.md`.
 
 There is no thread-local runtime-root `<thread-key>/AGENTS.md` surface anymore.
 
-The runtime appendix block embedded later in this root file is a checked-in copy of the managed appendix for reference. Treat `templates/AGENTS.md` as the canonical source for appendix wording and behavior; do not hand-edit the root appendix block when maintaining the guide above it.
+The runtime appendix block embedded later in this root file is a checked-in copy of the managed appendix for reference. Treat `runtime_assets/templates/AGENTS.md` as the canonical source for appendix wording and behavior; do not hand-edit the root appendix block when maintaining the guide above it.
 
 ## Workspace Lifecycle & Data Flow
 The operational flow is: desktop runtime owner -> local management API / Telegram adapter -> Codex app-server thread -> real workspace runtime -> Python tool wrappers -> Telegram reply or local management surface.
@@ -82,9 +82,9 @@ Maintain these ownership boundaries:
   - `.threadbridge/codex/codex`
   - `.threadbridge/tool_requests/`
   - `.threadbridge/tool_results/`
-- `tools/build_prompt_config.py` owns `concept.json`, append-only `prompts/*.json`, and `.threadbridge/tool_results/build_prompt_config.result.json`.
-- `tools/generate_image.py` owns `.threadbridge/tool_results/generate_image.result.json` and the generated run folders under `images/generated/`.
-- `tools/send_telegram_media.py` owns `.threadbridge/tool_results/send_telegram_media.result.json` and `.threadbridge/tool_results/telegram_outbox.json`.
+- `runtime_assets/tools/build_prompt_config.py` owns `concept.json`, append-only `prompts/*.json`, and `.threadbridge/tool_results/build_prompt_config.result.json`.
+- `runtime_assets/tools/generate_image.py` owns `.threadbridge/tool_results/generate_image.result.json` and the generated run folders under `images/generated/`.
+- `runtime_assets/tools/send_telegram_media.py` owns `.threadbridge/tool_results/send_telegram_media.result.json` and `.threadbridge/tool_results/telegram_outbox.json`.
 
 When adding new features, decide first which layer owns the artifact and which layer merely presents it.
 
@@ -105,7 +105,7 @@ cargo clippy --all-targets --all-features
 ## Coding Style & Naming Conventions
 Follow `rustfmt` defaults for Rust: 4-space indentation, `snake_case` for functions and modules, `PascalCase` for types, and small focused modules. Match the existing style in `rust/src/` by returning `anyhow::Result`, using `serde`-friendly structs, and keeping async I/O in Tokio-aware helpers.
 
-Python tools in `tools/` use 4-space indentation, explicit helper functions, and stdlib-first implementations unless a dependency is already justified elsewhere.
+Python tools in `runtime_assets/tools/` use 4-space indentation, explicit helper functions, and stdlib-first implementations unless a dependency is already justified elsewhere.
 
 When changing runtime behavior, keep the separation between Telegram orchestration, Codex thread control, and tool execution clear in both code and documentation.
 
@@ -129,7 +129,7 @@ Use short imperative commit subjects. Conventional Commit style with a scope is 
 Pull requests should explain the user-visible behavior change, note any config or data migration impact, link the related issue or thread, and include screenshots or log snippets when changing Telegram flows or generated artifacts.
 
 ## Security & Configuration Tips
-Keep secrets in `.env.local`; never commit real tokens. Start from `.env.example`, and avoid checking generated workspace files, debug logs, or image outputs into Git unless they are intentional fixtures.
+Keep secrets in `data/config.env.local`; never commit real tokens. Start from `.env.example`, and avoid checking generated workspace files, debug logs, or image outputs into Git unless they are intentional fixtures.
 
 Treat bot-local runtime state and workspace-local generated files as potentially sensitive because they can contain prompts, transcripts, image references, provider payloads, and output metadata.
 

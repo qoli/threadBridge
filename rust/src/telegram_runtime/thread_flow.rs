@@ -2511,7 +2511,8 @@ mod tests {
                 workspace_status_poll_interval_ms: 1000,
                 runtime: RuntimeConfig {
                     data_root_path: root.clone(),
-                    codex_working_directory: root.clone(),
+                    runtime_assets_root_path: root.join("runtime_assets"),
+                    runtime_assets_seed_root_path: root.join("runtime_assets"),
                     codex_model: None,
                     debug_log_path: root.join("debug.jsonl"),
                     management_bind_addr: "127.0.0.1:38420".parse().unwrap(),
@@ -2522,7 +2523,8 @@ mod tests {
             control: RuntimeControlContext {
                 runtime: RuntimeConfig {
                     data_root_path: root.clone(),
-                    codex_working_directory: root.clone(),
+                    runtime_assets_root_path: root.join("runtime_assets"),
+                    runtime_assets_seed_root_path: root.join("runtime_assets"),
                     codex_model: None,
                     debug_log_path: root.join("debug.jsonl"),
                     management_bind_addr: "127.0.0.1:38420".parse().unwrap(),
@@ -2607,7 +2609,8 @@ mod tests {
                 workspace_status_poll_interval_ms: 1000,
                 runtime: RuntimeConfig {
                     data_root_path: root.clone(),
-                    codex_working_directory: root.clone(),
+                    runtime_assets_root_path: root.join("runtime_assets"),
+                    runtime_assets_seed_root_path: root.join("runtime_assets"),
                     codex_model: None,
                     debug_log_path: root.join("debug.jsonl"),
                     management_bind_addr: "127.0.0.1:38420".parse().unwrap(),
@@ -2618,7 +2621,8 @@ mod tests {
             control: RuntimeControlContext {
                 runtime: RuntimeConfig {
                     data_root_path: root.clone(),
-                    codex_working_directory: root.clone(),
+                    runtime_assets_root_path: root.join("runtime_assets"),
+                    runtime_assets_seed_root_path: root.join("runtime_assets"),
                     codex_model: None,
                     debug_log_path: root.join("debug.jsonl"),
                     management_bind_addr: "127.0.0.1:38420".parse().unwrap(),

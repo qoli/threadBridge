@@ -17,6 +17,7 @@ pub mod logging;
 pub mod management_api;
 pub mod process_transcript;
 pub mod repository;
+pub mod runtime_assets;
 pub mod runtime_busy_reconcile;
 pub mod runtime_control;
 pub mod runtime_interaction;

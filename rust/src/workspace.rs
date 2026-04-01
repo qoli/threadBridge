@@ -22,26 +22,32 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn build_wrapper_script(tool_file_name: &str, repo_root: &Path) -> String {
-    let quoted_repo_root = shell_single_quote(&repo_root.display().to_string());
+fn build_wrapper_script(
+    tool_file_name: &str,
+    runtime_assets_root: &Path,
+    config_env_path: &Path,
+) -> String {
+    let quoted_runtime_assets_root = shell_single_quote(&runtime_assets_root.display().to_string());
+    let quoted_config_env_path = shell_single_quote(&config_env_path.display().to_string());
     [
         "#!/bin/sh",
         "set -eu",
         "SCRIPT_DIR=\"$(CDPATH= cd -- \"$(dirname \"$0\")\" && pwd)\"",
         "RUNTIME_DIR=\"$(CDPATH= cd -- \"$SCRIPT_DIR/..\" && pwd)\"",
         "WORKSPACE_DIR=\"$(CDPATH= cd -- \"$RUNTIME_DIR/..\" && pwd)\"",
-        &format!("REPO_ROOT={quoted_repo_root}"),
+        &format!("THREADBRIDGE_RUNTIME_ASSETS_ROOT={quoted_runtime_assets_root}"),
+        &format!("THREADBRIDGE_CONFIG_ENV={quoted_config_env_path}"),
         "cd \"$WORKSPACE_DIR\"",
         &format!(
-            "exec python3 \"$REPO_ROOT/tools/{tool_file_name}\" --repo-root \"$REPO_ROOT\" \"$@\""
+            "exec python3 \"$THREADBRIDGE_RUNTIME_ASSETS_ROOT/tools/{tool_file_name}\" --config-env \"$THREADBRIDGE_CONFIG_ENV\" \"$@\""
         ),
         "",
     ]
     .join("\n")
 }
 
-async fn read_codex_source_preference(repo_root: &Path) -> Result<CodexSourcePreference> {
-    let source_path = repo_root.join(MANAGED_CODEX_SOURCE_FILE);
+async fn read_codex_source_preference(data_root: &Path) -> Result<CodexSourcePreference> {
+    let source_path = data_root.join(MANAGED_CODEX_SOURCE_FILE);
     let value = match fs::read_to_string(&source_path).await {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -68,20 +74,19 @@ async fn read_codex_source_preference(repo_root: &Path) -> Result<CodexSourcePre
 
 fn build_hcodex_launcher_script(
     workspace_path: &Path,
-    repo_root: &Path,
     data_root: &Path,
     threadbridge_executable: &Path,
     codex_source_preference: CodexSourcePreference,
 ) -> String {
     let workspace = shell_single_quote(&workspace_path.display().to_string());
-    let data_root = shell_single_quote(&data_root.display().to_string());
+    let quoted_data_root = shell_single_quote(&data_root.display().to_string());
     let threadbridge_executable =
         shell_single_quote(&threadbridge_executable.display().to_string());
     let managed_codex_path = match codex_source_preference {
         CodexSourcePreference::Brew => workspace_path.join(".threadbridge/bin/codex"),
         // Source-built Codex works reliably from the repo-managed cache, but some
         // workspace-local copies fail after installation. Use the cache directly.
-        CodexSourcePreference::Source => repo_root.join(MANAGED_CODEX_CACHE_BINARY),
+        CodexSourcePreference::Source => data_root.join(MANAGED_CODEX_CACHE_BINARY),
     };
     let managed_codex = shell_single_quote(&managed_codex_path.display().to_string());
     let codex_source = match codex_source_preference {
@@ -92,7 +97,7 @@ fn build_hcodex_launcher_script(
         "#!/usr/bin/env bash".to_owned(),
         "set -euo pipefail".to_owned(),
         format!("THREADBRIDGE_WORKSPACE_ROOT={workspace}"),
-        format!("THREADBRIDGE_DATA_ROOT={data_root}"),
+        format!("THREADBRIDGE_DATA_ROOT={quoted_data_root}"),
         format!("THREADBRIDGE_EXECUTABLE={threadbridge_executable}"),
         format!(
             "THREADBRIDGE_CODEX_SOURCE={}",
@@ -270,12 +275,13 @@ async fn set_mode(path: &Path, mode: u32) -> Result<()> {
 }
 
 pub async fn ensure_workspace_runtime(
-    repo_root: &Path,
+    runtime_assets_root: &Path,
     data_root: &Path,
     seed_template_path: &Path,
     workspace_path: &Path,
 ) -> Result<PathBuf> {
-    let codex_source_preference = read_codex_source_preference(repo_root).await?;
+    let codex_source_preference = read_codex_source_preference(data_root).await?;
+    let config_env_path = data_root.join("config.env.local");
     let threadbridge_executable = std::env::current_exe()
         .context("failed to resolve current threadBridge executable path")?;
     fs::create_dir_all(workspace_path).await.with_context(|| {
@@ -334,7 +340,7 @@ pub async fn ensure_workspace_runtime(
         ("send_telegram_media.py", "send_telegram_media"),
     ] {
         let wrapper_path = bin_dir.join(filename);
-        let wrapper = build_wrapper_script(tool, repo_root);
+        let wrapper = build_wrapper_script(tool, runtime_assets_root, &config_env_path);
         write_text_file(&wrapper_path, &wrapper).await?;
         #[cfg(unix)]
         {
@@ -351,7 +357,6 @@ pub async fn ensure_workspace_runtime(
         &hcodex_path,
         &build_hcodex_launcher_script(
             workspace_path,
-            repo_root,
             data_root,
             &threadbridge_executable,
             codex_source_preference,
@@ -369,7 +374,7 @@ pub async fn ensure_workspace_runtime(
     set_mode(&shell_snippet_path, 0o644).await?;
 
     if codex_source_preference == CodexSourcePreference::Brew {
-        let managed_codex_source = repo_root.join(MANAGED_CODEX_CACHE_BINARY);
+        let managed_codex_source = data_root.join(MANAGED_CODEX_CACHE_BINARY);
         if fs::try_exists(&managed_codex_source)
             .await
             .with_context(|| {
@@ -437,8 +442,8 @@ mod tests {
             .unwrap();
 
         ensure_workspace_runtime(
-            Path::new("/repo"),
-            Path::new("/repo/data"),
+            Path::new("/runtime_assets"),
+            Path::new("/data"),
             &template,
             &workspace,
         )
@@ -462,8 +467,8 @@ mod tests {
         fs::write(&template, "runtime appendix\n").await.unwrap();
 
         let runtime_root = ensure_workspace_runtime(
-            Path::new("/repo"),
-            Path::new("/repo/data"),
+            Path::new("/runtime_assets"),
+            Path::new("/data"),
             &template,
             &workspace,
         )
@@ -519,6 +524,10 @@ mod tests {
             fs::read_to_string(workspace.join(".threadbridge/shell/codex-sync.bash"))
                 .await
                 .unwrap();
+        let build_prompt_wrapper =
+            fs::read_to_string(workspace.join(".threadbridge/bin/build_prompt_config"))
+                .await
+                .unwrap();
         assert!(hcodex_launcher.contains("THREADBRIDGE_EXECUTABLE"));
         assert!(hcodex_launcher.contains("THREADBRIDGE_CODEX_SOURCE='brew'"));
         assert!(hcodex_launcher.contains("THREADBRIDGE_MANAGED_CODEX"));
@@ -533,6 +542,10 @@ mod tests {
         assert!(hcodex_launcher.contains("if [ \"${#codex_args[@]}\" -gt 0 ]; then"));
         assert!(hcodex_launcher.contains("codex_bin=\"$(command -v codex 2>/dev/null || true)\""));
         assert!(!hcodex_launcher.contains("THREADBRIDGE_HCODEX_RESOLVER"));
+        assert!(build_prompt_wrapper.contains("THREADBRIDGE_RUNTIME_ASSETS_ROOT"));
+        assert!(build_prompt_wrapper.contains("THREADBRIDGE_CONFIG_ENV"));
+        assert!(build_prompt_wrapper.contains("tools/build_prompt_config.py"));
+        assert!(build_prompt_wrapper.contains("--config-env \"$THREADBRIDGE_CONFIG_ENV\""));
         assert!(compat_shell.contains("hcodex() {"));
         assert!(compat_shell.contains(".threadbridge/bin/hcodex"));
     }
@@ -540,10 +553,11 @@ mod tests {
     #[tokio::test]
     async fn workspace_runtime_copies_managed_codex_binary_when_available() {
         let root = temp_path();
-        let repo_root = root.join("repo");
+        let runtime_assets_root = root.join("runtime_assets");
+        let data_root = root.join("data");
         let workspace = root.join("workspace");
         let template = root.join("template.md");
-        let managed_codex = repo_root.join(".threadbridge/codex/codex");
+        let managed_codex = data_root.join(".threadbridge/codex/codex");
 
         fs::create_dir_all(managed_codex.parent().unwrap())
             .await
@@ -551,9 +565,10 @@ mod tests {
         fs::write(&managed_codex, "managed codex binary")
             .await
             .unwrap();
+        fs::create_dir_all(&runtime_assets_root).await.unwrap();
         fs::write(&template, "runtime appendix\n").await.unwrap();
 
-        ensure_workspace_runtime(&repo_root, &repo_root.join("data"), &template, &workspace)
+        ensure_workspace_runtime(&runtime_assets_root, &data_root, &template, &workspace)
             .await
             .unwrap();
 
@@ -573,18 +588,20 @@ mod tests {
     #[tokio::test]
     async fn workspace_runtime_respects_source_codex_source_preference() {
         let root = temp_path();
-        let repo_root = root.join("repo");
+        let runtime_assets_root = root.join("runtime_assets");
+        let data_root = root.join("data");
         let workspace = root.join("workspace");
         let template = root.join("template.md");
-        let source_file = repo_root.join(".threadbridge/codex/source.txt");
+        let source_file = data_root.join(".threadbridge/codex/source.txt");
 
         fs::create_dir_all(source_file.parent().unwrap())
             .await
             .unwrap();
         fs::write(&source_file, "source\n").await.unwrap();
+        fs::create_dir_all(&runtime_assets_root).await.unwrap();
         fs::write(&template, "runtime appendix\n").await.unwrap();
 
-        ensure_workspace_runtime(&repo_root, &repo_root.join("data"), &template, &workspace)
+        ensure_workspace_runtime(&runtime_assets_root, &data_root, &template, &workspace)
             .await
             .unwrap();
 
@@ -604,18 +621,20 @@ mod tests {
     #[tokio::test]
     async fn workspace_runtime_maps_legacy_alpha_codex_source_to_source() {
         let root = temp_path();
-        let repo_root = root.join("repo");
+        let runtime_assets_root = root.join("runtime_assets");
+        let data_root = root.join("data");
         let workspace = root.join("workspace");
         let template = root.join("template.md");
-        let source_file = repo_root.join(".threadbridge/codex/source.txt");
+        let source_file = data_root.join(".threadbridge/codex/source.txt");
 
         fs::create_dir_all(source_file.parent().unwrap())
             .await
             .unwrap();
         fs::write(&source_file, "alpha\n").await.unwrap();
+        fs::create_dir_all(&runtime_assets_root).await.unwrap();
         fs::write(&template, "runtime appendix\n").await.unwrap();
 
-        ensure_workspace_runtime(&repo_root, &repo_root.join("data"), &template, &workspace)
+        ensure_workspace_runtime(&runtime_assets_root, &data_root, &template, &workspace)
             .await
             .unwrap();
 
@@ -641,8 +660,8 @@ mod tests {
         fs::write(&template, "runtime appendix\n").await.unwrap();
 
         ensure_workspace_runtime(
-            Path::new("/repo"),
-            Path::new("/repo/data"),
+            Path::new("/runtime_assets"),
+            Path::new("/data"),
             &template,
             &workspace,
         )

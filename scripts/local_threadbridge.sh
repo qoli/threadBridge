@@ -3,17 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd -P)
-ENV_FILE="$REPO_ROOT/.env.local"
+ENV_FILE="$REPO_ROOT/data/config.env.local"
 LOG_DIR="$REPO_ROOT/logs"
 CARGO_HOME_DIR="${CARGO_HOME:-$REPO_ROOT/.cargo}"
 CARGO_TARGET_DIR_PATH="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 BUILD_PROFILE="${BUILD_PROFILE:-dev}"
 RUSTUP_HOME_DIR="${RUSTUP_HOME:-$HOME/.rustup}"
 RUNTIME_PATH="$CARGO_HOME_DIR/bin:$HOME/.cargo/bin:$REPO_ROOT/bin:$PATH"
-MANAGED_CODEX_DIR="$REPO_ROOT/.threadbridge/codex"
-MANAGED_CODEX_BIN="$MANAGED_CODEX_DIR/codex"
-MANAGED_CODEX_SOURCE_FILE="$MANAGED_CODEX_DIR/source.txt"
-MANAGED_CODEX_BUILD_INFO_FILE="$MANAGED_CODEX_DIR/build-info.txt"
 CODEX_SOURCE_REPO="${CODEX_SOURCE_REPO:-/Volumes/Data/Github/codex}"
 CODEX_SOURCE_RS_DIR="${CODEX_SOURCE_RS_DIR:-$CODEX_SOURCE_REPO/codex-rs}"
 CODEX_BUILD_PROFILE="${CODEX_BUILD_PROFILE:-$BUILD_PROFILE}"
@@ -53,9 +49,27 @@ log() {
   printf '[local-threadbridge] %s\n' "$*"
 }
 
+managed_codex_dir() {
+  printf '%s/.threadbridge/codex\n' "$(runtime_data_root)"
+}
+
+managed_codex_bin() {
+  printf '%s/codex\n' "$(managed_codex_dir)"
+}
+
+managed_codex_source_file() {
+  printf '%s/source.txt\n' "$(managed_codex_dir)"
+}
+
+managed_codex_build_info_file() {
+  printf '%s/build-info.txt\n' "$(managed_codex_dir)"
+}
+
 read_codex_source_preference() {
-  if [[ -f "$MANAGED_CODEX_SOURCE_FILE" ]]; then
-    tr -d '\n' < "$MANAGED_CODEX_SOURCE_FILE"
+  local source_file
+  source_file=$(managed_codex_source_file)
+  if [[ -f "$source_file" ]]; then
+    tr -d '\n' < "$source_file"
     return 0
   fi
   printf '%s\n' 'brew'
@@ -63,8 +77,11 @@ read_codex_source_preference() {
 
 write_codex_source_preference() {
   local source=$1
-  mkdir -p "$MANAGED_CODEX_DIR"
-  printf '%s\n' "$source" > "$MANAGED_CODEX_SOURCE_FILE"
+  local dir source_file
+  dir=$(managed_codex_dir)
+  source_file=$(managed_codex_source_file)
+  mkdir -p "$dir"
+  printf '%s\n' "$source" > "$source_file"
 }
 
 resolve_codex_source() {
@@ -115,7 +132,11 @@ ensure_source_codex_binary() {
     exit 1
   fi
 
-  mkdir -p "$MANAGED_CODEX_DIR"
+  local managed_dir managed_bin build_info_file
+  managed_dir=$(managed_codex_dir)
+  managed_bin=$(managed_codex_bin)
+  build_info_file=$(managed_codex_build_info_file)
+  mkdir -p "$managed_dir"
 
   local source_binary profile_flag build_info git_rev
   case "$CODEX_BUILD_PROFILE" in
@@ -151,7 +172,7 @@ ensure_source_codex_binary() {
     exit 1
   fi
 
-  install -m 755 "$source_binary" "$MANAGED_CODEX_BIN"
+  install -m 755 "$source_binary" "$managed_bin"
   git_rev=$(git -C "$CODEX_SOURCE_REPO" rev-parse --short HEAD 2>/dev/null || printf 'unknown')
   build_info=$(cat <<EOF
 source_repo=$CODEX_SOURCE_REPO
@@ -161,8 +182,8 @@ git_rev=$git_rev
 binary=$source_binary
 EOF
 )
-  printf '%s\n' "$build_info" > "$MANAGED_CODEX_BUILD_INFO_FILE"
-  log "source-built Codex binary ready: $MANAGED_CODEX_BIN"
+  printf '%s\n' "$build_info" > "$build_info_file"
+  log "source-built Codex binary ready: $managed_bin"
 }
 
 require_command() {
@@ -261,7 +282,7 @@ latest_event_log() {
 
 default_runtime_data_root() {
   if [[ "$BUILD_PROFILE" == "release" ]]; then
-    printf '%s/Library/Application Support/threadBridge\n' "$HOME"
+    printf '%s/Library/Application Support/threadBridge/data\n' "$HOME"
   else
     printf '%s/data\n' "$REPO_ROOT"
   fi
@@ -336,7 +357,7 @@ tmux_session_pid() {
 }
 
 ensure_layout() {
-  mkdir -p "$LOG_DIR" "$(runtime_event_log_dir)" "$MANAGED_CODEX_DIR"
+  mkdir -p "$LOG_DIR" "$(runtime_event_log_dir)" "$(managed_codex_dir)" "$(dirname "$ENV_FILE")"
   touch \
     "$(stdout_log_path)" \
     "$(stderr_log_path)"
@@ -424,7 +445,22 @@ build_runtime_bundle() {
     printf 'Expected app bundle at %s\n' "$app_path" >&2
     exit 1
   fi
+  sync_runtime_assets_into_bundle "$app_path"
+  local worker_binary worker_dest
+  worker_binary=$(binary_path "app_server_ws_worker")
+  worker_dest="$app_path/Contents/MacOS/app_server_ws_worker"
+  install -m 755 "$worker_binary" "$worker_dest"
   log "bundle ready: $app_path"
+}
+
+sync_runtime_assets_into_bundle() {
+  local app_path=$1
+  local resources_dir runtime_assets_dest
+  resources_dir="$app_path/Contents/Resources"
+  runtime_assets_dest="$resources_dir/runtime_assets"
+  mkdir -p "$resources_dir"
+  rm -rf "$runtime_assets_dest"
+  cp -R "$REPO_ROOT/runtime_assets" "$runtime_assets_dest"
 }
 
 build_local() {
@@ -557,10 +593,12 @@ status_runtime() {
     fi
   fi
   log "codex source preference: $codex_source"
-  if [[ "$codex_source" == "source" && -f "$MANAGED_CODEX_BUILD_INFO_FILE" ]]; then
+  local build_info_file
+  build_info_file=$(managed_codex_build_info_file)
+  if [[ "$codex_source" == "source" && -f "$build_info_file" ]]; then
     while IFS= read -r line; do
       [[ -n "$line" ]] && log "managed Codex $line"
-    done < "$MANAGED_CODEX_BUILD_INFO_FILE"
+    done < "$build_info_file"
   fi
 
   local event_log

@@ -1,6 +1,6 @@
 # Nanobanana Request Notes
 
-This file documents the request shape used by `tools/generate_image.py` without including any live credential, cookie, or captured production payload.
+This file documents the request shape used by `runtime_assets/tools/generate_image.py` without including any live credential, cookie, or captured production payload.
 
 ## Minimal Example
 

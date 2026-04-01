@@ -21,7 +21,7 @@ mod macos_app {
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
     use threadbridge_rust::bot_runner::spawn_bot_runtime_from_env_with_runtimes;
-    use threadbridge_rust::config::load_runtime_config;
+    use threadbridge_rust::config::{RuntimeConfig, load_runtime_config};
     use threadbridge_rust::hcodex_runtime;
     use threadbridge_rust::hcodex_ws_bridge;
     use threadbridge_rust::logging::init_runtime_json_logs;
@@ -29,6 +29,7 @@ mod macos_app {
         LaunchLocalSessionTarget, ManagedWorkspaceView, ManagementApiHandle,
         RuntimeControlActionRequest, RuntimeHealthView, SetupStateView, spawn_management_api,
     };
+    use threadbridge_rust::runtime_assets::{ensure_runtime_assets, rebuild_runtime_assets};
     use threadbridge_rust::runtime_control::{
         RuntimeControlContext, RuntimeOwnershipMode, SharedControlHandle,
     };
@@ -73,6 +74,7 @@ mod macos_app {
         OpenSettings,
         OpenAddWorkspace,
         PurgeArchivedThreads,
+        RebuildRuntimeAssets,
         Quit,
         LaunchNew { thread_key: String },
         ContinueCurrent { thread_key: String },
@@ -85,6 +87,7 @@ mod macos_app {
 
     struct DesktopApp {
         runtime: Arc<Runtime>,
+        runtime_config: RuntimeConfig,
         management_api: ManagementApiHandle,
         owner: Arc<DesktopRuntimeOwner>,
         tray_icon: Option<TrayIcon>,
@@ -109,6 +112,7 @@ mod macos_app {
         }
 
         let runtime_config = load_runtime_config()?;
+        runtime.block_on(ensure_runtime_assets(&runtime_config))?;
         let _guard = init_runtime_json_logs(&runtime_config.debug_log_path)?;
         let management_api = runtime.block_on(spawn_management_api(runtime_config.clone()))?;
         runtime.block_on(management_api.set_native_workspace_picker_available(true));
@@ -167,6 +171,7 @@ mod macos_app {
 
         let mut app = DesktopApp {
             runtime,
+            runtime_config,
             management_api,
             owner,
             tray_icon: None,
@@ -351,7 +356,10 @@ mod macos_app {
         if app.tray_icon.is_some() && app.latest_tray_signature.as_ref() == Some(&signature) {
             return Ok(());
         }
-        let model = build_menu_model(snapshot)?;
+        let model = build_menu_model(
+            snapshot,
+            app.runtime_config.supports_runtime_assets_rebuild(),
+        )?;
         if let Some(tray_icon) = app.tray_icon.as_ref() {
             tray_icon.set_menu(Some(Box::new(model.menu)));
             tray_icon.set_tooltip(Some(&signature.tooltip))?;
@@ -361,7 +369,10 @@ mod macos_app {
         Ok(())
     }
 
-    fn build_menu_model(snapshot: &DesktopSnapshot) -> Result<MenuModel> {
+    fn build_menu_model(
+        snapshot: &DesktopSnapshot,
+        supports_runtime_assets_rebuild: bool,
+    ) -> Result<MenuModel> {
         let menu = Menu::new();
         let mut actions = HashMap::new();
         for workspace in snapshot
@@ -404,6 +415,14 @@ mod macos_app {
             purge_archived.id().clone(),
             TrayAction::PurgeArchivedThreads,
         );
+        if supports_runtime_assets_rebuild {
+            let rebuild_assets = MenuItem::new("Rebuild Runtime Assets", true, None);
+            actions.insert(
+                rebuild_assets.id().clone(),
+                TrayAction::RebuildRuntimeAssets,
+            );
+            menu.append(&rebuild_assets)?;
+        }
         let settings = MenuItem::new("Settings", true, None);
         actions.insert(settings.id().clone(), TrayAction::OpenSettings);
         let quit = MenuItem::new("Quit", true, None);
@@ -532,6 +551,27 @@ mod macos_app {
                     let _ = proxy.send_event(UserEvent::Refresh);
                 });
             }
+            TrayAction::RebuildRuntimeAssets => {
+                let runtime = app.runtime.clone();
+                let runtime_config = app.runtime_config.clone();
+                let proxy = proxy.clone();
+                runtime.spawn(async move {
+                    if let Err(error) = rebuild_runtime_assets_via_tray(&runtime_config).await {
+                        warn!(
+                            event = "desktop_runtime.rebuild_runtime_assets.failed",
+                            error = %error
+                        );
+                        let _ = show_desktop_notification(
+                            "threadBridge",
+                            &format!(
+                                "Rebuild runtime assets failed: {}",
+                                short_error_message(&error)
+                            ),
+                        );
+                    }
+                    let _ = proxy.send_event(UserEvent::Refresh);
+                });
+            }
             TrayAction::Quit => {
                 let _ = proxy.send_event(UserEvent::Quit);
                 *control_flow = ControlFlow::Exit;
@@ -632,6 +672,20 @@ mod macos_app {
         Ok(())
     }
 
+    async fn rebuild_runtime_assets_via_tray(runtime: &RuntimeConfig) -> Result<()> {
+        let confirmed = tokio::task::spawn_blocking(confirm_rebuild_runtime_assets).await??;
+        if !confirmed {
+            info!(event = "desktop_runtime.rebuild_runtime_assets.cancelled");
+            return Ok(());
+        }
+        rebuild_runtime_assets(runtime).await?;
+        show_desktop_notification(
+            "threadBridge",
+            "Rebuilt runtime assets from the bundled app resources.",
+        )?;
+        Ok(())
+    }
+
     fn open_management_url(
         management_api: &ManagementApiHandle,
         anchor: Option<&str>,
@@ -701,6 +755,25 @@ mod macos_app {
         }
         Err(anyhow!(
             "purge confirmation failed: {}",
+            stderr.trim().if_empty("unknown osascript error")
+        ))
+    }
+
+    fn confirm_rebuild_runtime_assets() -> Result<bool> {
+        let script = r#"button returned of (display dialog "Delete installed runtime assets and rebuild them from the bundled app resources? Your data and config will be kept." buttons {"Cancel", "Rebuild"} default button "Cancel" cancel button "Cancel" with icon caution)"#;
+        let output = Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .output()?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).contains("Rebuild"));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if apple_script_user_cancelled(output.status.code(), &stderr) {
+            return Ok(false);
+        }
+        Err(anyhow!(
+            "runtime-assets rebuild confirmation failed: {}",
             stderr.trim().if_empty("unknown osascript error")
         ))
     }

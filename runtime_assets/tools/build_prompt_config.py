@@ -157,8 +157,8 @@ def next_prompt_sequence(prompts_dir: Path) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo-root", required=True)
-    args = parser.parse_args()
+    parser.add_argument("--config-env")
+    parser.parse_args()
 
     workspace_dir = Path.cwd()
     runtime_dir = workspace_dir / ".threadbridge"

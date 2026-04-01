@@ -5,6 +5,7 @@ use threadbridge_rust::config::load_runtime_config;
 use threadbridge_rust::hcodex_runtime;
 use threadbridge_rust::hcodex_ws_bridge;
 use threadbridge_rust::logging::init_json_logs;
+use threadbridge_rust::runtime_assets::ensure_runtime_assets;
 use threadbridge_rust::workspace::{ensure_workspace_runtime, validate_seed_template};
 use tokio::fs;
 use uuid::Uuid;
@@ -41,6 +42,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let runtime = load_runtime_config()?;
+    ensure_runtime_assets(&runtime).await?;
     let probe_id = format!(
         "min-chat-{}-{}",
         chrono_like_now(),
@@ -54,10 +56,9 @@ async fn main() -> Result<()> {
     fs::create_dir_all(&workspace_path).await?;
 
     let _guard = init_json_logs(&probe_root.join("events.jsonl"))?;
-    let template =
-        validate_seed_template(&runtime.codex_working_directory.join("templates/AGENTS.md"))?;
+    let template = validate_seed_template(&runtime.runtime_template_path())?;
     ensure_workspace_runtime(
-        &runtime.codex_working_directory,
+        &runtime.runtime_assets_root_path,
         &runtime.data_root_path,
         &template,
         &workspace_path,

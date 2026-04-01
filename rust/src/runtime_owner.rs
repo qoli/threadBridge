@@ -65,12 +65,7 @@ pub struct DesktopRuntimeOwner {
 
 impl DesktopRuntimeOwner {
     pub async fn new(runtime: RuntimeConfig) -> Result<Self> {
-        let seed_template_path = validate_seed_template(
-            &runtime
-                .codex_working_directory
-                .join("templates")
-                .join("AGENTS.md"),
-        )?;
+        let seed_template_path = validate_seed_template(&runtime.runtime_template_path())?;
         Ok(Self {
             app_server_runtime: WorkspaceRuntimeManager::new_with_data_root(
                 runtime.data_root_path.clone(),
@@ -140,7 +135,7 @@ impl DesktopRuntimeOwner {
             );
             let step = async {
                 ensure_workspace_runtime(
-                    &self.runtime.codex_working_directory,
+                    &self.runtime.runtime_assets_root_path,
                     &self.runtime.data_root_path,
                     &self.seed_template_path,
                     workspace_path,
