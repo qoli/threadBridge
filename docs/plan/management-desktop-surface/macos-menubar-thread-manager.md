@@ -265,6 +265,18 @@ web 管理面中的 v1 action 以既有 lifecycle/control 語義為主：
 - onboarding 完成的定義應是「bot token 已配置，且第一個 workspace 已加入」
 - 若使用者已完成 setup，就不應反覆彈出同樣的首次引導
 
+first-run gate 也應固定一條明確規則：
+
+- 是否屬於第一次使用，應以 data root 下 `config.env.local` 是否存在作為唯一判斷依據
+- 這裡的 `config.env.local` 指的是 runtime 解析出的 `<data-root>/config.env.local`，不是 repo 內固定相對路徑
+- 若檔案不存在，可視為尚未建立本機 setup，desktop runtime 可顯示 welcome / 導流
+- 若檔案已存在，即使 token、authorized users 或 control chat 仍未完成，也不再視為 first-run；後續只呈現一般 setup 缺失提示
+
+這樣做的原因是把「首次使用」和「setup 是否完整」拆開：
+
+- `config.env.local` 是目前本機 Telegram setup 的持久化落點，`PUT /api/setup/telegram` 會直接寫入這個檔案
+- `GET /api/setup` 回傳的 `telegram_token_configured`、`control_chat_ready`、workspace 數量，應用於顯示尚缺哪些步驟，而不是回頭重新判定 first-run
+
 ## 建議的資料模型
 
 這個管理面不應直接把 `data/*.json` 當成 UI 的穩定 API。
