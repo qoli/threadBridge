@@ -49,6 +49,9 @@ function parseRoute(hash) {
   const normalized = String(hash || '').trim().replace(/^#/, '')
   const path = normalized || '/overview'
   const segments = path.split('/').filter(Boolean)
+  if (segments[0] === 'welcome') {
+    return { page: 'welcome' }
+  }
   if (!segments.length || segments[0] === 'overview') {
     return { page: 'overview' }
   }
@@ -72,6 +75,8 @@ function parseRoute(hash) {
 
 function routeHash(route) {
   switch (route.page) {
+    case 'welcome':
+      return '#/welcome'
     case 'attention':
       return '#/attention'
     case 'workspaces':
@@ -94,6 +99,20 @@ function navigateToHash(hash) {
     return
   }
   window.location.hash = hash
+}
+
+function syncRouteWithSetup() {
+  const route = appState.ui.route
+  const setup = appState.setup || {}
+  if (setup.first_run && route.page === 'overview') {
+    navigateToHash('#/welcome')
+    return true
+  }
+  if (!setup.first_run && route.page === 'welcome') {
+    navigateToHash('#/overview')
+    return true
+  }
+  return false
 }
 
 function escapeHtml(value) {
@@ -614,6 +633,21 @@ function renderPageEmpty(title, detail = '', actionHtml = '') {
   `
 }
 
+function renderExternalLinkButton(url, label, primary = false) {
+  if (!url) {
+    return ''
+  }
+  return `<a class="button ${primary ? 'button-primary' : 'button-secondary'}" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`
+}
+
+function formatAuthorizedUserCount(setup) {
+  const count = Number(setup.authorized_user_count || 0)
+  if (count <= 0) {
+    return 'missing'
+  }
+  return `${count} configured`
+}
+
 function renderRecentLedgerRow(item) {
   const dominant = workspaceStatusDescriptor(item)
   const aux = workspaceAuxDescriptor(item)
@@ -700,6 +734,10 @@ function configureAddWorkspaceState() {
 
 function routeTitle(route) {
   switch (route.page) {
+    case 'welcome':
+      return {
+        title: 'Welcome',
+      }
     case 'attention':
       return {
         title: 'Attention',
@@ -731,6 +769,9 @@ function routeTitle(route) {
 
 function navItemsForRoute(route) {
   const setup = appState.setup || {}
+  if (route.page === 'welcome') {
+    return []
+  }
   const attentionCount = attentionWorkspaces().length
   const items = [
     { page: 'overview', label: 'Overview', count: '' },
@@ -764,7 +805,7 @@ function renderShellHeader(route) {
           <span class="meta-inline"><strong>Runtime</strong>${escapeHtml(formatMetaValue(health.runtime_readiness || 'unknown'))}</span>
         </div>
       </div>
-      ${renderRouteNav(route)}
+      ${route.page === 'welcome' ? '' : renderRouteNav(route)}
     </header>
   `
 }
@@ -790,7 +831,7 @@ function renderRouteNav(route) {
 }
 
 function renderTopbar(route) {
-  if (route.page === 'workspace') {
+  if (route.page === 'workspace' || route.page === 'welcome') {
     return ''
   }
   const meta = routeTitle(route)
@@ -814,7 +855,7 @@ function renderTopbar(route) {
 }
 
 function renderGlobalBanner(route) {
-  if (route.page !== 'settings' && appState.ui.managedCodexStatus) {
+  if (!['settings', 'welcome'].includes(route.page) && appState.ui.managedCodexStatus) {
     return `<div class="route-banner"><strong>Runtime Action</strong><div class="muted">${escapeHtml(appState.ui.managedCodexStatus)}</div></div>`
   }
   return ''
@@ -823,20 +864,90 @@ function renderGlobalBanner(route) {
 function renderOverviewPage() {
   const setup = appState.setup || {}
   const health = appState.health || {}
+  const addWorkspaceState = configureAddWorkspaceState()
   const nextSteps = []
+  const onboardingSections = []
+
   if (!setup.telegram_token_configured) {
     nextSteps.push('Save a Telegram bot token and authorized user IDs in Settings.')
   }
   if (setup.telegram_token_configured && !setup.control_chat_ready) {
-    nextSteps.push('Send /start to the bot from the target Telegram chat so the control chat exists.')
+    nextSteps.push('Open the bot in Telegram and send /start so the control chat exists.')
   }
   if (setup.telegram_token_configured && setup.control_chat_ready && !appState.workspaces.length) {
     nextSteps.push('Add the first workspace from Workspaces to complete the minimum viable setup.')
   }
 
+  if (setup.telegram_token_configured && !setup.control_chat_ready) {
+    onboardingSections.push(`
+      <section class="section-block onboarding-block">
+        <div class="section-head">
+          <div class="section-copy">
+            <h2>Finish Telegram Setup</h2>
+            <p class="section-lead">Use your bot link, open the private chat, and send <code>/start</code>.</p>
+          </div>
+        </div>
+        <div class="callout-grid">
+          <div class="callout-card">
+            <strong>Bot URL</strong>
+            <div class="muted">${escapeHtml(setup.bot_url || 'Bot URL will appear after setup is saved and Telegram returns the bot username.')}</div>
+            <div class="button-row">
+              ${renderExternalLinkButton(setup.bot_url, 'Open Bot', true)}
+            </div>
+          </div>
+          <div class="callout-card">
+            <strong>Authorized User IDs</strong>
+            <div class="muted">${escapeHtml(formatAuthorizedUserCount(setup))}</div>
+            <div class="button-row">
+              <a class="button button-secondary" href="#/settings">Open Settings</a>
+            </div>
+          </div>
+        </div>
+        ${setup.bot_identity_error ? `<div class="status-note">${escapeHtml(setup.bot_identity_error)}</div>` : ''}
+      </section>
+    `)
+  }
+
+  if (setup.control_chat_ready && !appState.workspaces.length) {
+    onboardingSections.push(`
+      <section class="section-block onboarding-block">
+        <div class="section-head">
+          <div class="section-copy">
+            <h2>Add The First Workspace</h2>
+            <p class="section-lead">threadBridge will open the system folder picker and create or reuse the managed workspace thread.</p>
+          </div>
+        </div>
+        <div class="button-row">
+          <button class="button button-primary" ${dataAttrs({ action: 'pick-and-add-workspace' })} ${addWorkspaceState.disabled ? 'disabled' : ''}>Add Workspace</button>
+          <a class="button button-secondary" href="#/workspaces">Open Workspaces</a>
+        </div>
+        <div class="status-note">${escapeHtml(addWorkspaceState.message)}</div>
+      </section>
+    `)
+  }
+
+  if (setup.control_chat_ready && appState.workspaces.length === 1) {
+    const firstWorkspace = appState.workspaces[0]
+    onboardingSections.push(`
+      <section class="section-block onboarding-block">
+        <div class="section-head">
+          <div class="section-copy">
+            <h2>Start The First Thread</h2>
+            <p class="section-lead">Suggested first message: send <code>Hi</code> to the workspace thread in Telegram.</p>
+          </div>
+        </div>
+        <div class="status-note">First workspace: ${escapeHtml(workspacePrimaryLabel(firstWorkspace))}</div>
+      </section>
+    `)
+  }
+
   const attention = attentionWorkspaces().slice(0, 6)
   const recent = sortByLastUsed(appState.workspaces).slice(0, 6)
   const sections = []
+
+  if (onboardingSections.length) {
+    sections.push(onboardingSections.join(''))
+  }
 
   if (nextSteps.length) {
     sections.push(`
@@ -889,6 +1000,72 @@ function renderOverviewPage() {
         ${renderMetricCell('Managed Codex', health.managed_codex?.version || 'unknown', health.managed_codex?.binary_ready ? 'binary ready' : 'binary unavailable')}
       </section>
       ${sections.join('')}
+    </div>
+  `
+}
+
+function renderWelcomePage() {
+  const setup = appState.setup || {}
+  return `
+    <div class="page-body welcome-layout">
+      <section class="welcome-hero">
+        <div class="welcome-copy">
+          <div class="eyebrow">First Run</div>
+          <h1>Welcome to threadBridge</h1>
+          <p class="section-lead">Finish the first local setup here. After you save the setup, threadBridge will move you into the regular management UI to open the bot, send <code>/start</code>, and add the first workspace.</p>
+        </div>
+      </section>
+      <section class="section-block">
+        <div class="section-head">
+          <div class="section-copy">
+            <h2>A Steps</h2>
+            <p class="section-lead">Create the bot, collect user IDs, then save them into threadBridge.</p>
+          </div>
+        </div>
+        <div class="callout-grid">
+          <article class="callout-card">
+            <strong>1. Create the bot with BotFather</strong>
+            <div class="muted">Open <code>@BotFather</code>, create a new bot, and copy the bot token.</div>
+            <div class="button-row">
+              ${renderExternalLinkButton('https://t.me/BotFather', 'Open BotFather', true)}
+            </div>
+          </article>
+          <article class="callout-card">
+            <strong>2. Collect user IDs with userinfobot</strong>
+            <div class="muted">Open <code>@userinfobot</code>, send a message, and copy the Telegram user ID list you want to authorize.</div>
+            <div class="button-row">
+              ${renderExternalLinkButton('https://t.me/userinfobot', 'Open userinfobot', false)}
+            </div>
+          </article>
+        </div>
+      </section>
+      <section class="section-block">
+        <div class="section-head">
+          <div class="section-copy">
+            <h2>Save Setup</h2>
+            <p class="section-lead">Use comma-separated Telegram user IDs if you want to authorize more than one person.</p>
+          </div>
+          <div class="pill-row">
+            ${pill('first run', setup.first_run ? 'yes' : 'no')}
+            ${pill('token', setup.telegram_token_configured ? 'configured' : 'missing')}
+            ${pill('authorized users', formatAuthorizedUserCount(setup))}
+          </div>
+        </div>
+        <form class="form-grid" ${dataAttrs({ submitAction: 'submit-setup-form' })}>
+          <div class="field">
+            <span>Telegram Bot Token</span>
+            <input type="password" value="${escapeHtml(appState.drafts.setup.telegramToken)}" placeholder="Paste the BotFather token" ${dataAttrs({ inputAction: 'update-setup-draft', field: 'telegramToken' })} />
+          </div>
+          <div class="field">
+            <span>Authorized User IDs</span>
+            <input type="text" value="${escapeHtml(appState.drafts.setup.authorizedUserIds)}" placeholder="Comma separated Telegram user IDs" ${dataAttrs({ inputAction: 'update-setup-draft', field: 'authorizedUserIds' })} />
+          </div>
+          <div class="button-row">
+            <button class="button button-primary" type="submit">Save Setup</button>
+            <div class="muted">${escapeHtml(appState.ui.setupStatus)}</div>
+          </div>
+        </form>
+      </section>
     </div>
   `
 }
@@ -967,7 +1144,9 @@ function renderSettingsPage() {
             <h2>Setup</h2>
           </div>
           <div class="pill-row">
+            ${pill('first run', setup.first_run ? 'yes' : 'no')}
             ${pill('token', setup.telegram_token_configured ? 'configured' : 'missing')}
+            ${pill('authorized users', formatAuthorizedUserCount(setup))}
             ${pill('polling', setup.telegram_polling_state || 'disconnected')}
             ${pill('control chat', setup.control_chat_ready ? 'ready' : 'missing')}
           </div>
@@ -986,6 +1165,13 @@ function renderSettingsPage() {
             <div class="muted">${escapeHtml(appState.ui.setupStatus)}</div>
           </div>
         </form>
+        ${setup.bot_url ? `
+          <div class="button-row">
+            ${renderExternalLinkButton(setup.bot_url, 'Open Bot', false)}
+            <span class="muted">${escapeHtml(setup.bot_username || setup.bot_url)}</span>
+          </div>
+        ` : ''}
+        ${setup.bot_identity_error ? `<div class="status-note">${escapeHtml(setup.bot_identity_error)}</div>` : ''}
         ${setup.control_chat_ready ? '' : '<div class="status-note">Control chat missing. Send /start in the target chat.</div>'}
       </section>
       <section class="section-block">
@@ -1410,6 +1596,8 @@ function renderWorkingSessions(threadKey) {
 
 function renderRoute(route) {
   switch (route.page) {
+    case 'welcome':
+      return renderWelcomePage()
     case 'attention':
       return renderAttentionPage()
     case 'workspaces':
@@ -1428,6 +1616,9 @@ function renderRoute(route) {
 function renderApp() {
   syncDraftsFromData()
   reconcileDrafts()
+  if (syncRouteWithSetup()) {
+    return
+  }
   const route = appState.ui.route
   const root = document.getElementById('app')
   root.innerHTML = `
@@ -1810,6 +2001,7 @@ function toggleWorkspacePanel(threadKey, panelKey) {
 
 async function submitSetupForm(event) {
   event.preventDefault()
+  const wasFirstRun = Boolean(appState.setup?.first_run)
   appState.ui.setupStatus = 'Saving...'
   scheduleRender()
   try {
@@ -1831,6 +2023,9 @@ async function submitSetupForm(event) {
       ? 'Saved. Restart required before polling can start.'
       : 'Saved. Desktop runtime will retry polling automatically.'
     await refresh()
+    if (wasFirstRun) {
+      navigateToHash('#/overview')
+    }
   } catch (error) {
     appState.ui.setupStatus = error instanceof Error ? error.message : 'Save failed'
     scheduleRender()

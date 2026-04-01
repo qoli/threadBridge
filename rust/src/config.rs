@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::env;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
@@ -112,6 +112,36 @@ fn parse_authorized_users(raw: &str) -> Result<HashSet<i64>> {
     Ok(ids)
 }
 
+fn load_telegram_config_from_path(path: &Path) -> Result<TelegramConfig> {
+    if !path.exists() {
+        bail!("Missing TELEGRAM_BOT_TOKEN.");
+    }
+    let mut telegram_token = None;
+    let mut authorized_user_ids = None;
+    for item in dotenvy::from_path_iter(path)
+        .with_context(|| format!("failed to read {}", path.display()))?
+    {
+        let (key, value) = item?;
+        let trimmed = value.trim().to_owned();
+        match key.as_str() {
+            "TELEGRAM_BOT_TOKEN" if !trimmed.is_empty() => telegram_token = Some(trimmed),
+            "AUTHORIZED_TELEGRAM_USER_IDS" if !trimmed.is_empty() => {
+                authorized_user_ids = Some(parse_authorized_users(&trimmed)?);
+            }
+            _ => {}
+        }
+    }
+
+    let telegram_token = telegram_token.context("Missing TELEGRAM_BOT_TOKEN.")?;
+    let authorized_user_ids =
+        authorized_user_ids.context("Missing AUTHORIZED_TELEGRAM_USER_IDS.")?;
+
+    Ok(TelegramConfig {
+        telegram_token,
+        authorized_user_ids,
+    })
+}
+
 pub fn load_runtime_config() -> Result<RuntimeConfig> {
     load_dotenv();
 
@@ -160,7 +190,12 @@ pub fn load_telegram_config() -> Result<TelegramConfig> {
 }
 
 pub fn load_optional_telegram_config() -> Result<Option<TelegramConfig>> {
-    match load_telegram_config() {
+    let runtime = load_runtime_config()?;
+    load_optional_telegram_config_from_path(&runtime.config_env_path())
+}
+
+pub fn load_optional_telegram_config_from_path(path: &Path) -> Result<Option<TelegramConfig>> {
+    match load_telegram_config_from_path(path) {
         Ok(config) => Ok(Some(config)),
         Err(error) => {
             let message = error.to_string();

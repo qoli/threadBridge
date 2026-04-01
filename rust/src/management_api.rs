@@ -16,12 +16,18 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(not(test))]
+use teloxide::requests::Requester;
+#[cfg(not(test))]
+use teloxide::Bot;
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::RwLock;
+#[cfg(not(test))]
+use tokio::time::{Duration as TokioDuration, timeout};
 use tracing::{info, warn};
 
-use crate::config::{RuntimeConfig, load_optional_telegram_config};
+use crate::config::{RuntimeConfig, load_optional_telegram_config_from_path};
 use crate::local_control::{
     TelegramControlBridgeHandle, ensure_archived_thread, resolve_workspace_argument,
 };
@@ -167,10 +173,12 @@ struct ManagementApiState {
     telegram_bridge: Arc<RwLock<Option<TelegramControlBridgeHandle>>>,
     runtime_owner: Arc<RwLock<Option<DesktopRuntimeOwner>>>,
     native_workspace_picker_available: Arc<RwLock<bool>>,
+    bot_identity: Arc<RwLock<CachedTelegramBotIdentity>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SetupStateView {
+    pub first_run: bool,
     pub telegram_token_configured: bool,
     pub authorized_user_ids: Vec<i64>,
     pub authorized_user_count: usize,
@@ -180,6 +188,17 @@ pub struct SetupStateView {
     pub control_chat_ready: bool,
     pub control_chat_id: Option<i64>,
     pub native_workspace_picker_available: bool,
+    pub bot_username: Option<String>,
+    pub bot_url: Option<String>,
+    pub bot_identity_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CachedTelegramBotIdentity {
+    token: Option<String>,
+    username: Option<String>,
+    url: Option<String>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -327,7 +346,9 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         telegram_bridge: Arc::new(RwLock::new(None)),
         runtime_owner: Arc::new(RwLock::new(None)),
         native_workspace_picker_available: Arc::new(RwLock::new(false)),
+        bot_identity: Arc::new(RwLock::new(CachedTelegramBotIdentity::default())),
     });
+    state.refresh_cached_bot_identity().await?;
     let bind_addr = runtime.management_bind_addr;
     let listener = TcpListener::bind(bind_addr)
         .await
@@ -900,6 +921,35 @@ async fn get_events(
 }
 
 impl ManagementApiState {
+    async fn refresh_cached_bot_identity(&self) -> Result<()> {
+        let telegram = load_optional_telegram_config_from_path(&self.runtime.config_env_path())?;
+        self.refresh_cached_bot_identity_for_token(
+            telegram.as_ref().map(|config| config.telegram_token.as_str()),
+        )
+        .await;
+        Ok(())
+    }
+
+    async fn refresh_cached_bot_identity_for_token(&self, token: Option<&str>) {
+        let next = resolve_cached_bot_identity(token).await;
+        let mut current = self.bot_identity.write().await;
+        *current = next;
+    }
+
+    async fn ensure_cached_bot_identity(
+        &self,
+        token: Option<&str>,
+    ) -> CachedTelegramBotIdentity {
+        let needs_refresh = {
+            let current = self.bot_identity.read().await;
+            current.token.as_deref() != token
+        };
+        if needs_refresh {
+            self.refresh_cached_bot_identity_for_token(token).await;
+        }
+        self.bot_identity.read().await.clone()
+    }
+
     async fn shared_control(&self) -> Result<SharedControlHandle> {
         self.shared_control.read().await.clone().context(
             "Desktop runtime owner control is not active. Start threadBridge in desktop mode.",
@@ -917,9 +967,16 @@ impl ManagementApiState {
     }
 
     async fn setup_state(&self) -> Result<SetupStateView> {
-        let telegram = load_optional_telegram_config()?;
+        let telegram = load_optional_telegram_config_from_path(&self.runtime.config_env_path())?;
         let main_thread = self.repository.find_main_thread().await?;
+        let config_env_path = self.runtime.config_env_path();
+        let bot_identity = self
+            .ensure_cached_bot_identity(
+                telegram.as_ref().map(|config| config.telegram_token.as_str()),
+            )
+            .await;
         Ok(SetupStateView {
+            first_run: !config_env_path.exists(),
             telegram_token_configured: telegram.is_some(),
             authorized_user_ids: telegram
                 .as_ref()
@@ -943,6 +1000,9 @@ impl ManagementApiState {
             control_chat_ready: main_thread.is_some(),
             control_chat_id: main_thread.map(|record| record.metadata.chat_id),
             native_workspace_picker_available: *self.native_workspace_picker_available.read().await,
+            bot_username: bot_identity.username,
+            bot_url: bot_identity.url,
+            bot_identity_error: bot_identity.error,
         })
     }
 
@@ -1685,9 +1745,10 @@ impl ManagementApiState {
 
     async fn write_telegram_setup(&self, payload: UpdateTelegramSetupRequest) -> Result<()> {
         let mut updates = BTreeMap::new();
+        let telegram_token = payload.telegram_token.trim().to_owned();
         updates.insert(
             "TELEGRAM_BOT_TOKEN".to_owned(),
-            payload.telegram_token.trim().to_owned(),
+            telegram_token.clone(),
         );
         let authorized = payload
             .authorized_user_ids
@@ -1697,8 +1758,54 @@ impl ManagementApiState {
             .join(",");
         updates.insert("AUTHORIZED_TELEGRAM_USER_IDS".to_owned(), authorized);
         let env_path = self.runtime.config_env_path();
-        write_env_file(&env_path, &updates).await
+        write_env_file(&env_path, &updates).await?;
+        self.refresh_cached_bot_identity_for_token(Some(telegram_token.as_str()))
+            .await;
+        Ok(())
     }
+}
+
+async fn resolve_cached_bot_identity(token: Option<&str>) -> CachedTelegramBotIdentity {
+    let Some(token) = token.map(str::trim).filter(|value| !value.is_empty()) else {
+        return CachedTelegramBotIdentity::default();
+    };
+    match resolve_telegram_bot_identity(token).await {
+        Ok((username, url)) => CachedTelegramBotIdentity {
+            token: Some(token.to_owned()),
+            username,
+            url,
+            error: None,
+        },
+        Err(error) => CachedTelegramBotIdentity {
+            token: Some(token.to_owned()),
+            username: None,
+            url: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+async fn resolve_telegram_bot_identity(
+    token: &str,
+) -> Result<(Option<String>, Option<String>)> {
+    let username = fetch_telegram_bot_username(token).await?;
+    let url = username
+        .as_deref()
+        .map(|value| format!("https://t.me/{value}"));
+    Ok((username, url))
+}
+
+#[cfg(not(test))]
+async fn fetch_telegram_bot_username(token: &str) -> Result<Option<String>> {
+    let me = timeout(TokioDuration::from_secs(5), Bot::new(token.to_owned()).get_me())
+        .await
+        .context("Telegram getMe timed out")??;
+    Ok(me.user.username.clone())
+}
+
+#[cfg(test)]
+async fn fetch_telegram_bot_username(_token: &str) -> Result<Option<String>> {
+    Ok(None)
 }
 
 async fn write_env_file(path: &Path, updates: &BTreeMap<String, String>) -> Result<()> {
@@ -2178,8 +2285,9 @@ impl IntoResponse for ManagementApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        MANAGEMENT_UI_JS, ManagementApiHandle, ManagementEventSnapshot, WorkingSessionRecordView,
-        WorkingSessionSummaryView, diff_management_event_snapshots, spawn_management_api,
+        MANAGEMENT_UI_JS, ManagementApiHandle, ManagementEventSnapshot,
+        UpdateTelegramSetupRequest, WorkingSessionRecordView, WorkingSessionSummaryView,
+        diff_management_event_snapshots, spawn_management_api, write_env_file,
     };
     use crate::app_server_runtime::WorkspaceRuntimeManager;
     use crate::collaboration_mode::CollaborationMode;
@@ -2246,6 +2354,67 @@ mod tests {
     fn management_ui_uses_hcodex_ingress_status_field() {
         assert!(MANAGEMENT_UI_JS.contains("hcodex_ingress_status"));
         assert!(!MANAGEMENT_UI_JS.contains("tui_proxy_status"));
+    }
+
+    #[tokio::test]
+    async fn setup_state_marks_first_run_until_setup_file_exists() {
+        let root = temp_path();
+        fs::create_dir_all(&root).await.unwrap();
+        let handle = spawn_management_api(runtime_config(&root)).await.unwrap();
+
+        let initial = handle.setup_state().await.unwrap();
+        assert!(initial.first_run);
+        assert!(!initial.telegram_token_configured);
+        assert_eq!(initial.bot_url, None);
+
+        handle
+            .state
+            .write_telegram_setup(UpdateTelegramSetupRequest {
+                telegram_token: "123:abc".to_owned(),
+                authorized_user_ids: vec![7, 8],
+            })
+            .await
+            .unwrap();
+
+        let updated = handle.setup_state().await.unwrap();
+        assert!(!updated.first_run);
+        assert!(updated.telegram_token_configured);
+        assert_eq!(updated.authorized_user_ids, vec![7, 8]);
+    }
+
+    #[tokio::test]
+    async fn setup_state_uses_runtime_scoped_config_file() {
+        let root_a = temp_path();
+        let root_b = temp_path();
+        fs::create_dir_all(root_a.join("data")).await.unwrap();
+        fs::create_dir_all(root_b.join("data")).await.unwrap();
+
+        write_env_file(
+            &root_a.join("data").join("config.env.local"),
+            &BTreeMap::from([
+                ("TELEGRAM_BOT_TOKEN".to_owned(), "111:aaa".to_owned()),
+                ("AUTHORIZED_TELEGRAM_USER_IDS".to_owned(), "7".to_owned()),
+            ]),
+        )
+        .await
+        .unwrap();
+        write_env_file(
+            &root_b.join("data").join("config.env.local"),
+            &BTreeMap::from([
+                ("TELEGRAM_BOT_TOKEN".to_owned(), "222:bbb".to_owned()),
+                ("AUTHORIZED_TELEGRAM_USER_IDS".to_owned(), "41,99".to_owned()),
+            ]),
+        )
+        .await
+        .unwrap();
+
+        let handle_a = spawn_management_api(runtime_config(&root_a)).await.unwrap();
+        let handle_b = spawn_management_api(runtime_config(&root_b)).await.unwrap();
+
+        let setup_a = handle_a.setup_state().await.unwrap();
+        let setup_b = handle_b.setup_state().await.unwrap();
+        assert_eq!(setup_a.authorized_user_ids, vec![7]);
+        assert_eq!(setup_b.authorized_user_ids, vec![41, 99]);
     }
 
     #[tokio::test]

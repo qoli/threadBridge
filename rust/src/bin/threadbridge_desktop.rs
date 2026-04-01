@@ -128,6 +128,7 @@ mod macos_app {
             management_api.set_shared_control(Some(SharedControlHandle::new(shared_control))),
         );
         runtime.block_on(reconcile_runtime_owner(&management_api, &owner));
+        maybe_open_first_run_welcome(&runtime, &management_api)?;
 
         if runtime
             .block_on(spawn_bot_runtime_from_env_with_runtimes(
@@ -631,6 +632,23 @@ mod macos_app {
         open_management_url(&app.management_api, None)
     }
 
+    fn maybe_open_first_run_welcome(
+        runtime: &Runtime,
+        management_api: &ManagementApiHandle,
+    ) -> Result<()> {
+        let setup = runtime.block_on(management_api.setup_state())?;
+        if !setup.first_run {
+            return Ok(());
+        }
+        if let Err(error) = show_first_run_alert() {
+            warn!(
+                event = "desktop_runtime.first_run.alert_failed",
+                error = %error
+            );
+        }
+        open_management_url(management_api, Some("#/welcome"))
+    }
+
     async fn add_workspace_via_tray(management_api: &ManagementApiHandle) -> Result<()> {
         let Some(workspace_cwd) = tokio::task::spawn_blocking(pick_workspace_folder).await?? else {
             info!(event = "desktop_runtime.add_workspace.cancelled");
@@ -700,6 +718,22 @@ mod macos_app {
             "failed to open management URL in default browser"
         );
         Ok(())
+    }
+
+    fn show_first_run_alert() -> Result<()> {
+        let script = r#"display dialog "threadBridge will open a welcome page to help you create a Telegram bot, collect your authorized user IDs, and finish the first local setup." buttons {"Continue"} default button "Continue" with icon note"#;
+        let output = Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow!(
+            "first-run alert failed: {}",
+            stderr.trim().if_empty("unknown osascript error")
+        ))
     }
 
     fn pick_workspace_folder() -> Result<Option<String>> {

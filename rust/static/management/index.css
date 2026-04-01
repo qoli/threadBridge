@@ -249,6 +249,31 @@ button {
   gap: 1.8rem;
 }
 
+.welcome-layout {
+  gap: 1.8rem;
+}
+
+.welcome-hero {
+  display: grid;
+  gap: 0.85rem;
+  padding: 0.4rem 0 0.2rem;
+  border-top: 1px solid var(--line-strong);
+}
+
+.welcome-copy {
+  display: grid;
+  gap: 0.45rem;
+  max-width: 48rem;
+}
+
+.welcome-hero h1 {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  font-weight: 600;
+  letter-spacing: -0.05em;
+  line-height: 0.98;
+}
+
 .summary-strip {
   display: grid;
   gap: 1.2rem;
@@ -355,6 +380,23 @@ button {
 .panel-head .section-copy {
   display: grid;
   gap: 0.12rem;
+}
+
+.callout-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.callout-card {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.9rem 0 0;
+  border-top: 1px solid var(--line);
+}
+
+.onboarding-block .button-row {
+  margin-top: 0.2rem;
 }
 
 .section-title,
@@ -1132,6 +1174,7 @@ textarea:focus-visible,
 
   .summary-strip,
   .summary-strip.compact,
+  .callout-grid,
   .detail-matrix {
     grid-template-columns: 1fr;
   }
