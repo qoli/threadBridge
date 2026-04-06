@@ -20,7 +20,7 @@
   - managed Codex preference / cache refresh / source build / build-defaults
   - workspace launch config
   - adopt / reject pending TUI handoff
-  - `POST /api/threads/:thread_key/actions`（`start_fresh_session` / `repair_session_binding` / `set_workspace_execution_mode` / `launch_local_session`）
+  - `POST /api/threads/:thread_key/actions`（`start_fresh_session` / `repair_session_binding` / `set_workspace_execution_mode` / `launch_local_session` / `set_thread_collaboration_mode` / `interrupt_running_turn`）
 - `threadbridge_desktop` 已開始直接依賴這些本地 view / action
 - transport-neutral 的正式 view / action 命名仍未完全收斂
 - local HTTP + SSE 已成為目前最務實的實驗載體
@@ -31,6 +31,7 @@
 - session-first observability 已開始透過 `GET /api/threads/:thread_key/sessions` 與 `GET /api/threads/:thread_key/sessions/:session_id/records` 對外暴露
 - `ThreadStateView` 已開始對外暴露 canonical `lifecycle_status`
 - `binding_status` / `run_status` 已開始透過 shared resolver 收斂成同一套 wire semantics
+- `ThreadStateView` / `ManagedWorkspaceView` 已開始同步暴露 `current_collaboration_mode`
 - `conflict` 已明確保留為 workspace-view 的獨立欄位，而不是 `binding_status` 的另一個值
 - runtime health 的 broken thread count、workspace recovery hint、以及 working session broken error 聚合，已開始從 canonical `binding_status` 派生
 - public view 已開始移除 `session_broken` / `last_error` 這類 compatibility alias；workspace/thread 的 canonical 判斷應直接讀 `binding_status` / `run_status` / `session_broken_reason`
@@ -38,6 +39,7 @@
 - 目前已落地的 event kind 包括：
   - `setup_changed`
   - `runtime_health_changed`
+  - `managed_codex_changed`
   - `thread_state_changed`
   - `workspace_state_changed`
   - `archived_thread_changed`
@@ -49,9 +51,9 @@
 
 目前新增記錄的近期方向是：
 
-- Telegram 之後應能透過正式 control action 設定 Codex 工作模型
-- Telegram 之後也應能透過正式 control action 設定 execution mode
-- 這兩者都不應以 Telegram-only command flag 的形式存在，而應先收斂成 runtime protocol 的控制面
+- Telegram 已能透過正式 control action 設定 execution mode / collaboration mode，並觸發 interrupt current turn
+- Codex 工作模型設定仍待補成正式 control action，而不是停留在 Telegram-only command flag 想像
+- 後續重點已轉為讓更多 control / interaction capability 共享同一套 protocol-facing naming 與 public stream 邊界
 
 ## 問題
 
@@ -123,9 +125,15 @@
 - `chat_id`
 - `message_thread_id`
 - `workspace_cwd`
+- `workspace_execution_mode`
+- `current_execution_mode`
+- `current_approval_policy`
+- `current_sandbox_policy`
+- `current_collaboration_mode`
 - `lifecycle_status`
 - `binding_status`
 - `run_status`
+- `run_phase`
 - `current_codex_thread_id`
 - `tui_active_codex_thread_id`
 - `tui_session_adoption_pending`
@@ -180,9 +188,13 @@
 - `current_execution_mode`
 - `current_approval_policy`
 - `current_sandbox_policy`
+- `current_collaboration_mode`
 - `mode_drift`
 - `binding_status`
 - `run_status`
+- `run_phase`
+- `interrupt_status`
+- `interrupt_note`
 - `current_codex_thread_id`
 - `tui_active_codex_thread_id`
 - `tui_session_adoption_pending`
@@ -199,6 +211,7 @@
 - `heartbeat_last_checked_at`
 - `heartbeat_last_error`
 - `session_broken_reason`
+- `recovery_hint`
 
 這裡目前要明確承認一件事：
 
@@ -507,16 +520,13 @@ v1 至少定義：
   - HTTP: `POST /api/threads/:thread_key/restore`
   - Telegram: `/restore_workspace`
 - `set_thread_collaboration_mode(mode=plan)`
-  - HTTP:
-    - 目前尚未有對等 route
+  - HTTP: `POST /api/threads/:thread_key/actions` + `{ "action": "set_thread_collaboration_mode", "mode": "plan" }`
   - Telegram: `/plan_mode`
 - `set_thread_collaboration_mode(mode=default)`
-  - HTTP:
-    - 目前尚未有對等 route
+  - HTTP: `POST /api/threads/:thread_key/actions` + `{ "action": "set_thread_collaboration_mode", "mode": "default" }`
   - Telegram: `/default_mode`
 - `interrupt_running_turn`
-  - HTTP:
-    - 目前尚未有對等 route
+  - HTTP: `POST /api/threads/:thread_key/actions` + `{ "action": "interrupt_running_turn" }`
   - Telegram: `/stop`
 
 ### Mapping 規則
@@ -527,9 +537,9 @@ v1 至少定義：
   - 例如 `launch_local_session`
 - 一個 transport surface 不應同時混合多個 canonical action
   - 例如 `/start_fresh_session` 不應再偷偷兼做 local launch
-- 若某個 capability 目前只存在 Telegram，不代表它就是 Telegram-only 語義
+- 即使某個 capability 目前主要由 Telegram 暴露，也不代表它就是 Telegram-only 語義
   - 例如 `interrupt_running_turn`
-  - 之後仍可補 management API / desktop UI surface，而不需要重命名 protocol action
+  - management API 已有對等 control route；之後若補 desktop UI surface，也不需要重命名 protocol action
 
 如果之後引入 desktop runtime capability bridge，這一層還需要回答：
 
@@ -574,7 +584,10 @@ v1 至少保留：
 - `workspace_state_changed`
 - `runtime_health_changed`
 - `setup_changed`
+- `managed_codex_changed`
 - `archived_thread_changed`
+- `working_session_changed`
+- `transcript_changed`
 - `error`
 
 目前已落地的 wire shape 是：
@@ -597,7 +610,7 @@ v1 至少保留：
 
 目前已收斂的 v1 wire semantics：
 
-- `setup_changed` / `runtime_health_changed`
+- `setup_changed` / `runtime_health_changed` / `managed_codex_changed`
   - singleton upsert
   - 不帶 `key`
   - `current` 是完整 replacement payload
@@ -617,7 +630,7 @@ v1 至少保留：
 
 - mirror / observability 已開始承接更完整的 Codex 過程文本，event model 應收斂成等價的 process transcript 事件，而不是各 adapter 自己拼 `plan_text` / `tool_text`
 - `codex plan` 消息流已接入 mirror；目前重點轉為 combined final reply 與 plan snapshot 在 transcript / observability 上的呈現收斂，詳見 [codex-plan-mirror.md](../app-server-observer/codex-plan-mirror.md)
-- `managed_codex_changed` 這類更細的 owner / build event 尚未獨立落地
+- `managed_codex_changed` 已獨立落地，但 control action result 與 interaction event 仍未進入同一條 public stream family
 - event stream 雖然已 typed 化，但目前仍只直接驅動 top-level views；更細的 observability record 仍未走完整增量 payload
 
 ## Query / Control / Stream 分離
@@ -681,4 +694,4 @@ v1 至少保留：
 
 1. 把已落地的 management API / typed SSE / Telegram control surface 再往同一套 transport-neutral naming 收斂，避免同一能力同時以 route、slash command、內部 view 名稱各說各話。
 2. 擴大 tray/web 管理面直接消費 typed event payload 的覆蓋率，並決定哪些 query surface 仍保留 targeted refetch、哪些值得做更細的 incremental event。
-3. 補 `managed_codex_changed`、更細的 process transcript event，並再決定是否需要第二種 transport，例如 WebSocket。
+3. 決定 control action result 與 interaction event 是否需要 public stream surface，並再決定是否需要第二種 transport，例如 WebSocket。

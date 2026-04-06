@@ -2,7 +2,7 @@
 
 ## 目前進度
 
-這份文檔目前仍是草稿，但 Telegram v0 的第一批 adapter surface 已經部分落地。
+這份文檔目前已進入部分落地；Telegram v0 的第一批 adapter surface 已經進入可用狀態，但整體 adapter migration 仍未完成。
 
 目前已有的前置收斂：
 
@@ -23,11 +23,15 @@
   - `/sessions`
   - `/session_log <session_id>`
 - Telegram desktop launch control 已落地：
-  - `/launch new`
-  - `/launch current`
-  - `/launch resume <session_id>`
+  - `/launch_local_session new`
+  - `/launch_local_session continue_current`
+  - `/launch_local_session resume <session_id>`
 - Telegram execution mode control 已落地：
-  - `/execution_mode`
+  - `/get_workspace_execution_mode`
+  - `/set_workspace_execution_mode <mode>`
+- 上述 collaboration mode / execution mode / interrupt control 已不再只是 Telegram-only handler：
+  - 它們已開始對齊 shared `RuntimeControlActionRequest`
+  - management API 的 `POST /api/threads/:thread_key/actions` 也已有對等 surface
 - Busy Gate follow-up control 已先落地第一個正式 action：
   - `/stop`
   - 目前是單獨 interrupt current turn；`STOP 並插入發言` / `序列發言` 仍未做
@@ -50,7 +54,7 @@
   - post-plan `Implement this plan?`
   - 後續仍可再擴成更一般的 interrupt / questionnaire surface
 - Telegram desktop launch control surface 已先落地：
-  - 用 slash command 觸發 desktop endpoint 的 `launch new` / `launch current` / `launch resume`
+  - 用 slash command 觸發 desktop endpoint 的 `launch_local_session new` / `launch_local_session continue_current` / `launch_local_session resume`
   - 這條能力不應被表達成 `codex / hcodex` 二選一
   - 也不應回頭改寫 `/new_session` 的 continuity 語義
 - Telegram 之後可評估支持 `forwarded input`
@@ -147,9 +151,9 @@
 - Telegram 已補上一條獨立的 slash command，用來驅動 desktop endpoint 的本地 launch 行為
 - 它目前只承接既有 desktop launch control 的 adapter surface，而不是重新定義 runtime continuity
 - 較合理的動作集合是：
-  - `launch new`
-  - `launch current`
-  - `launch resume <session_id>`
+  - `launch_local_session new`
+  - `launch_local_session continue_current`
+  - `launch_local_session resume <session_id>`
 - 這條 control surface 的重點是：
   - 讓 Telegram 可以要求 desktop runtime 打開受管本地入口
   - 而不是讓使用者在 Telegram 中選 `codex` 或 `hcodex`

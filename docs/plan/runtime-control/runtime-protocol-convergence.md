@@ -2,7 +2,7 @@
 
 ## 目前進度
 
-這份文檔目前是收斂草稿；Phase 1（shared control action 最小切片）已落地。
+這份文檔目前已進入部分落地；Phase 1（shared control action 最小切片）、Phase 2 的最小 interaction vocabulary、以及 Phase 3 的第一批 surface parity 已落地。
 
 目前已實作：
 
@@ -46,18 +46,24 @@
   - `RuntimeControlActionResult`
   - `RuntimeControlActionEnvelope`
   - `LaunchLocalSessionTarget`
+- shared protocol 的 action request 已開始覆蓋：
+  - `set_thread_collaboration_mode`
+  - `interrupt_running_turn`
+- management / protocol public view 已開始同步暴露：
+  - `ManagedWorkspaceView.current_collaboration_mode`
+  - `ThreadStateView.current_collaboration_mode`
 - observer / interaction 已有一條 shared event lane：
   - `RuntimeInteractionEvent::RequestUserInput`
   - `RuntimeInteractionEvent::RequestResolved`
   - `RuntimeInteractionEvent::TurnCompleted`
+- `runtime_protocol.rs` 已新增 `RuntimeInteractionKind`，開始把 interaction vocabulary 明確掛回 shared protocol family
 
 目前尚未完成：
 
-- control action 型別已落地最小切片，但尚未覆蓋 collaboration/interrupt 等剩餘 capability
-- interaction event 仍是平行語言，尚未正式併入同一份 runtime protocol 契約
-- collaboration mode 尚未進入 management / protocol public view
-- `/stop`、collaboration mode 這類能力尚未形成 management API / Telegram / protocol 三面一致的收斂
-- 部分 capability 只存在 local app API 或 Telegram surface，尚未成為 transport-facing public contract
+- interaction event 雖已有 `RuntimeInteractionKind`，但仍是平行 typed family，尚未和 `RuntimeEventKind` 形成同一條 public stream contract
+- adopt/reject/archive/restore、managed Codex setup、以及部分 owner control 仍未完全收進 unified action route
+- control action result 目前仍主要靠 view diff / targeted refetch 體現，尚未成為獨立 protocol event family
+- 部分 capability 仍只存在 local app API 或單一 adapter surface，尚未成為一致的 transport-facing public contract
 
 ## 問題
 
@@ -69,9 +75,9 @@
 具體表現是：
 
 - management API route 名、Telegram slash command 名、shared service method 名，仍常常代表同一件事
-- `runtime_protocol.rs` 幾乎只承載 read-side view 與 top-level event，沒有對等的 control action vocabulary
+- `runtime_protocol.rs` 已開始承載 control action vocabulary，但 interaction / stream vocabulary 仍未完全收斂
 - `RuntimeInteractionEvent` 已是 shared event，但仍平行存在於 `runtime_protocol` 之外
-- collaboration mode、interrupt、fresh session 這類能力，已存在於代碼，卻還沒有完整 public protocol surface
+- adopt/reject/archive/restore、managed Codex owner control、以及 interaction stream 仍未形成完整 public protocol surface
 
 結果就是：
 
@@ -204,16 +210,17 @@ v1 至少應固定：
 - `start_fresh_session`
   - 已有 management API + Telegram + shared protocol
 - `set_thread_collaboration_mode`
-  - 目前有 Telegram command 與 repository persistence
-  - 缺 management/API/protocol public view
+  - 已有 management API + Telegram + shared protocol
+  - `current_collaboration_mode` 也已進入 public view
 - `interrupt_running_turn`
-  - 目前有 Telegram command 與 Codex client call
-  - 缺 management/API/protocol public surface
+  - 已有 management API + Telegram + shared protocol
+  - control action result 與後續 observability stream 仍未完全 formalize
 
 目前狀態更新：
 
-- `start_fresh_session` 已在 shared action route 上落地，應從優先補齊清單移除
-- 下一步優先應轉為 `set_thread_collaboration_mode` 與 `interrupt_running_turn`
+- `start_fresh_session`、`set_thread_collaboration_mode`、`interrupt_running_turn` 都已進入 shared action route
+- `current_collaboration_mode` 已進入 `ManagedWorkspaceView` / `ThreadStateView`
+- 下一步優先應轉為 adopt/reject/archive/restore 等剩餘 capability 的 action-route 收斂，以及 interaction stream 邊界
 
 #### Workstream D: Public Vocabulary Cleanup
 
@@ -277,16 +284,17 @@ v1 至少應固定：
 
 目標：
 
-- 補齊目前缺 management/API surface 的 shared capability
+- 補齊目前仍缺 unified action route 或 public protocol naming 的 shared capability
 
 優先順序：
 
-1. `set_thread_collaboration_mode`
-2. `interrupt_running_turn`
+1. `adopt_tui_session` / `reject_tui_session`
+2. `archive_thread` / `restore_thread`
+3. owner / managed Codex control 的 vocabulary 對齊
 
 完成標誌：
 
-- 這三個 capability 都有：
+- 這批 capability 都有：
   - canonical action 名
   - shared code path
   - 至少一個 transport-facing public surface
@@ -344,15 +352,14 @@ v1 至少應固定：
 
 - `RuntimeControlAction` 應直接放進 `runtime_protocol.rs`，還是拆成獨立模組？
 - interaction event 應和 `RuntimeEventKind` 共用同一個 enum family，還是保持另一條 typed stream？
-- unified action route 是否要繼續擴到 `set_thread_collaboration_mode` 與 `interrupt_running_turn`？
-- collaboration mode 是否應進入 `ManagedWorkspaceView` / `ThreadStateView`，還是暫時只作 control surface？
-- `/stop` 的對等 management/API surface 是否應該先補，還是先只補 protocol action 和 shared dispatcher？
-- control action 結果是否需要進 typed SSE，還是目前仍以 view diff 為主？
+- unified action route 是否應繼續擴到 adopt/reject/archive/restore 與更多 owner control？
+- interaction event 是否要併入現有 SSE，還是維持獨立 typed family 但共享 vocabulary？
+- control action result 是否需要 public stream payload，還是目前仍以 view diff / refetch 邊界為主？
 
 ## 建議的下一步
 
 1. 先在 `runtime-protocol` 主規格確認這份 rollout 草稿採用的 canonical action 名稱。
-2. 把 shared control action 切片從 execution mode / launch / repair / start fresh，擴到 collaboration mode 與 interrupt。
+2. 把 shared control action 切片從 execution mode / launch / repair / collaboration / interrupt，再擴到 adopt/reject/archive/restore 與 owner control。
 3. 再決定 interaction vocabulary 是要併入 `RuntimeEventKind`，還是保持獨立但同級的 protocol 型別。
 4. 補一輪文檔同步，把 `telegram-adapter-migration`、`session-lifecycle`、`codex-busy-input-gate` 的 action naming 引到同一套語言。
-5. 最後再開始補缺 management/API surface 的 capability，而不是先擴更多新功能。
+5. 最後再決定 control action result / interaction event 是否需要 public stream，而不是先擴更多新功能。

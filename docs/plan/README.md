@@ -86,14 +86,24 @@
   - 本地 management API 已開始承接它的 view / action 命名
   - local HTTP + SSE 已從草稿變成實際 transport
   - 近期已再補上 runtime-owner reconcile、managed Codex build defaults、workspace launch config、continue-current launch control、thread transcript read API，以及 session summary / session records read API
+  - `POST /api/threads/:thread_key/actions` 已開始對外承接 `set_thread_collaboration_mode` 與 `interrupt_running_turn`
   - `GET /api/threads` 已開始對外暴露 canonical `lifecycle_status`，並補齊 `chat_id` / `message_thread_id` / `session_broken_reason` / `last_verified_at` / `last_codex_turn_at`
+  - `ThreadStateView` / `ManagedWorkspaceView` 已開始暴露 `current_collaboration_mode`
   - runtime health 已改成 owner-canonical，`workspace_state` 僅保留 debug/observation 語義
   - `runtime_protocol` 共享 view builder 已開始把 `ThreadStateView` / `ManagedWorkspaceView` / `ArchivedThreadView` / `RuntimeHealthView` / `WorkingSession*View` 從 transport 層抽離
   - broken thread count、workspace recovery hint、以及 working session broken error 聚合，已開始改以 canonical `binding_status` 判定
   - public view 已開始移除 `session_broken` / `last_error` alias；對外主判斷改固定收斂到 `binding_status` / `run_status` / `session_broken_reason`
   - `GET /api/events` 已開始輸出 typed SSE event，而不是每輪都推整包 snapshot
+  - `managed_codex_changed` 已開始作為獨立 typed SSE event 發出
   - web UI 已開始直接套用 top-level typed SSE payload，並只對 transcript / sessions 做 targeted refetch
   - 但 protocol 仍未收斂成完整 transport-neutral 契約，尤其更細的 observability record 仍未走完整增量 event 模型
+- [runtime-protocol-convergence.md](runtime-control/runtime-protocol-convergence.md)
+  - doc kind: `plan`
+  - `runtime-protocol` 的 rollout / convergence 草稿
+  - `RuntimeControlActionRequest` / `Result` / `Envelope` 已補上 `set_thread_collaboration_mode` 與 `interrupt_running_turn`
+  - `RuntimeInteractionKind` 已進入 shared protocol vocabulary，`RequestUserInput` / `RequestResolved` / `TurnCompleted` 也已有 shared event lane
+  - management action route 與 Telegram slash command 已開始對齊 `start_fresh_session`、`repair_session_binding`、`set_workspace_execution_mode`、`launch_local_session`、`set_thread_collaboration_mode`、`interrupt_running_turn`
+  - 但 interaction event 仍是平行 typed family，adopt/reject/archive/restore 等 capability 也還沒完全收進 unified action route
 - [session-lifecycle.md](runtime-control/session-lifecycle.md)
   - doc kind: `plan`
   - depends_on: [runtime-architecture.md](runtime-control/runtime-architecture.md), [runtime-state-machine.md](runtime-control/runtime-state-machine.md)
@@ -120,7 +130,7 @@
   - workspace-local `workspace-config.json`、`ExecutionMode` enum、session execution snapshot 已落地
   - management API / launch-config / web UI 已開始暴露 workspace mode、current session mode 與 `mode_drift`
   - `hcodex` 與 Telegram turn/resume 已開始按 workspace mode 收斂到 `full_auto` 或 `yolo`
-  - Telegram 已補上 `/execution_mode` command surface，但 user-facing naming、owner vocabulary、以及 `Codex 工作模型` / 自定義 Codex config 是否與 mode 分離對外暴露，仍未收斂
+  - Telegram 已補上 `/get_workspace_execution_mode` / `/set_workspace_execution_mode` command surface，但 user-facing naming、owner vocabulary、以及 `Codex 工作模型` / 自定義 Codex config 是否與 mode 分離對外暴露，仍未收斂
 - [runtime-data-root.md](runtime-control/runtime-data-root.md)
   - doc kind: `plan`
   - bot-local runtime state 已有 shared `data_root_path` plumbing，但預設值原本仍寫死 repo-local `./data`
@@ -167,6 +177,14 @@
   - 已補記一個明確缺口：`codex mirror -> Telegram` 的 draft message 尚未實作 heartbeat，因此長時間 draft 仍會自動消失
   - 已新增記錄一個明確 bug：TUI mirror 的 draft message 可能出現不斷刷新的狀態
   - 但 outbound queue、完整 control lifecycle、artifact 類型與集中化 config 仍未收斂
+- [telegram-adapter-migration.md](telegram-adapter/telegram-adapter-migration.md)
+  - doc kind: `plan`
+  - Telegram adapter 遷移草稿
+  - owner authority 與 shared runtime control 已先從 Telegram 路徑抽離，再做更完整的 adapter migration
+  - 近期優先級應是補齊 Telegram 自身適配，而不是先做第二個 IM adapter 驗證
+  - Telegram collaboration mode slash commands、`/launch_local_session`、`/get_workspace_execution_mode`、`/set_workspace_execution_mode`、`/sessions`、`/session_log`、`/stop`，以及最小 `request_user_input` / `Implement this plan` 互動面已先行落地，且互動 UI 已改成 adapter-owned bridge
+  - `current_collaboration_mode` 已持久化到 session binding，且 management / runtime public view 也已開始同步暴露
+  - 近期 Telegram v0 剩餘能力面主要包括 Codex 工作模型設定、更完整的 Busy Gate follow-up control surface，以及 `main chat = control 面板` 下的 `forwarded input`
 - [macos-menubar-thread-manager.md](management-desktop-surface/macos-menubar-thread-manager.md)
   - doc kind: `plan`
   - `threadbridge_desktop`、macOS-first tray menu、workspace-first browser management UI 已開始落地
@@ -250,17 +268,6 @@
   - core runtime / adapter 抽象化草稿
   - owner 收斂與 shared control core 都應視為這條抽象化路線的已落地前置工作
   - 近期應先服務 Telegram 路徑收斂，而不是直接追求多 IM / 多 adapter 產品化
-- [runtime-protocol-convergence.md](runtime-control/runtime-protocol-convergence.md)
-  - doc kind: `plan`
-  - `runtime-protocol` 的 rollout / convergence 草稿
-  - 描述如何把 route、slash command、shared service、interaction event 收斂到同一份 protocol vocabulary
-- [telegram-adapter-migration.md](telegram-adapter/telegram-adapter-migration.md)
-  - doc kind: `plan`
-  - Telegram adapter 遷移草稿
-  - owner authority 與 shared runtime control 已先從 Telegram 路徑抽離，再做更完整的 adapter migration
-  - 近期優先級應是補齊 Telegram 自身適配，而不是先做第二個 IM adapter 驗證
-  - Telegram collaboration mode slash commands、`/launch`、`/execution_mode`、`/sessions`、`/session_log`、`/stop`，以及最小 `request_user_input` / `Implement this plan` 互動面已先行落地，且互動 UI 已改成 adapter-owned bridge
-  - 近期 Telegram v0 剩餘能力面主要包括 Codex 工作模型設定、更完整的 Busy Gate follow-up control surface，以及 `main chat = control 面板` 下的 `forwarded input`
 
 ## 備註
 
