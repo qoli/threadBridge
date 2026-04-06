@@ -6,6 +6,8 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd -P)
 DEFAULT_NOTARY_PROFILE="${THREADBRIDGE_RELEASE_NOTARY_PROFILE:-threadbridge-notary}"
 DEFAULT_GITHUB_REPO="${THREADBRIDGE_RELEASE_GITHUB_REPO:-qoli/threadBridge}"
 DEFAULT_NOTES_DIR="${THREADBRIDGE_RELEASE_NOTES_DIR:-$REPO_ROOT/docs/releases}"
+DEFAULT_FASTLANE_ASC_DIR="${THREADBRIDGE_FASTLANE_ASC_DIR:-$REPO_ROOT/fastlane/threadbridge-asc}"
+DEFAULT_FASTLANE_DIR="${THREADBRIDGE_FASTLANE_DIR:-$REPO_ROOT/fastlane}"
 
 usage() {
   cat <<'EOF'
@@ -30,6 +32,8 @@ Environment overrides:
   THREADBRIDGE_RELEASE_NOTARY_PROFILE
   THREADBRIDGE_RELEASE_GITHUB_REPO
   THREADBRIDGE_RELEASE_NOTES_DIR
+  THREADBRIDGE_FASTLANE_ASC_DIR
+  THREADBRIDGE_FASTLANE_DIR
 EOF
 }
 
@@ -44,6 +48,16 @@ fail() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
+}
+
+has_notary_profile() {
+  xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1
+}
+
+json_value() {
+  local key=$1
+  local file=$2
+  sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$file" | head -n 1
 }
 
 parse_args() {
@@ -151,7 +165,56 @@ Known limitations:
 EOF
 }
 
+bootstrap_notary_profile_from_asc_key() {
+  local api_key_json="$DEFAULT_FASTLANE_ASC_DIR/api_key.json"
+  [[ -f "$api_key_json" ]] || return 1
+
+  local key_id issuer_id key_path
+  key_id=$(json_value "key_id" "$api_key_json")
+  issuer_id=$(json_value "issuer_id" "$api_key_json")
+  [[ -n "$key_id" && -n "$issuer_id" ]] || return 1
+
+  key_path="$DEFAULT_FASTLANE_ASC_DIR/AuthKey_${key_id}.p8"
+  [[ -f "$key_path" ]] || return 1
+
+  log "bootstrapping notary profile $NOTARY_PROFILE from local ASC API key"
+  xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+    --key "$key_path" \
+    --key-id "$key_id" \
+    --issuer "$issuer_id"
+}
+
+bootstrap_notary_profile_from_fastlane() {
+  [[ -d "$DEFAULT_FASTLANE_DIR" ]] || return 1
+  command -v fastlane >/dev/null 2>&1 || return 1
+
+  local app_password="${THREADBRIDGE_NOTARY_APP_SPECIFIC_PASSWORD:-${FASTLANE_APPLE_APPLICATION_SPECIFIC_PASSWORD:-}}"
+  [[ -n "$app_password" ]] || return 1
+
+  log "bootstrapping notary profile $NOTARY_PROFILE via fastlane lane"
+  (
+    cd "$REPO_ROOT"
+    THREADBRIDGE_NOTARY_PROFILE="$NOTARY_PROFILE" \
+    THREADBRIDGE_NOTARY_APP_SPECIFIC_PASSWORD="$app_password" \
+      fastlane bootstrap_notary_profile
+  )
+}
+
+ensure_notary_profile() {
+  require_command xcrun
+
+  if has_notary_profile; then
+    return 0
+  fi
+
+  bootstrap_notary_profile_from_asc_key || bootstrap_notary_profile_from_fastlane || fail \
+    "missing notary profile $NOTARY_PROFILE and could not bootstrap it from local ASC key or fastlane"
+
+  has_notary_profile || fail "failed to create notary profile $NOTARY_PROFILE"
+}
+
 run_draft_release() {
+  ensure_notary_profile
   log "running draft prerelease pipeline for $VERSION"
   "$SCRIPT_DIR/release_threadbridge.sh" release \
     --version "$VERSION" \

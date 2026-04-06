@@ -172,6 +172,8 @@ By default the wrapper:
 - uses `docs/releases/<version>.md` for release notes
 - creates that notes file if it does not exist yet
 - defaults the notary profile to `threadbridge-notary`
+- bootstraps that notary profile from the local `fastlane/threadbridge-asc` API key when needed
+- falls back to the local fastlane `bootstrap_notary_profile` lane when the ASC key path is unavailable
 - defaults the GitHub repo to `qoli/threadBridge`
 - auto-detects the `Developer ID Application` identity if the machine only has one
 
