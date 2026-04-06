@@ -32,6 +32,7 @@ impl DeliveryChannel {
 pub enum DeliveryKind {
     UserEcho,
     AssistantFinal,
+    PreviewDraft,
     SystemNotice,
     RequestUserInputPrompt,
     OutboxText,
@@ -43,6 +44,7 @@ impl DeliveryKind {
         match self {
             Self::UserEcho => "user_echo",
             Self::AssistantFinal => "assistant_final",
+            Self::PreviewDraft => "preview_draft",
             Self::SystemNotice => "system_notice",
             Self::RequestUserInputPrompt => "request_user_input_prompt",
             Self::OutboxText => "outbox_text",
@@ -604,6 +606,7 @@ fn read_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeliveryRecord> {
         kind: match row.get::<_, String>("kind")?.as_str() {
             "user_echo" => DeliveryKind::UserEcho,
             "assistant_final" => DeliveryKind::AssistantFinal,
+            "preview_draft" => DeliveryKind::PreviewDraft,
             "system_notice" => DeliveryKind::SystemNotice,
             "request_user_input_prompt" => DeliveryKind::RequestUserInputPrompt,
             "outbox_text" => DeliveryKind::OutboxText,
@@ -773,5 +776,38 @@ mod tests {
         let records = bus.list_records().await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].turn_id.as_deref(), Some("turn-1"));
+    }
+
+    #[tokio::test]
+    async fn turn_bound_preview_draft_claim_deduplicates_same_turn() {
+        let root = temp_path();
+        let bus = DeliveryBusCoordinator::new(&root).await.unwrap();
+        let first = bus
+            .claim_delivery(DeliveryClaim {
+                thread_key: "thread-1".to_owned(),
+                session_id: "sess-1".to_owned(),
+                turn_id: Some("turn-9".to_owned()),
+                provisional_key: None,
+                channel: DeliveryChannel::Telegram,
+                kind: DeliveryKind::PreviewDraft,
+                owner: "status_sync#1".to_owned(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(first, ClaimStatus::Claimed(_)));
+
+        let second = bus
+            .claim_delivery(DeliveryClaim {
+                thread_key: "thread-1".to_owned(),
+                session_id: "sess-1".to_owned(),
+                turn_id: Some("turn-9".to_owned()),
+                provisional_key: None,
+                channel: DeliveryChannel::Telegram,
+                kind: DeliveryKind::PreviewDraft,
+                owner: "status_sync#2".to_owned(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(second, ClaimStatus::Existing(_)));
     }
 }

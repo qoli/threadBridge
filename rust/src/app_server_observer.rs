@@ -286,9 +286,10 @@ async fn handle_observer_event(
         record_hcodex_ingress_prompt(workspace_path, thread_id, &prompt).await?;
     }
 
-    if let Some(text) = extract_agent_message_text(&event) {
+    if let Some((turn_id, text)) = extract_agent_message_text(&event) {
         state.lock().await.latest_assistant_message = text.clone();
-        record_hcodex_ingress_preview_text(workspace_path, thread_id, &text).await?;
+        record_hcodex_ingress_preview_text(workspace_path, thread_id, turn_id.as_deref(), &text)
+            .await?;
     }
 
     if let Some(plan_text) = extract_completed_plan_text(&event) {
@@ -444,9 +445,10 @@ async fn emit_runtime_interaction(
     let _ = sender.send(event);
 }
 
-fn extract_agent_message_text(event: &CodexThreadEvent) -> Option<String> {
-    let item = match event {
-        CodexThreadEvent::ItemUpdated { item } | CodexThreadEvent::ItemCompleted { item } => item,
+fn extract_agent_message_text(event: &CodexThreadEvent) -> Option<(Option<String>, String)> {
+    let (turn_id, item) = match event {
+        CodexThreadEvent::ItemUpdated { turn_id, item }
+        | CodexThreadEvent::ItemCompleted { turn_id, item } => (turn_id.clone(), item),
         _ => return None,
     };
     if item.get("type").and_then(Value::as_str) != Some("agent_message") {
@@ -457,11 +459,12 @@ fn extract_agent_message_text(event: &CodexThreadEvent) -> Option<String> {
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_owned)
+        .map(|text| (turn_id, text))
 }
 
 fn extract_completed_plan_text(event: &CodexThreadEvent) -> Option<String> {
     let item = match event {
-        CodexThreadEvent::ItemCompleted { item } => item,
+        CodexThreadEvent::ItemCompleted { item, .. } => item,
         _ => return None,
     };
     if item.get("type").and_then(Value::as_str) != Some("plan") {
@@ -476,7 +479,7 @@ fn extract_completed_plan_text(event: &CodexThreadEvent) -> Option<String> {
 
 fn extract_user_prompt_text(event: &CodexThreadEvent) -> Option<String> {
     let item = match event {
-        CodexThreadEvent::ItemCompleted { item } => item,
+        CodexThreadEvent::ItemCompleted { item, .. } => item,
         _ => return None,
     };
     if item.get("type").and_then(Value::as_str) != Some("user_message") {
@@ -519,17 +522,22 @@ mod tests {
     #[test]
     fn extract_agent_message_text_reads_item_text() {
         let event = CodexThreadEvent::ItemCompleted {
+            turn_id: Some("turn-1".to_owned()),
             item: json!({
                 "type": "agent_message",
                 "text": " hello "
             }),
         };
-        assert_eq!(extract_agent_message_text(&event), Some("hello".to_owned()));
+        assert_eq!(
+            extract_agent_message_text(&event),
+            Some((Some("turn-1".to_owned()), "hello".to_owned()))
+        );
     }
 
     #[test]
     fn extract_completed_plan_text_reads_plan_item() {
         let event = CodexThreadEvent::ItemCompleted {
+            turn_id: Some("turn-1".to_owned()),
             item: json!({
                 "type": "plan",
                 "text": " final plan "
@@ -544,6 +552,7 @@ mod tests {
     #[test]
     fn extract_user_prompt_text_falls_back_to_content_segments() {
         let event = CodexThreadEvent::ItemCompleted {
+            turn_id: Some("turn-1".to_owned()),
             item: json!({
                 "type": "user_message",
                 "content": [

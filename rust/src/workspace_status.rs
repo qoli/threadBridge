@@ -1081,6 +1081,7 @@ pub async fn record_hcodex_ingress_process_event(
 pub async fn record_hcodex_ingress_preview_text(
     workspace_path: &Path,
     session_id: &str,
+    turn_id: Option<&str>,
     text: &str,
 ) -> Result<()> {
     ensure_workspace_status_surface(workspace_path).await?;
@@ -1096,6 +1097,7 @@ pub async fn record_hcodex_ingress_preview_text(
         occurred_at: now_iso(),
         payload: json!({
             "session_id": session_id,
+            "turn_id": turn_id,
             "text": trimmed,
             "client": HCODEX_INGRESS_CLIENT,
         }),
@@ -2272,7 +2274,7 @@ mod tests {
         record_hcodex_ingress_completed(&workspace, "thr_same", Some("turn-1"), Some("hello"))
             .await
             .unwrap();
-        record_hcodex_ingress_preview_text(&workspace, "thr_same", "draft update")
+        record_hcodex_ingress_preview_text(&workspace, "thr_same", Some("turn-1"), "draft update")
             .await
             .unwrap();
         record_hcodex_ingress_completed(&workspace, "thr_same", Some("turn-1"), Some("hello"))
@@ -2285,6 +2287,23 @@ mod tests {
             .filter(|line| line.contains("\"event\":\"turn_completed\""))
             .count();
         assert_eq!(turn_completed_count, 1);
+    }
+
+    #[tokio::test]
+    async fn hcodex_ingress_preview_text_persists_turn_id() {
+        let workspace = temp_path();
+        ensure_workspace_status_surface(&workspace).await.unwrap();
+
+        record_hcodex_ingress_preview_text(&workspace, "thr_same", Some("turn-7"), "draft update")
+            .await
+            .unwrap();
+
+        let lines = fs::read_to_string(events_path(&workspace)).await.unwrap();
+        let event: WorkspaceStatusEventRecord =
+            serde_json::from_str(lines.lines().next().expect("preview event")).unwrap();
+        assert_eq!(event.event, "preview_text");
+        assert_eq!(event.payload["turn_id"], "turn-7");
+        assert_eq!(event.payload["session_id"], "thr_same");
     }
 
     #[tokio::test]

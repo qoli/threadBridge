@@ -9,8 +9,8 @@
 目前已完成的部分：
 
 - 已用 [runtime-architecture.md](runtime-architecture.md) 的 canonical role boundary 掃描 active code path
-- 已確認 4 個 responsibility drift 功能點
-- 其中 3 個已在 2026-03-26 進一步收斂回 shared runtime semantics
+- 已確認 5 個 responsibility drift 功能點
+- 其中 4 個已在 2026-03-26 之後進一步收斂回 shared runtime semantics
 - observer final reply composition 已在 2026-03-27 改由 shared helper 承接，不再直接依賴 Telegram adapter helper
 - Telegram mirror / status_sync 與 direct path 的 duplicate delivery 已透過 shared `DeliveryBusCoordinator` 收回 shared runtime 子域
 
@@ -150,9 +150,32 @@
   - 將 shared mutation path 與 Telegram side effect bridge 拆開
   - 讓 `local_control` 不是「混合 helper」，而是明確降格成某一側的 adapter bridge，或被更乾淨的 shared service 取代
 
+### 5. `telegram_runtime::status_sync` 目前同時承擔 TUI mirror consume、draft write、與 draft heartbeat（active drift）
+
+- 功能點：
+  - local/TUI mirror -> Telegram draft
+- 當前狀態：
+  - upstream app-server item notifications 原生提供 `turn_id`
+  - `threadBridge` 目前已開始把 `turn_id` 帶進 `preview_text`，並用 shared `DeliveryBusCoordinator` 做同 turn draft claim
+  - 但 `status_sync` 仍同時是 workspace event-log poll consumer、Telegram draft writer、以及 draft heartbeat driver
+  - 這代表 draft surface 雖已用 `turn_id` 做止血型去重，adapter 內部的 draft ownership 仍未真正收斂成單一責任點
+- today code anchors：
+  - [status_sync.rs](../../../rust/src/telegram_runtime/status_sync.rs)
+  - [preview.rs](../../../rust/src/telegram_runtime/preview.rs)
+  - [app_server_observer.rs](../../../rust/src/app_server_observer.rs)
+  - [workspace_status.rs](../../../rust/src/workspace_status.rs)
+- 預期 owner role：
+  - Telegram adapter 應有單一 draft owner contract，決定同一個 Telegram draft surface 由誰寫、誰 heartbeat
+  - `status_sync` 應偏向 mirror consumer / projector，而不是兼任 draft lifecycle owner
+- 是否已在 `runtime-architecture` 記錄：
+  - 尚未作為正式 temporary exception 單獨列出
+- 退出方向：
+  - 保留 turn-scoped dedupe 作為 safety rail
+  - 後續再把 draft write / heartbeat ownership 從 `status_sync` 的 poll loop 收斂到更單一的 adapter delivery owner
+
 ## 本輪未升格為 Confirmed Drift 的觀察
 
-像 `bot_runner -> telegram_runtime::status_sync` 這種 bootstrap / watcher 耦合，這一輪先不升格為 confirmed drift。它值得後續再檢查，但目前不納入這份文檔的正式結論。
+像 `bot_runner -> telegram_runtime::status_sync` 這種 bootstrap / watcher 耦合，這一輪仍先不升格為 confirmed drift。它值得後續再檢查，但目前不納入這份文檔的正式結論。
 
 ## 與其他計劃的關係
 

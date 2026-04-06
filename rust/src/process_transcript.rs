@@ -21,13 +21,19 @@ pub fn process_entry_from_codex_event(
     session_id: &str,
     origin: TranscriptMirrorOrigin,
 ) -> Option<TranscriptMirrorEntry> {
-    let (lifecycle, item) = match event {
-        CodexThreadEvent::ItemStarted { item } => ("item.started", item),
-        CodexThreadEvent::ItemUpdated { item } => ("item.updated", item),
-        CodexThreadEvent::ItemCompleted { item } => ("item.completed", item),
+    let (lifecycle, turn_id, item) = match event {
+        CodexThreadEvent::ItemStarted { turn_id, item } => {
+            ("item.started", turn_id.as_deref(), item)
+        }
+        CodexThreadEvent::ItemUpdated { turn_id, item } => {
+            ("item.updated", turn_id.as_deref(), item)
+        }
+        CodexThreadEvent::ItemCompleted { turn_id, item } => {
+            ("item.completed", turn_id.as_deref(), item)
+        }
         _ => return None,
     };
-    process_entry_from_item(lifecycle, item, now_iso(), session_id, origin)
+    process_entry_from_item(lifecycle, item, now_iso(), session_id, origin, turn_id)
 }
 
 pub fn process_entry_from_workspace_message(
@@ -45,6 +51,7 @@ pub fn process_entry_from_workspace_message(
             now_iso(),
             session_id,
             origin,
+            None,
         )),
         _ => Ok(None),
     }
@@ -115,6 +122,7 @@ fn process_entry_from_item(
     timestamp: String,
     session_id: &str,
     origin: TranscriptMirrorOrigin,
+    turn_id: Option<&str>,
 ) -> Option<TranscriptMirrorEntry> {
     let item_type = normalize_item_type(item.get("type").and_then(Value::as_str)?)?;
     let normalized_lifecycle = match lifecycle {
@@ -149,7 +157,7 @@ fn process_entry_from_item(
     Some(TranscriptMirrorEntry {
         timestamp,
         session_id: session_id.to_owned(),
-        turn_id: None,
+        turn_id: turn_id.map(str::to_owned),
         origin,
         role: TranscriptMirrorRole::Assistant,
         delivery: TranscriptMirrorDelivery::Process,
@@ -231,6 +239,7 @@ mod tests {
     #[test]
     fn codex_plan_event_maps_to_plan_process_entry() {
         let event = CodexThreadEvent::ItemCompleted {
+            turn_id: Some("turn-1".to_owned()),
             item: json!({
                 "type": "plan",
                 "text": "inspect runtime owner | wire transcript API"
@@ -240,6 +249,7 @@ mod tests {
             process_entry_from_codex_event(&event, "session-1", TranscriptMirrorOrigin::Telegram)
                 .expect("process entry");
         assert_eq!(entry.phase, Some(TranscriptMirrorPhase::Plan));
+        assert_eq!(entry.turn_id.as_deref(), Some("turn-1"));
         assert_eq!(
             entry.text,
             "Plan: inspect runtime owner | wire transcript API"
@@ -249,6 +259,7 @@ mod tests {
     #[test]
     fn codex_plan_update_event_maps_to_plan_process_entry() {
         let event = CodexThreadEvent::ItemUpdated {
+            turn_id: Some("turn-2".to_owned()),
             item: json!({
                 "type": "plan",
                 "text": "stream live plan"
@@ -258,6 +269,7 @@ mod tests {
             process_entry_from_codex_event(&event, "session-1", TranscriptMirrorOrigin::Telegram)
                 .expect("process entry");
         assert_eq!(entry.phase, Some(TranscriptMirrorPhase::Plan));
+        assert_eq!(entry.turn_id.as_deref(), Some("turn-2"));
         assert_eq!(entry.text, "Plan: stream live plan");
     }
 

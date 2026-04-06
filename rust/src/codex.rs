@@ -70,11 +70,20 @@ pub enum CodexThreadEvent {
     #[serde(rename = "error")]
     Error { message: String },
     #[serde(rename = "item.started")]
-    ItemStarted { item: Value },
+    ItemStarted {
+        turn_id: Option<String>,
+        item: Value,
+    },
     #[serde(rename = "item.updated")]
-    ItemUpdated { item: Value },
+    ItemUpdated {
+        turn_id: Option<String>,
+        item: Value,
+    },
     #[serde(rename = "item.completed")]
-    ItemCompleted { item: Value },
+    ItemCompleted {
+        turn_id: Option<String>,
+        item: Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -883,6 +892,12 @@ impl CodexRunner {
         latest_agent_message_by_id: &mut HashMap<String, String>,
         latest_plan_by_id: &mut HashMap<String, String>,
     ) -> Result<Option<CodexThreadEvent>> {
+        let turn_id = || {
+            params
+                .get("turnId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        };
         match method {
             "thread/started" => {
                 let thread_id = params
@@ -926,6 +941,7 @@ impl CodexRunner {
                     .to_owned(),
             })),
             "item/started" => Ok(Some(CodexThreadEvent::ItemStarted {
+                turn_id: turn_id(),
                 item: normalize_item(params.get("item").cloned().unwrap_or(Value::Null)),
             })),
             "item/completed" => {
@@ -938,7 +954,10 @@ impl CodexRunner {
                         latest_agent_message_by_id.insert(item_id.to_owned(), text.to_owned());
                     }
                 }
-                Ok(Some(CodexThreadEvent::ItemCompleted { item }))
+                Ok(Some(CodexThreadEvent::ItemCompleted {
+                    turn_id: turn_id(),
+                    item,
+                }))
             }
             "item/agentMessage/delta" => {
                 let item_id = params
@@ -954,6 +973,7 @@ impl CodexRunner {
                     .or_default();
                 entry.push_str(delta);
                 Ok(Some(CodexThreadEvent::ItemUpdated {
+                    turn_id: turn_id(),
                     item: json!({
                         "type": "agent_message",
                         "id": item_id,
@@ -973,6 +993,7 @@ impl CodexRunner {
                 let entry = latest_plan_by_id.entry(item_id.to_owned()).or_default();
                 entry.push_str(delta);
                 Ok(Some(CodexThreadEvent::ItemUpdated {
+                    turn_id: turn_id(),
                     item: json!({
                         "type": "plan",
                         "id": item_id,
@@ -1312,10 +1333,10 @@ impl CodexRunner {
                         &mut latest_plan_by_id,
                     )? {
                         match &event {
-                            CodexThreadEvent::ItemStarted { item } => {
+                            CodexThreadEvent::ItemStarted { item, .. } => {
                                 log_item_event("started", item)
                             }
-                            CodexThreadEvent::ItemCompleted { item } => {
+                            CodexThreadEvent::ItemCompleted { item, .. } => {
                                 log_item_event("completed", item);
                                 if item.get("type").and_then(Value::as_str) == Some("agent_message")
                                 {
@@ -1331,7 +1352,7 @@ impl CodexRunner {
                                         .map(str::to_owned);
                                 }
                             }
-                            CodexThreadEvent::ItemUpdated { item } => {
+                            CodexThreadEvent::ItemUpdated { item, .. } => {
                                 if item.get("type").and_then(Value::as_str) == Some("agent_message")
                                 {
                                     if let Some(text) = item.get("text").and_then(Value::as_str) {
@@ -1812,6 +1833,7 @@ mod tests {
         let event = CodexRunner::map_notification(
             "item/agentMessage/delta",
             json!({
+                "turnId": "turn-1",
                 "itemId": "msg_1",
                 "delta": "Hello"
             }),
@@ -1822,9 +1844,38 @@ mod tests {
         .unwrap();
 
         match event {
-            super::CodexThreadEvent::ItemUpdated { item } => {
+            super::CodexThreadEvent::ItemUpdated { turn_id, item } => {
+                assert_eq!(turn_id.as_deref(), Some("turn-1"));
                 assert_eq!(item["type"], "agent_message");
                 assert_eq!(item["text"], "Hello");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_item_completed_preserves_turn_id() {
+        let event = CodexRunner::map_notification(
+            "item/completed",
+            json!({
+                "turnId": "turn-3",
+                "item": {
+                    "type": "agentMessage",
+                    "id": "msg_1",
+                    "text": "done"
+                }
+            }),
+            &mut std::collections::HashMap::new(),
+            &mut std::collections::HashMap::new(),
+        )
+        .unwrap()
+        .unwrap();
+
+        match event {
+            super::CodexThreadEvent::ItemCompleted { turn_id, item } => {
+                assert_eq!(turn_id.as_deref(), Some("turn-3"));
+                assert_eq!(item["type"], "agent_message");
+                assert_eq!(item["text"], "done");
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -1841,6 +1892,7 @@ mod tests {
         let event = CodexRunner::map_notification(
             "item/plan/delta",
             json!({
+                "turnId": "turn-2",
                 "itemId": "plan_1",
                 "delta": "# Plan\n"
             }),
@@ -1851,7 +1903,8 @@ mod tests {
         .unwrap();
 
         match event {
-            super::CodexThreadEvent::ItemUpdated { item } => {
+            super::CodexThreadEvent::ItemUpdated { turn_id, item } => {
+                assert_eq!(turn_id.as_deref(), Some("turn-2"));
                 assert_eq!(item["type"], "plan");
                 assert_eq!(item["text"], "# Plan\n");
             }

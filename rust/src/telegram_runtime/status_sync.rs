@@ -40,6 +40,48 @@ use crate::workspace_status::{
     read_local_tui_session_claim, read_workspace_event_log_repairing,
 };
 
+struct MirrorPreviewState {
+    preview: TurnPreviewController,
+    active_turn_id: Option<String>,
+    owns_active_turn: bool,
+}
+
+impl MirrorPreviewState {
+    fn new(preview: TurnPreviewController) -> Self {
+        Self {
+            preview,
+            active_turn_id: None,
+            owns_active_turn: false,
+        }
+    }
+
+    fn reset_for_new_turn(&mut self) {
+        self.preview.reset_for_new_turn();
+        self.active_turn_id = None;
+        self.owns_active_turn = false;
+    }
+
+    fn begin_turn(&mut self, turn_id: Option<&str>) {
+        if self.active_turn_id.as_deref() == turn_id {
+            return;
+        }
+        self.preview.reset_for_new_turn();
+        self.active_turn_id = turn_id.map(str::to_owned);
+        self.owns_active_turn = false;
+    }
+
+    fn set_ownership(&mut self, turn_id: Option<&str>, owns_active_turn: bool) {
+        if self.active_turn_id.as_deref() != turn_id {
+            return;
+        }
+        self.owns_active_turn = owns_active_turn;
+    }
+
+    fn owns_turn(&self, turn_id: Option<&str>) -> bool {
+        self.owns_active_turn && self.active_turn_id.as_deref() == turn_id
+    }
+}
+
 fn workspace_local_conflict(
     aggregate: Option<&WorkspaceAggregateStatus>,
     local_tui_claim: Option<&LocalTuiSessionClaim>,
@@ -87,7 +129,7 @@ pub async fn spawn_workspace_status_watcher(bot: Bot, state: AppState) {
         let mut applied_titles: HashMap<String, String> = HashMap::new();
         let mut workspace_event_offsets: HashMap<String, usize> = HashMap::new();
         let mut pending_local_user_prompts: HashSet<String> = HashSet::new();
-        let mut mirror_previews: HashMap<String, TurnPreviewController> = HashMap::new();
+        let mut mirror_previews: HashMap<String, MirrorPreviewState> = HashMap::new();
         loop {
             if let Err(error) = sync_workspace_titles_once(&bot, &state, &mut applied_titles).await
             {
@@ -224,7 +266,7 @@ async fn sync_local_transcript_mirrors_once(
     state: &AppState,
     workspace_event_offsets: &mut HashMap<String, usize>,
     pending_local_user_prompts: &mut HashSet<String>,
-    mirror_previews: &mut HashMap<String, TurnPreviewController>,
+    mirror_previews: &mut HashMap<String, MirrorPreviewState>,
 ) -> Result<()> {
     let records = state.repository.list_active_threads().await?;
     let mut by_workspace: HashMap<String, Vec<ThreadRecord>> = HashMap::new();
@@ -421,15 +463,43 @@ async fn sync_local_transcript_mirrors_once(
                     else {
                         continue;
                     };
-                    ensure_mirror_preview(
+                    let turn_id = turn_id_from_event_payload(&event.payload);
+                    let preview = ensure_mirror_preview(
                         mirror_previews,
                         bot,
                         state,
                         &owner_record,
                         message_thread_id,
-                    )
-                    .consume_preview_text(text)
-                    .await;
+                    );
+                    preview.begin_turn(turn_id.as_deref());
+                    if let Some(turn_id) = turn_id.as_deref() {
+                        if !preview.owns_turn(Some(turn_id)) {
+                            let claim = state
+                                .control
+                                .delivery_bus
+                                .claim_delivery(DeliveryClaim {
+                                    thread_key: owner_record.metadata.thread_key.clone(),
+                                    session_id: session_id.to_owned(),
+                                    turn_id: Some(turn_id.to_owned()),
+                                    provisional_key: None,
+                                    channel: DeliveryChannel::Telegram,
+                                    kind: DeliveryKind::PreviewDraft,
+                                    owner: "status_sync".to_owned(),
+                                })
+                                .await?;
+                            preview
+                                .set_ownership(Some(turn_id), matches!(claim, ClaimStatus::Claimed(_)));
+                        }
+                        if !preview.owns_turn(Some(turn_id)) {
+                            continue;
+                        }
+                    } else {
+                        if preview.active_turn_id.is_some() {
+                            continue;
+                        }
+                        preview.set_ownership(None, true);
+                    }
+                    preview.preview.consume_preview_text(text).await;
                     continue;
                 }
                 "turn_completed" => {
@@ -488,15 +558,21 @@ async fn sync_local_transcript_mirrors_once(
                             owner: "status_sync".to_owned(),
                         })
                         .await?;
-                    let preview_completed = ensure_mirror_preview(
+                    let preview = ensure_mirror_preview(
                         mirror_previews,
                         bot,
                         state,
                         &owner_record,
                         message_thread_id,
-                    )
-                    .complete(&entry.text)
-                    .await;
+                    );
+                    preview.begin_turn(turn_id.as_deref());
+                    let preview_completed = if preview.owns_turn(turn_id.as_deref())
+                        || (turn_id.is_none() && preview.owns_turn(None))
+                    {
+                        preview.preview.complete(&entry.text).await
+                    } else {
+                        false
+                    };
                     if matches!(claim, ClaimStatus::Claimed(_)) {
                         super::final_reply::send_final_assistant_reply(
                             bot,
@@ -542,30 +618,32 @@ async fn sync_local_transcript_mirrors_once(
     let preview_thread_keys = mirror_previews.keys().cloned().collect::<Vec<_>>();
     for thread_key in preview_thread_keys {
         if let Some(preview) = mirror_previews.get_mut(&thread_key) {
-            preview.heartbeat().await;
+            if preview.owns_active_turn {
+                preview.preview.heartbeat().await;
+            }
         }
     }
     Ok(())
 }
 
 fn ensure_mirror_preview<'a>(
-    mirror_previews: &'a mut HashMap<String, TurnPreviewController>,
+    mirror_previews: &'a mut HashMap<String, MirrorPreviewState>,
     bot: &Bot,
     state: &AppState,
     owner_record: &ThreadRecord,
     message_thread_id: i32,
-) -> &'a mut TurnPreviewController {
+) -> &'a mut MirrorPreviewState {
     mirror_previews
         .entry(owner_record.metadata.thread_key.clone())
         .or_insert_with(|| {
-            TurnPreviewController::new(
+            MirrorPreviewState::new(TurnPreviewController::new(
                 bot.clone(),
                 ChatId(owner_record.metadata.chat_id),
                 Some(thread_id_from_i32(message_thread_id)),
                 state.config.stream_message_max_chars,
                 state.config.command_output_tail_chars,
                 state.config.stream_edit_interval_ms,
-            )
+            ))
         })
 }
 
@@ -704,15 +782,17 @@ fn turn_id_from_event_payload(payload: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        STARTUP_STALE_BUSY_RECOVERED_LOG, busy_command_message, busy_text_message,
-        initial_workspace_event_offset, local_mirror_entry_from_event,
+        MirrorPreviewState, STARTUP_STALE_BUSY_RECOVERED_LOG, busy_command_message,
+        busy_text_message, initial_workspace_event_offset, local_mirror_entry_from_event,
         reconcile_stale_bot_busy_sessions_for_repository, render_topic_title,
-        topic_title_suffix_label, tui_adoption_prompt_text,
+        thread_id_from_i32, topic_title_suffix_label, tui_adoption_prompt_text,
+        turn_id_from_event_payload,
     };
     use crate::repository::{
         SessionBinding, ThreadMetadata, ThreadRecord, ThreadRepository, ThreadScope, ThreadStatus,
         TranscriptMirrorOrigin, TranscriptMirrorRole,
     };
+    use crate::telegram_runtime::preview::TurnPreviewController;
     use crate::thread_state::effective_busy_snapshot_for_binding;
     use crate::workspace_status::{
         LocalTuiSessionClaim, SessionActivitySource, SessionCurrentStatus,
@@ -722,6 +802,8 @@ mod tests {
     };
     use serde_json::json;
     use std::path::PathBuf;
+    use teloxide::types::ChatId;
+    use teloxide::Bot;
     use tokio::fs;
     use uuid::Uuid;
 
@@ -863,6 +945,47 @@ mod tests {
     fn title_suffix_label_reports_broken_only() {
         assert_eq!(topic_title_suffix_label(false), "none");
         assert_eq!(topic_title_suffix_label(true), "broken");
+    }
+
+    fn test_mirror_preview_state() -> MirrorPreviewState {
+        MirrorPreviewState::new(TurnPreviewController::new(
+            Bot::new("test-token"),
+            ChatId(1),
+            Some(thread_id_from_i32(7)),
+            3500,
+            800,
+            10,
+        ))
+    }
+
+    #[test]
+    fn mirror_preview_state_keeps_same_turn_ownership() {
+        let mut preview = test_mirror_preview_state();
+        preview.begin_turn(Some("turn-1"));
+        preview.set_ownership(Some("turn-1"), true);
+        preview.begin_turn(Some("turn-1"));
+        assert!(preview.owns_turn(Some("turn-1")));
+    }
+
+    #[test]
+    fn mirror_preview_state_resets_when_turn_changes() {
+        let mut preview = test_mirror_preview_state();
+        preview.begin_turn(Some("turn-1"));
+        preview.set_ownership(Some("turn-1"), true);
+        preview.begin_turn(Some("turn-2"));
+        assert_eq!(preview.active_turn_id.as_deref(), Some("turn-2"));
+        assert!(!preview.owns_turn(Some("turn-1")));
+        assert!(!preview.owns_turn(Some("turn-2")));
+    }
+
+    #[test]
+    fn turn_id_from_event_payload_reads_preview_turn_id() {
+        let payload = json!({
+            "session_id": "thr_tui",
+            "turn_id": "turn-1",
+            "text": "draft",
+        });
+        assert_eq!(turn_id_from_event_payload(&payload).as_deref(), Some("turn-1"));
     }
 
     #[test]

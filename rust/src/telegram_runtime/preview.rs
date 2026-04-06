@@ -255,9 +255,9 @@ impl PreviewRenderer {
                 self.in_progress = false;
                 self.status = format!("Preview unavailable\n{}", summarize_text(message, 120));
             }
-            CodexThreadEvent::ItemStarted { item }
-            | CodexThreadEvent::ItemUpdated { item }
-            | CodexThreadEvent::ItemCompleted { item } => {
+            CodexThreadEvent::ItemStarted { item, .. }
+            | CodexThreadEvent::ItemUpdated { item, .. }
+            | CodexThreadEvent::ItemCompleted { item, .. } => {
                 match item.get("type").and_then(|value| value.as_str()) {
                     Some("agent_message") => {
                         let text = item
@@ -546,6 +546,7 @@ mod tests {
         assert_eq!(renderer.get_render_text(), "○ Reading context...");
 
         renderer.consume(&CodexThreadEvent::ItemUpdated {
+            turn_id: Some("turn-1".to_owned()),
             item: json!({
                 "type": "agent_message",
                 "text": "First draft paragraph"

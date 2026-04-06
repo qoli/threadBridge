@@ -67,7 +67,7 @@
   - doc kind: `plan`
   - depends_on: [runtime-architecture.md](runtime-control/runtime-architecture.md)
   - 以 `runtime-architecture` 為中心的 current-code drift audit
-  - 目前已確認 4 個 responsibility drift 功能點，原本的 observer final reply composition 也已在 2026-03-27 收斂為 shared helper
+  - 目前已確認 5 個 responsibility drift 功能點，其中 `status_sync` 的 TUI mirror draft write/heartbeat 已升格為 active drift
 - [runtime-state-machine.md](runtime-control/runtime-state-machine.md)
   - doc kind: `spec`
   - primary spec: `yes`
@@ -174,8 +174,8 @@
   - Telegram outbound delivery 主規格已從純草稿進入部分落地
   - workspace outbox `surface`、最小檔案大小 preflight、photo -> document fallback、以及 oversized attachment/document warning path 已開始落地
   - workspace outbox v1 目前只正式承諾 `content` / `status`；其他 `surface` 仍是保守兼容值
-  - 已補記一個明確缺口：`codex mirror -> Telegram` 的 draft message 尚未實作 heartbeat，因此長時間 draft 仍會自動消失
-  - 已新增記錄一個明確 bug：TUI mirror 的 draft message 可能出現不斷刷新的狀態
+  - local/TUI mirror draft 已開始保留 upstream `turn_id`，並用 turn-bound draft claim 做單 turn 去重
+  - 已新增記錄一個明確責任債務：`status_sync` 目前仍同時承擔 mirror consume、draft write、與 heartbeat
   - 但 outbound queue、完整 control lifecycle、artifact 類型與集中化 config 仍未收斂
 - [telegram-adapter-migration.md](telegram-adapter/telegram-adapter-migration.md)
   - doc kind: `plan`
