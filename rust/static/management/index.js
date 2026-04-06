@@ -12,6 +12,7 @@ const appState = {
     route: parseRoute(window.location.hash),
     addWorkspaceStatus: '',
     setupStatus: '',
+    launchAtLoginStatus: '',
     managedCodexStatus: '',
     launchOutputs: {},
     showLaunchConfigStates: {},
@@ -163,6 +164,22 @@ function formatMetaValue(value) {
     .replace(/\b([a-z])/g, match => match.toUpperCase())
 }
 
+function formatLaunchAtLoginStatus(view = {}) {
+  const status = String(view.status || '').trim()
+  switch (status) {
+    case 'enabled':
+      return 'Enabled'
+    case 'disabled':
+      return 'Disabled'
+    case 'requires_approval':
+      return 'Requires Approval'
+    case 'not_found':
+      return 'Not Found'
+    default:
+      return formatMetaValue(status || 'unknown')
+  }
+}
+
 function toneForStatus(value) {
   switch (value) {
     case 'running':
@@ -177,6 +194,7 @@ function toneForStatus(value) {
     case 'degraded':
     case 'pending_adoption':
     case 'pending':
+    case 'requires_approval':
     case 'idle':
     case 'missing':
     case 'plan':
@@ -1136,6 +1154,7 @@ function renderWorkspacesPage() {
 
 function renderSettingsPage() {
   const setup = appState.setup || {}
+  const launchAtLogin = setup.launch_at_login || {}
   const managedCodex = appState.health?.managed_codex || {}
   return `
     <div class="page-body section-stack">
@@ -1175,6 +1194,29 @@ function renderSettingsPage() {
         ${setup.bot_identity_error ? `<div class="status-note">${escapeHtml(setup.bot_identity_error)}</div>` : ''}
         ${setup.control_chat_ready ? '' : '<div class="status-note">Control chat missing. Send /start in the target chat.</div>'}
       </section>
+      ${launchAtLogin.supported ? `
+        <section class="section-block">
+          <div class="section-head">
+            <div class="section-copy">
+              <h2>Launch At Login</h2>
+              <p class="section-lead">Start the bundled <code>threadBridge</code> app automatically when you log in to macOS. This only launches the app itself.</p>
+            </div>
+            <div class="pill-row">
+              ${pill('launch at login', formatLaunchAtLoginStatus(launchAtLogin))}
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="button-row">
+              ${launchAtLogin.enabled
+                ? `<button class="button button-secondary" ${dataAttrs({ action: 'set-launch-at-login', enabled: false })}>Disable Launch At Login</button>`
+                : `<button class="button button-primary" ${dataAttrs({ action: 'set-launch-at-login', enabled: true })}>Enable Launch At Login</button>`}
+              <div class="muted">${escapeHtml(appState.ui.launchAtLoginStatus)}</div>
+            </div>
+            <div class="status-note">Current status: ${escapeHtml(formatLaunchAtLoginStatus(launchAtLogin))}</div>
+            ${launchAtLogin.note ? `<div class="status-note">${escapeHtml(launchAtLogin.note)}</div>` : ''}
+          </div>
+        </section>
+      ` : ''}
       <section class="section-block">
         <div class="section-head">
           <div class="section-copy">
@@ -1930,6 +1972,9 @@ function handleDelegatedAction(target) {
     case 'build-managed-codex-source':
       void buildManagedCodexSource()
       return
+    case 'set-launch-at-login':
+      void setLaunchAtLogin(parseBooleanData(target.dataset.enabled || 'false'))
+      return
     case 'save-managed-codex-build-defaults':
       void saveManagedCodexBuildDefaults()
       return
@@ -2048,6 +2093,24 @@ async function updateManagedCodexPreference() {
     await refresh()
   } catch (error) {
     appState.ui.managedCodexStatus = error instanceof Error ? error.message : 'Apply failed'
+    scheduleRender()
+  }
+}
+
+async function setLaunchAtLogin(enabled) {
+  appState.ui.launchAtLoginStatus = enabled ? 'Enabling...' : 'Disabling...'
+  scheduleRender()
+  try {
+    const data = await fetchJson('/api/setup/launch-at-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }, enabled ? 'Enable failed' : 'Disable failed')
+    const status = data.launch_at_login || {}
+    appState.ui.launchAtLoginStatus = `Launch at login ${enabled ? 'updated' : 'disabled'}: ${formatLaunchAtLoginStatus(status)}`
+    await refresh()
+  } catch (error) {
+    appState.ui.launchAtLoginStatus = error instanceof Error ? error.message : (enabled ? 'Enable failed' : 'Disable failed')
     scheduleRender()
   }
 }

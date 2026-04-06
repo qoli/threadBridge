@@ -28,6 +28,7 @@ use tokio::time::{Duration as TokioDuration, timeout};
 use tracing::{info, warn};
 
 use crate::config::{RuntimeConfig, load_optional_telegram_config_from_path};
+use crate::launch_at_login::{self, LaunchAtLoginView};
 use crate::local_control::{
     TelegramControlBridgeHandle, ensure_archived_thread, resolve_workspace_argument,
 };
@@ -188,6 +189,7 @@ pub struct SetupStateView {
     pub control_chat_ready: bool,
     pub control_chat_id: Option<i64>,
     pub native_workspace_picker_available: bool,
+    pub launch_at_login: LaunchAtLoginView,
     pub bot_username: Option<String>,
     pub bot_url: Option<String>,
     pub bot_identity_error: Option<String>,
@@ -260,10 +262,21 @@ struct UpdateTelegramSetupRequest {
     authorized_user_ids: Vec<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateLaunchAtLoginRequest {
+    enabled: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct UpdateTelegramSetupResponse {
     saved: bool,
     restart_required: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateLaunchAtLoginResponse {
+    saved: bool,
+    launch_at_login: LaunchAtLoginView,
 }
 
 #[derive(Debug, Serialize)]
@@ -360,6 +373,10 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         .route("/assets/management.js", get(management_js))
         .route("/api/setup", get(get_setup))
         .route("/api/setup/telegram", put(put_telegram_setup))
+        .route(
+            "/api/setup/launch-at-login",
+            post(post_update_launch_at_login),
+        )
         .route(
             "/api/managed-codex/preference",
             post(post_update_managed_codex_preference),
@@ -495,6 +512,16 @@ async fn put_telegram_setup(
     Ok(Json(UpdateTelegramSetupResponse {
         saved: true,
         restart_required: state.restart_required_after_setup_save().await,
+    }))
+}
+
+async fn post_update_launch_at_login(
+    State(state): State<Arc<ManagementApiState>>,
+    Json(payload): Json<UpdateLaunchAtLoginRequest>,
+) -> Result<Json<UpdateLaunchAtLoginResponse>, ManagementApiError> {
+    Ok(Json(UpdateLaunchAtLoginResponse {
+        saved: true,
+        launch_at_login: state.set_launch_at_login_enabled(payload.enabled).await?,
     }))
 }
 
@@ -1000,10 +1027,15 @@ impl ManagementApiState {
             control_chat_ready: main_thread.is_some(),
             control_chat_id: main_thread.map(|record| record.metadata.chat_id),
             native_workspace_picker_available: *self.native_workspace_picker_available.read().await,
+            launch_at_login: launch_at_login::current_view(&self.runtime),
             bot_username: bot_identity.username,
             bot_url: bot_identity.url,
             bot_identity_error: bot_identity.error,
         })
+    }
+
+    async fn set_launch_at_login_enabled(&self, enabled: bool) -> Result<LaunchAtLoginView> {
+        launch_at_login::set_enabled(&self.runtime, enabled)
     }
 
     async fn runtime_health(&self) -> Result<RuntimeHealthView> {
@@ -2365,6 +2397,7 @@ mod tests {
         let initial = handle.setup_state().await.unwrap();
         assert!(initial.first_run);
         assert!(!initial.telegram_token_configured);
+        assert!(!initial.launch_at_login.supported);
         assert_eq!(initial.bot_url, None);
 
         handle
@@ -2379,6 +2412,7 @@ mod tests {
         let updated = handle.setup_state().await.unwrap();
         assert!(!updated.first_run);
         assert!(updated.telegram_token_configured);
+        assert!(!updated.launch_at_login.supported);
         assert_eq!(updated.authorized_user_ids, vec![7, 8]);
     }
 

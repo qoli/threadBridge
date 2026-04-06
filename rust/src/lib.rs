@@ -13,6 +13,7 @@ pub mod hcodex_ws_bridge;
 pub mod image_artifacts;
 pub mod interactive;
 pub mod local_control;
+pub mod launch_at_login;
 pub mod logging;
 pub mod management_api;
 pub mod process_transcript;

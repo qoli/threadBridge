@@ -53,6 +53,7 @@
 - Telegram 雖然已能直接設定 execution mode，但這條 control surface 的 naming / owner 邊界仍需更正式定義
 - 但 Telegram user-facing execution mode 文案是否沿用 `full_auto / yolo`，目前仍未定案
 - `execution mode` 與 `Codex 工作模型` 應明確視為兩個不同控制面，不應混成同一個切換器
+- `threadBridge` 長期應支持自定義 Codex config，但它也應屬於與 execution mode 分離的獨立 control surface，而不是把任意 config 直接塞進 `full_auto / yolo`
 - 另外要明確記錄：Telegram 的 `Plan mode / 普通模式` 切換已作為 collaboration mode command surface 落地，不屬於 execution mode
 - 換句話說，現有 `/plan_mode` / `/default_mode` 應視為 collaboration mode control surface，不應掛進這份 execution mode 語義
 
@@ -95,6 +96,15 @@
 - workspace 有一個目標 execution contract
 - active session 有一個目前 execution snapshot
 - 兩者不一致時，以 workspace mode 為收斂目標
+
+但這不代表 execution mode 應承擔所有 Codex 啟動設定。
+
+近期新增記錄的一個產品方向是：
+
+- `threadBridge` 應支持自定義 Codex config
+- 這類 config 應被理解為另一條 `Codex 工作模型 / Codex config` control surface
+- 它可能涵蓋 model/profile/config file/額外啟動參數等設定，但不應回頭污染 execution mode 本身的高階語義
+- 無論最終由 management UI、Telegram、還是其他 surface 暴露，都應先收斂成同一份 runtime contract，而不是讓每個入口各自偷帶 CLI flags
 
 但近期也新增一個需要在後續規格中明確處理的方向：
 
@@ -225,6 +235,7 @@ web 管理面現在也已提供：
   - execution mode 仍屬於 core runtime 語義，不應回退成 Telegram-only 開關
 - [telegram-adapter-migration.md](../telegram-adapter/telegram-adapter-migration.md)
   - Telegram 已有 mode control surface，但仍不應把 execution mode 退化成 Telegram-only authority
+  - 自定義 Codex config 若落地，也應先成為 owner/runtime 授權的正式 control surface，而不是 shell env 或 Telegram 私有參數注入
 
 ## 開放問題
 
@@ -232,6 +243,9 @@ web 管理面現在也已提供：
 - 若 Telegram 真的提供 execution mode 切換，user-facing naming 應該沿用 `full_auto / yolo`，還是改成其他更穩定的高階命名？
 - 既然 Telegram 已支持 `Plan mode / 普通模式` collaboration mode 切換，應如何避免它和 `full_auto / yolo` 混淆？
 - `Codex 工作模型` 是否也應由 Telegram 提供對應設定入口，且與 execution mode 明確拆成兩條 control surface？
+- `threadBridge` 若支持自定義 Codex config，scope 應先做 global default、per-workspace sticky config，還是兩者並存？
+- 自定義 Codex config 的正式 artifact 應掛在既有 `workspace-config.json`，還是拆成獨立 config surface？
+- 哪些內容屬於可安全暴露的高階 config，哪些仍不應讓一般 surface 直接透傳到底層 Codex CLI？
 - execution mode 是否需要額外的 audit retention 或更長 process transcript 保留？
 - 未來若 Codex 支持更多 approval / sandbox 組合，threadBridge 是否仍只暴露高階 mode？
 - 是否需要在 launch surface 正式支持一次性 override，而不是永遠以 workspace mode 為準？
@@ -242,5 +256,6 @@ web 管理面現在也已提供：
 1. 更新其餘 plan 文檔，反映 execution mode 已是部分落地的正式 runtime 語義，且 Telegram 已有 `/get_workspace_execution_mode` / `/set_workspace_execution_mode` surface。
 2. 在 `runtime-protocol` 補齊 execution mode control 的正式命名，避免目前仍同時存在 management API route 與 Telegram slash command 的雙重表述。
 3. 固定 Telegram user-facing naming，決定是否繼續沿用 `full_auto / yolo`，或提供更穩定的高階文案。
-4. 另外補一份與 execution mode 分離的 `Codex 工作模型` control 規格，不要把 model 與 mode 混在同一份開關語意裡。
-5. 若未來真的引入更多 profile，再決定是否需要 `mode_source`、launch override 或更細的 audit policy。
+4. 補一份與 execution mode 分離的 `Codex 工作模型 / 自定義 Codex config` control 規格，不要把 model、config 與 mode 混在同一份開關語意裡。
+5. 先決定自定義 Codex config 的 scope、artifact 與安全邊界，再決定它是否進入 management UI、Telegram command surface 或其他 launch surface。
+6. 若未來真的引入更多 profile，再決定是否需要 `mode_source`、launch override 或更細的 audit policy。

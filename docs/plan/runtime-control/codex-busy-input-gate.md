@@ -34,6 +34,12 @@
 - pending image batch 的顯式取消 control
   - 使用者若誤傳圖片，目前只能放著待分析，缺少直接丟棄這批圖片的 Telegram 動作
 
+目前新增記錄的一個明確 bug 是：
+
+- 使用者送出斜線命令 `STOP` / `/stop` 後，Telegram thread 目前可能無法自行恢復正常響應
+- today 症狀是：往往需要重啟 bot，該 thread 才會重新接受後續輸入
+- 這代表目前 interrupt request、busy gate release、或 Telegram adapter 後續收尾之間，至少有一段 state reconciliation 仍不可靠
+
 目前新增固定的一條收斂方向是：
 
 - Codex native busy truth 應回到 `app-server-ws-backend`
@@ -55,6 +61,7 @@
 - 目前 Busy Gate 仍是 CLI 架構遷移後逐步拼接出的 composite gate
 - 它混合了 app-server active turn、workspace snapshot、continuity pointer、與 Telegram 產品層行為
 - 長期不應繼續把這些混成同一個 Codex busy source of truth
+- `/stop` 的 happy path 雖已存在，但 interrupt 後若 thread 仍卡在不可響應狀態，代表產品層目前仍不能保證 `STOP -> 可再次發言` 這條最基本閉環
 
 ## 背景
 
@@ -155,6 +162,12 @@
   - 新進程只在確認 owner 已失效時接管或清除 stale busy
 
 這裡的重點不是要把 `running` 變成長期 persistent source of truth，而是避免 crash 後的 stale gate 讓 thread 永久卡住。
+
+對 `/stop` 也要補上一條同等明確的要求：
+
+- `STOP` 成功、失敗、逾時 fallback、以及 backend 已中止但 adapter 尚未收尾，最終都必須把 Telegram thread 收斂回可再次互動的狀態
+- 不能接受「interrupt 已送出，但 thread 仍需重啟 bot 才恢復」這種產品行為
+- 若 backend truth 無法確認已回到 idle，應回 degraded / broken，而不是讓 Telegram thread 靜默卡死
 
 ## 提示文案方向
 

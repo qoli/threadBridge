@@ -112,6 +112,7 @@
   - Telegram 文字 turn / 圖片分析已改成 background 執行，後續輸入現在會命中 reject
   - `/stop` 已作為第一個正式 busy control action 落地，並開始使用 session turn id 走 app-server interrupt
   - bot 啟動時的 stale busy reconciliation 已開始落地
+  - 已新增記錄一個明確 bug：斜線命令 `STOP` / `/stop` 後，thread 目前可能卡到需要重啟 bot 才恢復響應
   - 但 queue 模型、更完整的狀態語義、`STOP 並插入發言` / `序列發言` 這類 follow-up 控制面、更乾淨的 ingress / dispatcher 邊界，以及更完整的 stale busy owner 模型仍未收斂
 - [codex-execution-modes.md](runtime-control/codex-execution-modes.md)
   - doc kind: `plan`
@@ -119,7 +120,7 @@
   - workspace-local `workspace-config.json`、`ExecutionMode` enum、session execution snapshot 已落地
   - management API / launch-config / web UI 已開始暴露 workspace mode、current session mode 與 `mode_drift`
   - `hcodex` 與 Telegram turn/resume 已開始按 workspace mode 收斂到 `full_auto` 或 `yolo`
-  - Telegram 已補上 `/execution_mode` command surface，但 user-facing naming、owner vocabulary、以及 `Codex 工作模型` 是否與 mode 分離對外暴露，仍未收斂
+  - Telegram 已補上 `/execution_mode` command surface，但 user-facing naming、owner vocabulary、以及 `Codex 工作模型` / 自定義 Codex config 是否與 mode 分離對外暴露，仍未收斂
 - [runtime-data-root.md](runtime-control/runtime-data-root.md)
   - doc kind: `plan`
   - bot-local runtime state 已有 shared `data_root_path` plumbing，但預設值原本仍寫死 repo-local `./data`
@@ -176,7 +177,7 @@
   - management UI 已補上 transcript observability pane、workspace-card `Sessions` pane 與 inline records timeline，且 adoption/repair action 已改成 owner-canonical 語義
   - management UI 已補上 workspace execution mode 切換、mode drift 提示，以及 mode-aware launch/resume commands
   - web 管理面新增確認的 UI 收斂方向是本地 vendored、無 build 的 Tabler 風格 CSS 重構，且 dark mode 固定跟隨系統
-  - 目前新增確認的收斂方向是 `workspace = thread` 主模型、desktop-only 啟動與移除暫不可用的 onboarding
+  - 目前新增確認的收斂方向是 `workspace = thread` 主模型、desktop-only 啟動、可選 `Launch at Login`，以及移除暫不可用的 onboarding
 - [working-session-observability.md](management-desktop-surface/working-session-observability.md)
   - doc kind: `plan`
   - desktop runtime / web 管理面的 session 級 observability 已進入部分落地

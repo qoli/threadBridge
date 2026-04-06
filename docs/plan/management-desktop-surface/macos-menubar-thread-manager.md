@@ -64,6 +64,7 @@
 
 - managed Codex source build 目前仍是直接呼叫 cargo 的實作骨架，尚未收斂成更正式的 update/install UX
 - web 管理面已拆成靜態 HTML/CSS/JS asset，但前端結構仍偏輕量，尚未收斂成更正式的模組化 UI
+- 尚未提供 macOS `Launch at Login` / 登入後自動啟動 `threadBridge` 的正式產品能力
 
 目前新增確認的一個 UI 收斂方向是：
 
@@ -72,6 +73,7 @@
 - tray menu 已收斂；workspace submenu 在 v1 只保留 `New Session` 與 `Continue Telegram Session` 兩個入口，不再承擔 recent session browser 或其他 control action
 - tray 的 maintenance action 只額外保留 `Rebuild Runtime Support`；它不應觸碰 `data/`、setup config 或 thread state
 - macOS app 產品形態已開始收斂成 menubar-only 常駐工具；正常運行時預設隱藏 Dock 圖標，不把 Dock 當成主要入口
+- 既然產品定位是 menubar-only 常駐工具，就應補上可選的 macOS `Launch at Login`，避免每次登入後都要手動重開 desktop runtime owner
 
 目前新增確認的優先級判斷是：
 
@@ -108,6 +110,7 @@
 - workspace 級 `hcodex` 啟動入口
 - machine-level runtime / managed Codex health view
 - workspace `ws` runtime owner 的責任邊界
+- macOS app 生命週期整合，例如登入後自動啟動 desktop runtime owner
 
 這份 plan 不處理：
 
@@ -155,6 +158,26 @@ v1 另固定一個產品形態約束：
 - 若未來需要短暫前台視窗或 debug 視窗，也應視為例外 surface，而不是把 Dock 恢復成常駐主入口
 
 這個約束的目的不是單純少一個圖標，而是避免 desktop runtime owner / tray utility / browser management surface 的產品定位再次漂回一般前台桌面 app。
+
+### 1.2 Launch at Login
+
+既然 `threadBridge` 的產品定位已收斂成 menubar-only 常駐工具，v1 應補上一個對應的 app lifecycle 能力：
+
+- 提供可選的 macOS `Launch at Login`
+- 目標是讓 desktop runtime owner 在使用者登入後自動回來，而不是要求使用者每次手動重新打開 app
+- 這個能力應採用 macOS 原生 login item / app lifecycle 路徑，不把自訂 `LaunchAgent` 安裝腳本暴露成一般使用者主流程
+- 它只負責自動啟動 `threadBridge` app 本身，不應額外偷做 workspace launch、TUI resume、或其他高風險 side effect
+- 預設值應保守；較合理的 v1 方向是由使用者明確開啟，而不是第一次安裝後直接強制啟用
+
+這條能力的產品承載面應是：
+
+- web 管理面的 `Settings` / setup 區塊，或
+- 第一次 setup 完成後的明確提示
+
+而不是：
+
+- 把切換入口塞進每個 workspace submenu
+- 讓使用者自行編輯 shell profile 或手裝背景服務
 
 ### 2. Web 管理面
 
