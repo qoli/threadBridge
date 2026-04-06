@@ -487,8 +487,10 @@ async fn sync_local_transcript_mirrors_once(
                                     owner: "status_sync".to_owned(),
                                 })
                                 .await?;
-                            preview
-                                .set_ownership(Some(turn_id), matches!(claim, ClaimStatus::Claimed(_)));
+                            preview.set_ownership(
+                                Some(turn_id),
+                                matches!(claim, ClaimStatus::Claimed(_)),
+                            );
                         }
                         if !preview.owns_turn(Some(turn_id)) {
                             continue;
@@ -784,9 +786,8 @@ mod tests {
     use super::{
         MirrorPreviewState, STARTUP_STALE_BUSY_RECOVERED_LOG, busy_command_message,
         busy_text_message, initial_workspace_event_offset, local_mirror_entry_from_event,
-        reconcile_stale_bot_busy_sessions_for_repository, render_topic_title,
-        thread_id_from_i32, topic_title_suffix_label, tui_adoption_prompt_text,
-        turn_id_from_event_payload,
+        reconcile_stale_bot_busy_sessions_for_repository, render_topic_title, thread_id_from_i32,
+        topic_title_suffix_label, tui_adoption_prompt_text, turn_id_from_event_payload,
     };
     use crate::repository::{
         SessionBinding, ThreadMetadata, ThreadRecord, ThreadRepository, ThreadScope, ThreadStatus,
@@ -802,8 +803,8 @@ mod tests {
     };
     use serde_json::json;
     use std::path::PathBuf;
-    use teloxide::types::ChatId;
     use teloxide::Bot;
+    use teloxide::types::ChatId;
     use tokio::fs;
     use uuid::Uuid;
 
@@ -985,7 +986,10 @@ mod tests {
             "turn_id": "turn-1",
             "text": "draft",
         });
-        assert_eq!(turn_id_from_event_payload(&payload).as_deref(), Some("turn-1"));
+        assert_eq!(
+            turn_id_from_event_payload(&payload).as_deref(),
+            Some("turn-1")
+        );
     }
 
     #[test]
