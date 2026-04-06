@@ -913,6 +913,10 @@ pub(crate) fn usable_bound_session_id(
     current_bound_session_id(session)
 }
 
+pub(crate) fn repairable_bound_session_id(session: Option<&SessionBinding>) -> Option<&str> {
+    current_bound_session_id(session)
+}
+
 fn healthy_binding_hint(session: Option<&SessionBinding>) -> &'static str {
     if current_bound_session_id(session).is_some() {
         "This workspace already has a usable Codex session."
@@ -1060,7 +1064,8 @@ mod tests {
         current_bound_session_id, format_role_text, format_system_text,
         normalize_slash_command_text, parse_fallback_command_text, session_binding_access_hint,
         session_binding_hint_for_state, should_cleanup_topic_rename_service_message,
-        topic_rename_service_message_thread_id, usable_bound_session_id,
+        topic_rename_service_message_thread_id, repairable_bound_session_id,
+        usable_bound_session_id,
     };
     use crate::app_server_runtime::WorkspaceRuntimeManager;
     use crate::app_server_runtime::WorkspaceRuntimeState;
@@ -1433,6 +1438,22 @@ mod tests {
         assert_eq!(usable_bound_session_id(broken, Some(&binding)), None);
         assert_eq!(
             current_bound_session_id(Some(&binding)),
+            Some("thr_current")
+        );
+    }
+
+    #[test]
+    fn repairable_bound_session_id_allows_broken_binding_status() {
+        let binding = SessionBinding::fresh(
+            Some("/tmp/workspace".to_owned()),
+            Some("thr_current".to_owned()),
+            crate::execution_mode::SessionExecutionSnapshot::from_mode(
+                crate::execution_mode::ExecutionMode::FullAuto,
+            ),
+        );
+
+        assert_eq!(
+            repairable_bound_session_id(Some(&binding)),
             Some("thr_current")
         );
     }

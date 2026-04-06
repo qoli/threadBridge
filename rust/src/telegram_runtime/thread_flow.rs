@@ -731,7 +731,7 @@ pub(crate) async fn run_command(
                 .await?;
                 return Ok(());
             }
-            let Some(_) = usable_bound_session_id(resolved_state, session.as_ref()) else {
+            let Some(_) = repairable_bound_session_id(session.as_ref()) else {
                 send_scoped_message(
                     bot,
                     msg.chat.id,
