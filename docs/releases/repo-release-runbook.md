@@ -135,6 +135,22 @@ Do not use that for normal releases.
 
 ### 2. Run the full pipeline
 
+Normal maintainer path:
+
+```bash
+scripts/release_rc.sh 0.1.0-rc.2
+```
+
+This wrapper:
+
+- defaults release notes to `docs/releases/<version>.md`
+- creates a release-notes stub when missing
+- defaults the notary profile to `threadbridge-notary`
+- defaults the GitHub repo to `qoli/threadBridge`
+- auto-detects the `Developer ID Application` identity when only one is available
+
+If you prefer the lower-level script, the equivalent explicit command is:
+
 Example:
 
 ```bash
@@ -169,6 +185,14 @@ Expected files:
 ### 3. Create and push the git tag
 
 The release script publishes the GitHub release, but it does not create the git tag for you.
+
+If you want the wrapper to do this too, rerun with:
+
+```bash
+scripts/release_rc.sh 0.1.0-rc.2 --publish-final
+```
+
+Otherwise create the tag manually:
 
 Create an annotated tag on the release commit:
 

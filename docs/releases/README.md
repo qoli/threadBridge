@@ -8,14 +8,12 @@ This directory contains:
 Use the runbook when you need to publish a new macOS prerelease from this repo:
 
 ```bash
-scripts/release_threadbridge.sh release \
-  --version 0.1.0-rc.1 \
-  --notes-file docs/releases/0.1.0-rc.1.md \
-  --codesign-identity "Developer ID Application: Example, Inc. (TEAMID)"
+scripts/release_rc.sh 0.1.0-rc.2
 ```
 
 Current committed contract:
 
 - `release_threadbridge.sh` handles build, sign, DMG, notarize, and GitHub draft prerelease upload
+- `release_rc.sh` is the maintainer-friendly wrapper for the normal RC path
 - git tag creation and final draft publication are separate maintainer steps
 - Homebrew tap publication is still out of scope for the first RC path

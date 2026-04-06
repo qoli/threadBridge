@@ -161,20 +161,27 @@ On macOS, `build`, `bundle`, and `start` refresh the app icon assets from the ca
 
 ### Public Release Script
 
-Use `scripts/release_threadbridge.sh` for the public macOS release pipeline. This is separate from the local dev helper and is the supported path for signed, notarized, distributable artifacts.
-
-Typical subcommands:
+Use `scripts/release_rc.sh` for the normal macOS RC path. It is a thin wrapper around `scripts/release_threadbridge.sh` that fills the repo defaults automatically:
 
 ```bash
-scripts/release_threadbridge.sh build --version 0.1.0-rc.1
-scripts/release_threadbridge.sh sign --version 0.1.0-rc.1 --codesign-identity "Developer ID Application: Example, Inc. (TEAMID)"
-scripts/release_threadbridge.sh dmg --version 0.1.0-rc.1 --codesign-identity "Developer ID Application: Example, Inc. (TEAMID)"
-scripts/release_threadbridge.sh notarize --version 0.1.0-rc.1 --codesign-identity "Developer ID Application: Example, Inc. (TEAMID)"
-scripts/release_threadbridge.sh release --version 0.1.0-rc.1 --notes-file docs/releases/0.1.0-rc.1.md --codesign-identity "Developer ID Application: Example, Inc. (TEAMID)"
+scripts/release_rc.sh 0.1.0-rc.2
 ```
 
-The `release` command performs the full build -> sign -> DMG -> notarize -> publish pipeline.
-Artifacts are written to `dist/release/<version>/`.
+By default the wrapper:
+
+- uses `docs/releases/<version>.md` for release notes
+- creates that notes file if it does not exist yet
+- defaults the notary profile to `threadbridge-notary`
+- defaults the GitHub repo to `qoli/threadBridge`
+- auto-detects the `Developer ID Application` identity if the machine only has one
+
+If you need the wrapper to also push the git tag and publish the draft prerelease:
+
+```bash
+scripts/release_rc.sh 0.1.0-rc.2 --publish-final
+```
+
+For lower-level debugging or partial reruns, use `scripts/release_threadbridge.sh` directly. The underlying `release` command still performs the full build -> sign -> DMG -> notarize -> publish pipeline, and artifacts are written to `dist/release/<version>/`.
 
 Current pipeline contract:
 
