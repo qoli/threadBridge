@@ -42,6 +42,8 @@ const TELEGRAM_SESSION_SUMMARY_LIMIT: usize = 5;
 const TELEGRAM_SESSION_RECORD_LIMIT: usize = 12;
 const STOP_INTERRUPT_GRACE_MS: u64 = 5_000;
 const TURN_ERROR_REVALIDATION_TIMEOUT_SECS: u64 = 5;
+const TURN_ERROR_REVALIDATION_MAX_ATTEMPTS: usize = 3;
+const TURN_ERROR_REVALIDATION_RETRY_DELAY_SECS: u64 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LaunchCommandTarget {
@@ -81,22 +83,108 @@ async fn revalidate_session_after_turn_error(
     existing_thread_id: &str,
     execution_mode: ExecutionMode,
 ) -> Result<crate::codex::CodexThreadBinding> {
-    let binding = tokio::time::timeout(
-        Duration::from_secs(TURN_ERROR_REVALIDATION_TIMEOUT_SECS),
-        state
-            .codex
-            .resume_session(codex_workspace, existing_thread_id, Some(execution_mode)),
+    revalidate_session_after_turn_error_with(
+        existing_thread_id,
+        || async {
+            tokio::time::timeout(
+                Duration::from_secs(TURN_ERROR_REVALIDATION_TIMEOUT_SECS),
+                state
+                    .codex
+                    .resume_session(codex_workspace, existing_thread_id, Some(execution_mode)),
+            )
+            .await
+            .context("timed out while revalidating saved session after turn failure")?
+        },
+        |thread_id| {
+            let thread_id = thread_id.to_owned();
+            async move {
+                state
+                    .codex
+                    .read_thread_run_state(codex_workspace, &thread_id)
+                    .await
+                    .context(
+                        "failed to inspect worker run state while revalidating saved session after turn failure",
+                    )
+            }
+        },
+        || async {
+            tokio::time::sleep(Duration::from_secs(
+                TURN_ERROR_REVALIDATION_RETRY_DELAY_SECS,
+            ))
+            .await;
+        },
     )
     .await
-    .context("timed out while revalidating saved session after turn failure")??;
-    let run_state = state
-        .codex
-        .read_thread_run_state(codex_workspace, &binding.thread_id)
-        .await
-        .context("failed to inspect worker run state while revalidating saved session after turn failure")?;
-    ensure_thread_run_state_idle(&binding.thread_id, &run_state)
-        .context("saved session resumed, but worker did not settle after turn failure")?;
-    Ok(binding)
+}
+
+async fn revalidate_session_after_turn_error_with<
+    Resume,
+    ResumeFut,
+    ReadRun,
+    ReadRunFut,
+    Sleep,
+    SleepFut,
+>(
+    existing_thread_id: &str,
+    mut resume_session: Resume,
+    mut read_run_state: ReadRun,
+    mut sleep_between_attempts: Sleep,
+) -> Result<crate::codex::CodexThreadBinding>
+where
+    Resume: FnMut() -> ResumeFut,
+    ResumeFut: std::future::Future<Output = Result<crate::codex::CodexThreadBinding>>,
+    ReadRun: FnMut(&str) -> ReadRunFut,
+    ReadRunFut: std::future::Future<Output = Result<crate::codex::BackendThreadRunState>>,
+    Sleep: FnMut() -> SleepFut,
+    SleepFut: std::future::Future<Output = ()>,
+{
+    let mut last_error: Option<anyhow::Error> = None;
+
+    for attempt in 1..=TURN_ERROR_REVALIDATION_MAX_ATTEMPTS {
+        match resume_session().await {
+            Ok(binding) => match read_run_state(&binding.thread_id)
+                .await
+                .and_then(|run_state| {
+                    ensure_thread_run_state_idle(&binding.thread_id, &run_state).context(
+                        "saved session resumed, but worker did not settle after turn failure",
+                    )
+                }) {
+                Ok(()) => return Ok(binding),
+                Err(error) => {
+                    last_error = Some(error.context(format!(
+                        "session revalidation attempt {attempt}/{TURN_ERROR_REVALIDATION_MAX_ATTEMPTS} verification failed for `{existing_thread_id}`"
+                    )));
+                }
+            },
+            Err(error) => {
+                last_error = Some(error.context(format!(
+                    "session revalidation attempt {attempt}/{TURN_ERROR_REVALIDATION_MAX_ATTEMPTS} failed for `{existing_thread_id}`"
+                )));
+            }
+        }
+
+        if attempt < TURN_ERROR_REVALIDATION_MAX_ATTEMPTS {
+            if let Some(error) = last_error.as_ref() {
+                warn!(
+                    event = "telegram.thread.message.codex_revalidate_retry",
+                    codex_thread_id = existing_thread_id,
+                    attempt,
+                    max_attempts = TURN_ERROR_REVALIDATION_MAX_ATTEMPTS,
+                    retry_delay_secs = TURN_ERROR_REVALIDATION_RETRY_DELAY_SECS,
+                    error = %error,
+                    error_chain = %format_error_chain(error),
+                    "saved session revalidation failed after turn error; retrying"
+                );
+            }
+            sleep_between_attempts().await;
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        anyhow::anyhow!(
+            "saved session revalidation failed for `{existing_thread_id}` without a concrete error"
+        )
+    }))
 }
 
 async fn persist_collaboration_mode_change(
@@ -2851,5 +2939,126 @@ mod tests {
                 .iter()
                 .any(|command| command.contains("resume 'thr_recent'"))
         );
+    }
+
+    #[tokio::test]
+    async fn turn_error_revalidation_retries_until_worker_settles() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let resume_calls = Arc::new(AtomicUsize::new(0));
+        let run_state_checks = Arc::new(AtomicUsize::new(0));
+        let sleep_calls = Arc::new(AtomicUsize::new(0));
+
+        let binding = super::revalidate_session_after_turn_error_with(
+            "thr_current",
+            {
+                let resume_calls = resume_calls.clone();
+                move || {
+                    resume_calls.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        Ok(crate::codex::CodexThreadBinding {
+                            thread_id: "thr_current".to_owned(),
+                            cwd: "/tmp/workspace".to_owned(),
+                            model: None,
+                            reasoning_effort: None,
+                            execution: SessionExecutionSnapshot::from_mode(ExecutionMode::Yolo),
+                        })
+                    }
+                }
+            },
+            {
+                let run_state_checks = run_state_checks.clone();
+                move |_| {
+                    let attempt = run_state_checks.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        let is_busy = attempt < 2;
+                        Ok(crate::codex::BackendThreadRunState {
+                            thread_id: "thr_current".to_owned(),
+                            is_busy,
+                            active_turn_id: is_busy.then(|| "turn_123".to_owned()),
+                            interruptible: false,
+                            phase: is_busy.then(|| "turn_running".to_owned()),
+                            last_transition_at: None,
+                        })
+                    }
+                }
+            },
+            {
+                let sleep_calls = sleep_calls.clone();
+                move || {
+                    sleep_calls.fetch_add(1, Ordering::SeqCst);
+                    async {}
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(binding.thread_id, "thr_current");
+        assert_eq!(resume_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(run_state_checks.load(Ordering::SeqCst), 3);
+        assert_eq!(sleep_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn turn_error_revalidation_stops_after_third_failed_attempt() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let resume_calls = Arc::new(AtomicUsize::new(0));
+        let run_state_checks = Arc::new(AtomicUsize::new(0));
+        let sleep_calls = Arc::new(AtomicUsize::new(0));
+
+        let error = super::revalidate_session_after_turn_error_with(
+            "thr_current",
+            {
+                let resume_calls = resume_calls.clone();
+                move || {
+                    resume_calls.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        Ok(crate::codex::CodexThreadBinding {
+                            thread_id: "thr_current".to_owned(),
+                            cwd: "/tmp/workspace".to_owned(),
+                            model: None,
+                            reasoning_effort: None,
+                            execution: SessionExecutionSnapshot::from_mode(ExecutionMode::Yolo),
+                        })
+                    }
+                }
+            },
+            {
+                let run_state_checks = run_state_checks.clone();
+                move |_| {
+                    run_state_checks.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        Ok(crate::codex::BackendThreadRunState {
+                            thread_id: "thr_current".to_owned(),
+                            is_busy: true,
+                            active_turn_id: Some("turn_123".to_owned()),
+                            interruptible: false,
+                            phase: Some("turn_running".to_owned()),
+                            last_transition_at: None,
+                        })
+                    }
+                }
+            },
+            {
+                let sleep_calls = sleep_calls.clone();
+                move || {
+                    sleep_calls.fetch_add(1, Ordering::SeqCst);
+                    async {}
+                }
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("attempt 3/3"));
+        assert!(error.contains("verification failed"));
+        assert_eq!(resume_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(run_state_checks.load(Ordering::SeqCst), 3);
+        assert_eq!(sleep_calls.load(Ordering::SeqCst), 2);
     }
 }
