@@ -211,6 +211,8 @@ pub(crate) struct PreviewRenderer {
     latest_render: String,
     max_chars: usize,
     in_progress: bool,
+    active_turn_id: Option<String>,
+    active_item_id: Option<String>,
 }
 
 impl PreviewRenderer {
@@ -223,17 +225,20 @@ impl PreviewRenderer {
             latest_render: String::new(),
             max_chars,
             in_progress: true,
+            active_turn_id: None,
+            active_item_id: None,
         }
     }
 
     pub(crate) fn consume(&mut self, event: &CodexThreadEvent) -> bool {
         match event {
             CodexThreadEvent::ThreadStarted { .. } => {
-                self.in_progress = true;
-                self.status = preview_status("Preparing reply...")
+                self.reset_for_new_turn();
+                self.status = preview_status("Preparing reply...");
             }
-            CodexThreadEvent::TurnStarted { .. } => {
-                self.in_progress = true;
+            CodexThreadEvent::TurnStarted { turn_id } => {
+                self.reset_for_new_turn();
+                self.active_turn_id = turn_id.clone();
                 self.status = preview_status("Reading context...");
             }
             CodexThreadEvent::TurnCompleted { .. } => {
@@ -260,16 +265,14 @@ impl PreviewRenderer {
             | CodexThreadEvent::ItemCompleted { item, .. } => {
                 match item.get("type").and_then(|value| value.as_str()) {
                     Some("agent_message") => {
-                        let text = item
-                            .get("text")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("")
-                            .trim()
-                            .to_owned();
-                        if !text.is_empty() {
-                            self.draft_text = text.clone();
-                            self.final_response = text;
-                            self.status = preview_status("Drafting...");
+                        if let Some((turn_id, item_id, text)) =
+                            agent_message_preview_from_event(event)
+                        {
+                            return self.consume_preview_text_for_item(
+                                turn_id.as_deref(),
+                                Some(item_id.as_str()),
+                                &text,
+                            );
                         }
                     }
                     Some("reasoning") => {
@@ -312,11 +315,21 @@ impl PreviewRenderer {
         changed
     }
 
-    pub(crate) fn consume_preview_text(&mut self, text: &str) -> bool {
+    pub(crate) fn consume_preview_text_for_item(
+        &mut self,
+        turn_id: Option<&str>,
+        item_id: Option<&str>,
+        text: &str,
+    ) -> bool {
         let text = text.trim();
         if text.is_empty() {
             return false;
         }
+        if self.active_turn_id.as_deref() != turn_id {
+            self.reset_for_new_turn();
+            self.active_turn_id = turn_id.map(str::to_owned);
+        }
+        self.active_item_id = item_id.map(str::to_owned);
         self.in_progress = true;
         self.status = preview_status("Drafting...");
         self.draft_text = text.to_owned();
@@ -324,6 +337,11 @@ impl PreviewRenderer {
         let changed = next_render != self.latest_render;
         self.latest_render = next_render;
         changed
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn consume_preview_text(&mut self, text: &str) -> bool {
+        self.consume_preview_text_for_item(None, None, text)
     }
 
     pub(crate) fn heartbeat(&mut self) -> bool {
@@ -344,6 +362,8 @@ impl PreviewRenderer {
         self.final_response.clear();
         self.latest_render.clear();
         self.in_progress = true;
+        self.active_turn_id = None;
+        self.active_item_id = None;
     }
 
     fn render_text(&self) -> String {
@@ -383,6 +403,28 @@ impl PreviewRenderer {
         self.latest_render = next_render;
         changed
     }
+}
+
+fn agent_message_preview_from_event(
+    event: &CodexThreadEvent,
+) -> Option<(Option<String>, String, String)> {
+    let (turn_id, item) = match event {
+        CodexThreadEvent::ItemStarted { turn_id, item }
+        | CodexThreadEvent::ItemUpdated { turn_id, item }
+        | CodexThreadEvent::ItemCompleted { turn_id, item } => (turn_id.clone(), item),
+        _ => return None,
+    };
+    if item.get("type").and_then(|value| value.as_str()) != Some("agent_message") {
+        return None;
+    }
+    let item_id = item.get("id").and_then(|value| value.as_str())?.to_owned();
+    let text = item
+        .get("text")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())?
+        .to_owned();
+    Some((turn_id, item_id, text))
 }
 
 pub(crate) struct TurnPreviewController {
@@ -431,8 +473,24 @@ impl TurnPreviewController {
         self.flush_render().await;
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn consume_preview_text(&mut self, text: &str) {
         if !self.renderer.consume_preview_text(text) {
+            return;
+        }
+        self.flush_render().await;
+    }
+
+    pub(crate) async fn consume_preview_text_for_item(
+        &mut self,
+        turn_id: Option<&str>,
+        item_id: Option<&str>,
+        text: &str,
+    ) {
+        if !self
+            .renderer
+            .consume_preview_text_for_item(turn_id, item_id, text)
+        {
             return;
         }
         self.flush_render().await;

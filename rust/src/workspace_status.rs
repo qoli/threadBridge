@@ -1106,6 +1106,8 @@ pub async fn record_hcodex_ingress_preview_text(
     workspace_path: &Path,
     session_id: &str,
     turn_id: Option<&str>,
+    item_id: Option<&str>,
+    phase: Option<&str>,
     text: &str,
 ) -> Result<()> {
     ensure_workspace_status_surface(workspace_path).await?;
@@ -1122,6 +1124,8 @@ pub async fn record_hcodex_ingress_preview_text(
         payload: json!({
             "session_id": session_id,
             "turn_id": turn_id,
+            "item_id": item_id,
+            "phase": phase,
             "text": trimmed,
             "client": HCODEX_INGRESS_CLIENT,
         }),
@@ -1134,12 +1138,16 @@ pub async fn record_tui_mirror_preview_sync(
     workspace_path: &Path,
     session_id: &str,
     turn_id: Option<&str>,
+    item_id: Option<&str>,
     source_event_at: &str,
     decision: &str,
     claim_status: Option<&str>,
     previous_turn_id: Option<&str>,
     active_turn_id: Option<&str>,
+    previous_item_id: Option<&str>,
+    active_item_id: Option<&str>,
     turn_transition: bool,
+    item_transition: bool,
     owns_active_turn: bool,
     preview_text: &str,
     previous_latest_preview_text: &str,
@@ -1162,12 +1170,16 @@ pub async fn record_tui_mirror_preview_sync(
         payload: json!({
             "session_id": session_id,
             "turn_id": turn_id,
+            "item_id": item_id,
             "source_event_at": source_event_at,
             "decision": decision,
             "claim_status": claim_status,
             "previous_turn_id": previous_turn_id,
             "active_turn_id": active_turn_id,
+            "previous_item_id": previous_item_id,
+            "active_item_id": active_item_id,
             "turn_transition": turn_transition,
+            "item_transition": item_transition,
             "owns_active_turn": owns_active_turn,
             "draft_id": draft_id,
             "preview_chars": preview_chars,
@@ -2408,9 +2420,16 @@ mod tests {
         record_hcodex_ingress_completed(&workspace, "thr_same", Some("turn-1"), Some("hello"))
             .await
             .unwrap();
-        record_hcodex_ingress_preview_text(&workspace, "thr_same", Some("turn-1"), "draft update")
-            .await
-            .unwrap();
+        record_hcodex_ingress_preview_text(
+            &workspace,
+            "thr_same",
+            Some("turn-1"),
+            Some("item-1"),
+            Some("analysis"),
+            "draft update",
+        )
+        .await
+        .unwrap();
         record_hcodex_ingress_completed(&workspace, "thr_same", Some("turn-1"), Some("hello"))
             .await
             .unwrap();
@@ -2428,15 +2447,24 @@ mod tests {
         let workspace = temp_path();
         ensure_workspace_status_surface(&workspace).await.unwrap();
 
-        record_hcodex_ingress_preview_text(&workspace, "thr_same", Some("turn-7"), "draft update")
-            .await
-            .unwrap();
+        record_hcodex_ingress_preview_text(
+            &workspace,
+            "thr_same",
+            Some("turn-7"),
+            Some("item-7"),
+            Some("analysis"),
+            "draft update",
+        )
+        .await
+        .unwrap();
 
         let lines = fs::read_to_string(events_path(&workspace)).await.unwrap();
         let event: WorkspaceStatusEventRecord =
             serde_json::from_str(lines.lines().next().expect("preview event")).unwrap();
         assert_eq!(event.event, "preview_text");
         assert_eq!(event.payload["turn_id"], "turn-7");
+        assert_eq!(event.payload["item_id"], "item-7");
+        assert_eq!(event.payload["phase"], "analysis");
         assert_eq!(event.payload["session_id"], "thr_same");
     }
 
@@ -2449,12 +2477,16 @@ mod tests {
             &workspace,
             "thr_same",
             Some("turn-7"),
+            Some("item-7"),
             "2026-04-07T10:00:00.000Z",
             "skipped_regressive",
             Some("already_owned"),
             Some("turn-7"),
             Some("turn-7"),
+            Some("item-6"),
+            Some("item-7"),
             false,
+            true,
             true,
             "Drafting",
             "Drafting a longer preview",
@@ -2469,6 +2501,10 @@ mod tests {
         assert_eq!(event.event, "mirror_preview_sync");
         assert_eq!(event.payload["session_id"], "thr_same");
         assert_eq!(event.payload["turn_id"], "turn-7");
+        assert_eq!(event.payload["item_id"], "item-7");
+        assert_eq!(event.payload["previous_item_id"], "item-6");
+        assert_eq!(event.payload["active_item_id"], "item-7");
+        assert_eq!(event.payload["item_transition"], true);
         assert_eq!(event.payload["decision"], "skipped_regressive");
         assert_eq!(event.payload["claim_status"], "already_owned");
         assert_eq!(event.payload["draft_id"], 42);

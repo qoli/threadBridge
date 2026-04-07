@@ -44,6 +44,7 @@ use crate::workspace_status::{
 struct MirrorPreviewState {
     preview: TurnPreviewController,
     active_turn_id: Option<String>,
+    active_item_id: Option<String>,
     owns_active_turn: bool,
     latest_preview_text: String,
 }
@@ -53,6 +54,7 @@ impl MirrorPreviewState {
         Self {
             preview,
             active_turn_id: None,
+            active_item_id: None,
             owns_active_turn: false,
             latest_preview_text: String::new(),
         }
@@ -61,6 +63,7 @@ impl MirrorPreviewState {
     fn reset_for_new_turn(&mut self) {
         self.preview.reset_for_new_turn();
         self.active_turn_id = None;
+        self.active_item_id = None;
         self.owns_active_turn = false;
         self.latest_preview_text.clear();
     }
@@ -71,6 +74,7 @@ impl MirrorPreviewState {
         }
         self.preview.reset_for_new_turn();
         self.active_turn_id = turn_id.map(str::to_owned);
+        self.active_item_id = None;
         self.owns_active_turn = false;
         self.latest_preview_text.clear();
         true
@@ -87,22 +91,36 @@ impl MirrorPreviewState {
         self.owns_active_turn && self.active_turn_id.as_deref() == turn_id
     }
 
-    fn should_skip_regressive_preview(&self, turn_id: Option<&str>, text: &str) -> bool {
+    fn should_skip_regressive_preview(
+        &self,
+        turn_id: Option<&str>,
+        item_id: Option<&str>,
+        text: &str,
+    ) -> bool {
         let text = text.trim();
         !text.is_empty()
             && self.active_turn_id.as_deref() == turn_id
+            && self.active_item_id.as_deref() == item_id
             && self.latest_preview_text != text
             && self.latest_preview_text.starts_with(text)
     }
 
-    async fn consume_preview_text(&mut self, turn_id: Option<&str>, text: &str) {
+    async fn consume_preview_text(
+        &mut self,
+        turn_id: Option<&str>,
+        item_id: Option<&str>,
+        text: &str,
+    ) {
         let text = text.trim();
-        if text.is_empty() || self.should_skip_regressive_preview(turn_id, text) {
+        if text.is_empty() || self.should_skip_regressive_preview(turn_id, item_id, text) {
             return;
         }
+        self.active_item_id = item_id.map(str::to_owned);
         self.latest_preview_text.clear();
         self.latest_preview_text.push_str(text);
-        self.preview.consume_preview_text(text).await;
+        self.preview
+            .consume_preview_text_for_item(turn_id, item_id, text)
+            .await;
     }
 }
 
@@ -499,6 +517,7 @@ async fn sync_local_transcript_mirrors_once(
                         continue;
                     };
                     let turn_id = turn_id_from_event_payload(&event.payload);
+                    let item_id = item_id_from_event_payload(&event.payload);
                     let preview = ensure_mirror_preview(
                         mirror_previews,
                         bot,
@@ -507,8 +526,10 @@ async fn sync_local_transcript_mirrors_once(
                         message_thread_id,
                     );
                     let previous_turn_id = preview.active_turn_id.clone();
+                    let previous_item_id = preview.active_item_id.clone();
                     let previous_latest_preview_text = preview.latest_preview_text.clone();
                     let turn_transition = preview.begin_turn(turn_id.as_deref());
+                    let item_transition = previous_item_id.as_deref() != item_id.as_deref();
                     let mut decision = "applied";
                     let mut claim_status = None;
                     if let Some(turn_id) = turn_id.as_deref() {
@@ -543,12 +564,16 @@ async fn sync_local_transcript_mirrors_once(
                                 &workspace_path,
                                 session_id,
                                 Some(turn_id),
+                                item_id.as_deref(),
                                 &event.occurred_at,
                                 decision,
                                 claim_status,
                                 previous_turn_id.as_deref(),
                                 preview.active_turn_id.as_deref(),
+                                previous_item_id.as_deref(),
+                                preview.active_item_id.as_deref(),
                                 turn_transition,
+                                item_transition,
                                 preview.owns_active_turn,
                                 text,
                                 &previous_latest_preview_text,
@@ -564,12 +589,16 @@ async fn sync_local_transcript_mirrors_once(
                                 &workspace_path,
                                 session_id,
                                 None,
+                                item_id.as_deref(),
                                 &event.occurred_at,
                                 decision,
                                 claim_status,
                                 previous_turn_id.as_deref(),
                                 preview.active_turn_id.as_deref(),
+                                previous_item_id.as_deref(),
+                                preview.active_item_id.as_deref(),
                                 turn_transition,
+                                item_transition,
                                 preview.owns_active_turn,
                                 text,
                                 &previous_latest_preview_text,
@@ -581,21 +610,31 @@ async fn sync_local_transcript_mirrors_once(
                         preview.set_ownership(None, true);
                         claim_status = Some("not_applicable");
                     }
-                    if preview.should_skip_regressive_preview(turn_id.as_deref(), text) {
+                    if preview.should_skip_regressive_preview(
+                        turn_id.as_deref(),
+                        item_id.as_deref(),
+                        text,
+                    ) {
                         decision = "skipped_regressive";
                     } else {
-                        preview.consume_preview_text(turn_id.as_deref(), text).await;
+                        preview
+                            .consume_preview_text(turn_id.as_deref(), item_id.as_deref(), text)
+                            .await;
                     }
                     record_tui_mirror_preview_sync(
                         &workspace_path,
                         session_id,
                         turn_id.as_deref(),
+                        item_id.as_deref(),
                         &event.occurred_at,
                         decision,
                         claim_status,
                         previous_turn_id.as_deref(),
                         preview.active_turn_id.as_deref(),
+                        previous_item_id.as_deref(),
+                        preview.active_item_id.as_deref(),
                         turn_transition,
+                        item_transition,
                         preview.owns_active_turn,
                         text,
                         &previous_latest_preview_text,
@@ -803,6 +842,15 @@ fn transcript_origin_from_event(event: &WorkspaceStatusEventRecord) -> Transcrip
     }
 }
 
+fn item_id_from_event_payload(payload: &Value) -> Option<String> {
+    payload
+        .get("item_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
 fn log_workspace_event_log_diagnostics(
     workspace_path: &Path,
     workspace_key: &str,
@@ -917,10 +965,10 @@ fn turn_id_from_event_payload(payload: &Value) -> Option<String> {
 mod tests {
     use super::{
         MirrorPreviewState, STARTUP_STALE_BUSY_RECOVERED_LOG, busy_command_message,
-        busy_text_message, initial_workspace_event_offset, local_mirror_entry_from_event,
-        preview_event_run_end, reconcile_stale_bot_busy_sessions_for_repository,
-        render_topic_title, thread_id_from_i32, topic_title_suffix_label, tui_adoption_prompt_text,
-        turn_id_from_event_payload,
+        busy_text_message, initial_workspace_event_offset, item_id_from_event_payload,
+        local_mirror_entry_from_event, preview_event_run_end,
+        reconcile_stale_bot_busy_sessions_for_repository, render_topic_title, thread_id_from_i32,
+        topic_title_suffix_label, tui_adoption_prompt_text, turn_id_from_event_payload,
     };
     use crate::repository::{
         SessionBinding, ThreadMetadata, ThreadRecord, ThreadRepository, ThreadScope, ThreadStatus,
@@ -1106,28 +1154,39 @@ mod tests {
         let mut preview = test_mirror_preview_state();
         preview.begin_turn(Some("turn-1"));
         preview.set_ownership(Some("turn-1"), true);
+        preview.active_item_id = Some("item-1".to_owned());
         preview.latest_preview_text = "Drafting from the old turn".to_owned();
         preview.begin_turn(Some("turn-2"));
         assert_eq!(preview.active_turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(preview.active_item_id, None);
         assert!(!preview.owns_turn(Some("turn-1")));
         assert!(!preview.owns_turn(Some("turn-2")));
         assert!(preview.latest_preview_text.is_empty());
     }
 
     #[test]
-    fn mirror_preview_state_skips_regressive_preview_for_same_turn() {
+    fn mirror_preview_state_skips_regressive_preview_for_same_turn_and_item() {
         let mut preview = test_mirror_preview_state();
         preview.begin_turn(Some("turn-1"));
         preview.set_ownership(Some("turn-1"), true);
+        preview.active_item_id = Some("item-1".to_owned());
         preview.latest_preview_text = "Drafting a longer preview".to_owned();
 
-        assert!(preview.should_skip_regressive_preview(Some("turn-1"), "Drafting"));
-        assert!(
-            !preview.should_skip_regressive_preview(Some("turn-1"), "Drafting a longer preview")
-        );
+        assert!(preview.should_skip_regressive_preview(Some("turn-1"), Some("item-1"), "Drafting"));
         assert!(!preview.should_skip_regressive_preview(
             Some("turn-1"),
+            Some("item-1"),
+            "Drafting a longer preview"
+        ));
+        assert!(!preview.should_skip_regressive_preview(
+            Some("turn-1"),
+            Some("item-1"),
             "Drafting a longer preview with more detail"
+        ));
+        assert!(!preview.should_skip_regressive_preview(
+            Some("turn-1"),
+            Some("item-2"),
+            "Drafting"
         ));
     }
 
@@ -1135,10 +1194,29 @@ mod tests {
     fn mirror_preview_state_does_not_treat_new_turn_prefix_as_regression() {
         let mut preview = test_mirror_preview_state();
         preview.begin_turn(Some("turn-1"));
+        preview.active_item_id = Some("item-1".to_owned());
         preview.latest_preview_text = "Drafting a longer preview".to_owned();
         preview.begin_turn(Some("turn-2"));
 
-        assert!(!preview.should_skip_regressive_preview(Some("turn-2"), "Drafting"));
+        assert!(!preview.should_skip_regressive_preview(
+            Some("turn-2"),
+            Some("item-1"),
+            "Drafting"
+        ));
+    }
+
+    #[test]
+    fn item_id_from_event_payload_reads_preview_item_id() {
+        let payload = json!({
+            "session_id": "thr_tui",
+            "turn_id": "turn-1",
+            "item_id": "item-9",
+            "text": "draft",
+        });
+        assert_eq!(
+            item_id_from_event_payload(&payload).as_deref(),
+            Some("item-9")
+        );
     }
 
     #[test]

@@ -286,10 +286,17 @@ async fn handle_observer_event(
         record_hcodex_ingress_prompt(workspace_path, thread_id, &prompt).await?;
     }
 
-    if let Some((turn_id, text)) = extract_agent_message_text(&event) {
-        state.lock().await.latest_assistant_message = text.clone();
-        record_hcodex_ingress_preview_text(workspace_path, thread_id, turn_id.as_deref(), &text)
-            .await?;
+    if let Some(agent_message) = extract_agent_message_preview(&event) {
+        state.lock().await.latest_assistant_message = agent_message.text.clone();
+        record_hcodex_ingress_preview_text(
+            workspace_path,
+            thread_id,
+            agent_message.turn_id.as_deref(),
+            Some(agent_message.item_id.as_str()),
+            agent_message.phase.as_deref(),
+            &agent_message.text,
+        )
+        .await?;
     }
 
     if let Some(plan_text) = extract_completed_plan_text(&event) {
@@ -445,7 +452,15 @@ async fn emit_runtime_interaction(
     let _ = sender.send(event);
 }
 
-fn extract_agent_message_text(event: &CodexThreadEvent) -> Option<(Option<String>, String)> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentMessagePreview {
+    turn_id: Option<String>,
+    item_id: String,
+    phase: Option<String>,
+    text: String,
+}
+
+fn extract_agent_message_preview(event: &CodexThreadEvent) -> Option<AgentMessagePreview> {
     let (turn_id, item) = match event {
         CodexThreadEvent::ItemUpdated { turn_id, item }
         | CodexThreadEvent::ItemCompleted { turn_id, item } => (turn_id.clone(), item),
@@ -454,12 +469,24 @@ fn extract_agent_message_text(event: &CodexThreadEvent) -> Option<(Option<String
     if item.get("type").and_then(Value::as_str) != Some("agent_message") {
         return None;
     }
+    let item_id = item.get("id").and_then(Value::as_str)?.to_owned();
+    let phase = item
+        .get("phase")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
     item.get("text")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_owned)
-        .map(|text| (turn_id, text))
+        .map(|text| AgentMessagePreview {
+            turn_id,
+            item_id,
+            phase,
+            text,
+        })
 }
 
 fn extract_completed_plan_text(event: &CodexThreadEvent) -> Option<String> {
@@ -509,8 +536,9 @@ fn extract_user_prompt_text(event: &CodexThreadEvent) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppServerMirrorObserverManager, RunningObserver, extract_agent_message_text,
-        extract_completed_plan_text, extract_user_prompt_text, observer_key, stop_running_observer,
+        AgentMessagePreview, AppServerMirrorObserverManager, RunningObserver,
+        extract_agent_message_preview, extract_completed_plan_text, extract_user_prompt_text,
+        observer_key, stop_running_observer,
     };
     use crate::codex::CodexThreadEvent;
     use serde_json::json;
@@ -520,17 +548,24 @@ mod tests {
     use tokio::sync::{Mutex, oneshot};
 
     #[test]
-    fn extract_agent_message_text_reads_item_text() {
+    fn extract_agent_message_preview_reads_item_text_and_identity() {
         let event = CodexThreadEvent::ItemCompleted {
             turn_id: Some("turn-1".to_owned()),
             item: json!({
                 "type": "agent_message",
+                "id": "item-1",
+                "phase": "analysis",
                 "text": " hello "
             }),
         };
         assert_eq!(
-            extract_agent_message_text(&event),
-            Some((Some("turn-1".to_owned()), "hello".to_owned()))
+            extract_agent_message_preview(&event),
+            Some(AgentMessagePreview {
+                turn_id: Some("turn-1".to_owned()),
+                item_id: "item-1".to_owned(),
+                phase: Some("analysis".to_owned()),
+                text: "hello".to_owned(),
+            })
         );
     }
 
