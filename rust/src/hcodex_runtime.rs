@@ -18,6 +18,7 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use crate::app_server_runtime::{WorkspaceRuntimeState, issue_hcodex_launch_ticket};
 use crate::hcodex_ws_bridge::is_codex_safe_remote_ws_url;
+use crate::process_utils::process_exists;
 use crate::repository::ThreadRepository;
 use crate::workspace_status::{
     has_live_local_tui_session, record_hcodex_launcher_ended, record_hcodex_launcher_started,
@@ -247,7 +248,7 @@ async fn ensure_hcodex_runtime_inner(
     if runtime_state_is_live(workspace).await? {
         write_ready_file(ready_file).await?;
         if let Some(parent_pid) = parent_pid {
-            while process_is_alive(parent_pid) {
+            while process_exists(parent_pid) {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
@@ -606,15 +607,6 @@ async fn tcp_endpoint_is_live(url: &str) -> bool {
         return false;
     };
     TcpStream::connect(socket_addr).await.is_ok()
-}
-
-fn process_is_alive(pid: u32) -> bool {
-    std::process::Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
 }
 
 async fn read_runtime_state(workspace: &Path) -> Result<WorkspaceRuntimeState> {

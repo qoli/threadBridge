@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow};
 use async_stream::stream;
@@ -73,6 +73,12 @@ pub struct ManagementApiHandle {
     state: Arc<ManagementApiState>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ManagementRuntimeOverview {
+    pub health: RuntimeHealthView,
+    pub workspaces: Vec<ManagedWorkspaceView>,
+}
+
 impl ManagementApiHandle {
     pub async fn set_telegram_polling_state(&self, state: TelegramPollingState) {
         let mut current = self.state.telegram_polling_state.write().await;
@@ -109,6 +115,10 @@ impl ManagementApiHandle {
 
     pub async fn workspace_views(&self) -> Result<Vec<ManagedWorkspaceView>> {
         self.state.workspace_views().await
+    }
+
+    pub async fn runtime_overview(&self) -> Result<ManagementRuntimeOverview> {
+        self.state.runtime_overview().await
     }
 
     pub async fn thread_views(&self) -> Result<Vec<ThreadStateView>> {
@@ -187,6 +197,7 @@ struct ManagementApiState {
     runtime_owner: Arc<RwLock<Option<DesktopRuntimeOwner>>>,
     native_workspace_picker_available: Arc<RwLock<bool>>,
     bot_identity: Arc<RwLock<CachedTelegramBotIdentity>>,
+    managed_codex_version_cache: Arc<RwLock<Option<ManagedCodexVersionCacheEntry>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,6 +224,23 @@ struct CachedTelegramBotIdentity {
     username: Option<String>,
     url: Option<String>,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ManagedCodexVersionCacheEntry {
+    binary_path: String,
+    modified_at: Option<SystemTime>,
+    expires_at: Instant,
+    version: Option<String>,
+}
+
+fn managed_codex_version_cache_hit(
+    entry: &ManagedCodexVersionCacheEntry,
+    binary_path: &str,
+    modified_at: Option<SystemTime>,
+    now: Instant,
+) -> bool {
+    entry.binary_path == binary_path && entry.modified_at == modified_at && entry.expires_at > now
 }
 
 #[derive(Debug, Serialize)]
@@ -372,6 +400,7 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
         runtime_owner: Arc::new(RwLock::new(None)),
         native_workspace_picker_available: Arc::new(RwLock::new(false)),
         bot_identity: Arc::new(RwLock::new(CachedTelegramBotIdentity::default())),
+        managed_codex_version_cache: Arc::new(RwLock::new(None)),
     });
     state.refresh_cached_bot_identity().await?;
     let bind_addr = runtime.management_bind_addr;
@@ -760,13 +789,13 @@ async fn build_management_event_snapshot(
     state: &ManagementApiState,
 ) -> Result<ManagementEventSnapshot, ManagementApiError> {
     let setup = serde_json::to_value(state.setup_state().await?).map_err(anyhow::Error::from)?;
-    let runtime =
-        serde_json::to_value(state.runtime_health().await?).map_err(anyhow::Error::from)?;
+    let runtime_overview = state.runtime_overview().await?;
+    let runtime = serde_json::to_value(runtime_overview.health).map_err(anyhow::Error::from)?;
     let threads = keyed_json_map(state.thread_views().await?, |thread| {
         thread.thread_key.clone()
     })
     .map_err(anyhow::Error::from)?;
-    let workspaces = keyed_json_map(state.workspace_views().await?, |workspace| {
+    let workspaces = keyed_json_map(runtime_overview.workspaces, |workspace| {
         workspace.workspace_cwd.clone()
     })
     .map_err(anyhow::Error::from)?;
@@ -975,6 +1004,38 @@ async fn get_events(
 }
 
 impl ManagementApiState {
+    async fn invalidate_managed_codex_version_cache(&self) {
+        let mut cache = self.managed_codex_version_cache.write().await;
+        *cache = None;
+    }
+
+    async fn cached_managed_codex_version(&self, binary_path: Option<&Path>) -> Option<String> {
+        let binary_path = binary_path.filter(|path| path.exists())?;
+        let metadata = tokio::fs::metadata(binary_path).await.ok();
+        let modified_at = metadata.as_ref().and_then(|value| value.modified().ok());
+        let binary_path_string = binary_path.display().to_string();
+        let now = Instant::now();
+
+        {
+            let cache = self.managed_codex_version_cache.read().await;
+            if let Some(entry) = cache.as_ref()
+                && managed_codex_version_cache_hit(entry, &binary_path_string, modified_at, now)
+            {
+                return entry.version.clone();
+            }
+        }
+
+        let version = read_codex_version(binary_path).await.ok();
+        let mut cache = self.managed_codex_version_cache.write().await;
+        *cache = Some(ManagedCodexVersionCacheEntry {
+            binary_path: binary_path_string,
+            modified_at,
+            expires_at: Instant::now() + Duration::from_secs(300),
+            version: version.clone(),
+        });
+        version
+    }
+
     async fn refresh_cached_bot_identity(&self) -> Result<()> {
         let telegram = load_optional_telegram_config_from_path(&self.runtime.config_env_path())?;
         self.refresh_cached_bot_identity_for_token(
@@ -1067,17 +1128,22 @@ impl ManagementApiState {
     }
 
     async fn runtime_health(&self) -> Result<RuntimeHealthView> {
+        Ok(self.runtime_overview().await?.health)
+    }
+
+    async fn runtime_overview(&self) -> Result<ManagementRuntimeOverview> {
         let workspaces = self.workspace_views().await?;
         let runtime_owner = match self.runtime_owner.read().await.clone() {
             Some(owner) => owner.status().await,
             None => RuntimeOwnerStatus::inactive(),
         };
-        Ok(build_runtime_health(
+        let health = build_runtime_health(
             self.runtime.management_bind_addr.to_string(),
             &workspaces,
             runtime_owner,
             self.managed_codex_view().await?,
-        ))
+        );
+        Ok(ManagementRuntimeOverview { health, workspaces })
     }
 
     async fn managed_codex_view(&self) -> Result<ManagedCodexView> {
@@ -1088,10 +1154,9 @@ impl ManagementApiState {
         let build_config_path = data_root.join(MANAGED_CODEX_BUILD_CONFIG_FILE);
         let build_info_path = data_root.join(MANAGED_CODEX_BUILD_INFO_FILE);
         let build_defaults = resolve_managed_codex_build_defaults(data_root).await?;
-        let version = match binary_path.as_deref() {
-            Some(path) if path.exists() => read_codex_version(path).await.ok(),
-            _ => None,
-        };
+        let version = self
+            .cached_managed_codex_version(binary_path.as_deref())
+            .await;
         Ok(ManagedCodexView {
             source: source.as_str(),
             source_file_path: data_root
@@ -1121,6 +1186,7 @@ impl ManagementApiState {
     ) -> Result<UpdateManagedCodexPreferenceResponse> {
         let source = ManagedCodexSourcePreference::parse(source)?;
         write_managed_codex_source_preference(&self.runtime.data_root_path, source).await?;
+        self.invalidate_managed_codex_version_cache().await;
         let seed_template_path = validate_seed_template(&self.runtime.runtime_template_path())?;
         let mut synced_workspaces = 0usize;
         let mut seen = BTreeMap::new();
@@ -1177,6 +1243,7 @@ impl ManagementApiState {
             tokio::fs::set_permissions(&dest_path, permissions).await?;
         }
         let version = read_codex_version(&dest_path).await.ok();
+        self.invalidate_managed_codex_version_cache().await;
         Ok(RefreshManagedCodexCacheResponse {
             updated: true,
             binary_path: dest_path.display().to_string(),
@@ -1292,6 +1359,7 @@ impl ManagementApiState {
             .with_context(|| format!("failed to write {}", build_info_path.display()))?;
 
         let version = read_codex_version(&dest_path).await.ok();
+        self.invalidate_managed_codex_version_cache().await;
         Ok(BuildManagedCodexSourceResponse {
             built: true,
             binary_path: dest_path.display().to_string(),
@@ -2357,9 +2425,10 @@ impl IntoResponse for ManagementApiError {
 mod tests {
     use super::{
         MANAGEMENT_UI_JS, ManagementApiHandle, ManagementEventSnapshot,
-        MirrorPreviewDebugEventView, UpdateTelegramSetupRequest, WorkingSessionRecordView,
-        WorkingSessionSummaryView, diff_management_event_snapshots, spawn_management_api,
-        write_env_file,
+        ManagedCodexVersionCacheEntry, MirrorPreviewDebugEventView,
+        UpdateTelegramSetupRequest, WorkingSessionRecordView, WorkingSessionSummaryView,
+        diff_management_event_snapshots, managed_codex_version_cache_hit,
+        spawn_management_api, write_env_file,
     };
     use crate::app_server_runtime::WorkspaceRuntimeManager;
     use crate::collaboration_mode::CollaborationMode;
@@ -2379,6 +2448,7 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::time::{Duration, Instant, SystemTime};
     use tokio::fs;
     use uuid::Uuid;
 
@@ -2985,6 +3055,43 @@ mod tests {
                     .and_then(|value| value.get("version"))
                     == Some(&json!("1.0.1"))
         }));
+    }
+
+    #[test]
+    fn managed_codex_version_cache_hit_requires_matching_key_and_ttl() {
+        let modified_at = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(10));
+        let now = Instant::now();
+        let entry = ManagedCodexVersionCacheEntry {
+            binary_path: "/tmp/codex".to_owned(),
+            modified_at,
+            expires_at: now + Duration::from_secs(300),
+            version: Some("1.0.0".to_owned()),
+        };
+
+        assert!(managed_codex_version_cache_hit(
+            &entry,
+            "/tmp/codex",
+            modified_at,
+            now
+        ));
+        assert!(!managed_codex_version_cache_hit(
+            &entry,
+            "/tmp/other-codex",
+            modified_at,
+            now
+        ));
+        assert!(!managed_codex_version_cache_hit(
+            &entry,
+            "/tmp/codex",
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(20)),
+            now
+        ));
+        assert!(!managed_codex_version_cache_hit(
+            &entry,
+            "/tmp/codex",
+            modified_at,
+            now + Duration::from_secs(301)
+        ));
     }
 
     #[test]

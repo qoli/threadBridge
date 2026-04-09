@@ -11,7 +11,9 @@ use tracing::info;
 use crate::app_server_runtime::{WorkspaceRuntimeManager, daemon_endpoint_is_live};
 use crate::config::RuntimeConfig;
 use crate::hcodex_ingress::hcodex_ingress_endpoint_is_live;
-use crate::workspace::{ensure_workspace_runtime, validate_seed_template};
+use crate::workspace::{
+    WorkspaceRuntimeEnsureMode, ensure_workspace_runtime_with_mode, validate_seed_template,
+};
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct RuntimeOwnerReconcileReport {
@@ -134,11 +136,12 @@ impl DesktopRuntimeOwner {
                 "desktop runtime owner started reconciling workspace"
             );
             let step = async {
-                ensure_workspace_runtime(
+                ensure_workspace_runtime_with_mode(
                     &self.runtime.runtime_support_root_path,
                     &self.runtime.data_root_path,
                     &self.seed_template_path,
                     workspace_path,
+                    WorkspaceRuntimeEnsureMode::PassiveReconcile,
                 )
                 .await?;
                 let runtime = self

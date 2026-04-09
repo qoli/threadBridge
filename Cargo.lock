@@ -3333,6 +3333,7 @@ dependencies = [
  "directories",
  "dotenvy",
  "futures-util",
+ "libc",
  "pulldown-cmark",
  "reedline",
  "reqwest",

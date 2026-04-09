@@ -18,6 +18,12 @@ enum CodexSourcePreference {
     Source,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceRuntimeEnsureMode {
+    ExplicitSync,
+    PassiveReconcile,
+}
+
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -254,25 +260,48 @@ fn sync_managed_appendix(existing: &str, appendix: &str) -> String {
 }
 
 async fn write_text_file(path: &Path, contents: &str) -> Result<()> {
+    write_text_file_if_changed(path, contents).await.map(|_| ())
+}
+
+async fn write_text_file_if_changed(path: &Path, contents: &str) -> Result<bool> {
+    match fs::read_to_string(path).await {
+        Ok(existing) if existing == contents => return Ok(false),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(anyhow!("failed to read {}: {}", path.display(), error));
+        }
+    }
+
     fs::write(path, contents)
         .await
-        .map_err(|error| anyhow!("failed to write {}: {}", path.display(), error))
+        .map_err(|error| anyhow!("failed to write {}: {}", path.display(), error))?;
+    Ok(true)
 }
 
 async fn set_mode(path: &Path, mode: u32) -> Result<()> {
+    set_mode_if_changed(path, mode).await.map(|_| ())
+}
+
+async fn set_mode_if_changed(path: &Path, mode: u32) -> Result<bool> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let metadata = fs::metadata(path).await?;
+        let current_mode = metadata.permissions().mode();
+        if current_mode == mode {
+            return Ok(false);
+        }
         let mut permissions = metadata.permissions();
         permissions.set_mode(mode);
         fs::set_permissions(path, permissions).await?;
+        return Ok(true);
     }
     #[cfg(not(unix))]
     {
         let _ = (path, mode);
+        return Ok(false);
     }
-    Ok(())
 }
 
 pub async fn ensure_workspace_runtime(
@@ -280,6 +309,23 @@ pub async fn ensure_workspace_runtime(
     data_root: &Path,
     seed_template_path: &Path,
     workspace_path: &Path,
+) -> Result<PathBuf> {
+    ensure_workspace_runtime_with_mode(
+        runtime_support_root,
+        data_root,
+        seed_template_path,
+        workspace_path,
+        WorkspaceRuntimeEnsureMode::ExplicitSync,
+    )
+    .await
+}
+
+pub async fn ensure_workspace_runtime_with_mode(
+    runtime_support_root: &Path,
+    data_root: &Path,
+    seed_template_path: &Path,
+    workspace_path: &Path,
+    ensure_mode: WorkspaceRuntimeEnsureMode,
 ) -> Result<PathBuf> {
     let codex_source_preference = read_codex_source_preference(data_root).await?;
     let config_env_path = data_root.join("config.env.local");
@@ -343,14 +389,7 @@ pub async fn ensure_workspace_runtime(
         let wrapper_path = bin_dir.join(filename);
         let wrapper = build_wrapper_script(tool, runtime_support_root, &config_env_path);
         write_text_file(&wrapper_path, &wrapper).await?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let metadata = fs::metadata(&wrapper_path).await?;
-            let mut permissions = metadata.permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&wrapper_path, permissions).await?;
-        }
+        set_mode(&wrapper_path, 0o755).await?;
     }
 
     let hcodex_path = bin_dir.join("hcodex");
@@ -386,15 +425,24 @@ pub async fn ensure_workspace_runtime(
             })?
         {
             let managed_codex_dest = bin_dir.join("codex");
-            fs::copy(&managed_codex_source, &managed_codex_dest)
-                .await
-                .with_context(|| {
+            let should_copy = ensure_mode == WorkspaceRuntimeEnsureMode::ExplicitSync
+                || !fs::try_exists(&managed_codex_dest).await.with_context(|| {
                     format!(
-                        "failed to copy managed Codex binary from {} to {}",
-                        managed_codex_source.display(),
+                        "failed to inspect workspace managed Codex binary: {}",
                         managed_codex_dest.display()
                     )
                 })?;
+            if should_copy {
+                fs::copy(&managed_codex_source, &managed_codex_dest)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to copy managed Codex binary from {} to {}",
+                            managed_codex_source.display(),
+                            managed_codex_dest.display()
+                        )
+                    })?;
+            }
             set_mode(&managed_codex_dest, 0o755).await?;
         }
     }
@@ -416,10 +464,12 @@ pub fn validate_seed_template(seed_template_path: &Path) -> Result<PathBuf> {
 mod tests {
     use super::{
         THREADBRIDGE_RUNTIME_DIR, THREADBRIDGE_RUNTIME_END, THREADBRIDGE_RUNTIME_START,
-        ensure_workspace_runtime,
+        WorkspaceRuntimeEnsureMode, ensure_workspace_runtime, ensure_workspace_runtime_with_mode,
     };
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
     use tokio::fs;
+    use tokio::time::sleep;
     use uuid::Uuid;
 
     fn temp_path() -> PathBuf {
@@ -675,5 +725,45 @@ mod tests {
         assert!(content.contains(THREADBRIDGE_RUNTIME_START));
         assert!(content.contains("runtime appendix"));
         assert!(content.contains(THREADBRIDGE_RUNTIME_END));
+    }
+
+    #[tokio::test]
+    async fn passive_reconcile_does_not_rewrite_unchanged_hcodex_launcher() {
+        let root = temp_path();
+        let runtime_support_root = root.join("runtime_support");
+        let data_root = root.join("data");
+        let workspace = root.join("workspace");
+        let template = root.join("template.md");
+        fs::create_dir_all(&runtime_support_root).await.unwrap();
+        fs::write(&template, "runtime appendix\n").await.unwrap();
+
+        ensure_workspace_runtime(&runtime_support_root, &data_root, &template, &workspace)
+            .await
+            .unwrap();
+
+        let hcodex_path = workspace.join(".threadbridge/bin/hcodex");
+        let first_modified = fs::metadata(&hcodex_path)
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
+        sleep(Duration::from_millis(20)).await;
+
+        ensure_workspace_runtime_with_mode(
+            &runtime_support_root,
+            &data_root,
+            &template,
+            &workspace,
+            WorkspaceRuntimeEnsureMode::PassiveReconcile,
+        )
+        .await
+        .unwrap();
+
+        let second_modified = fs::metadata(&hcodex_path)
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(first_modified, second_modified);
     }
 }

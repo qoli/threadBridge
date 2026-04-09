@@ -16,6 +16,7 @@ pub mod launch_at_login;
 pub mod local_control;
 pub mod logging;
 pub mod management_api;
+pub mod process_utils;
 pub mod process_transcript;
 pub mod repository;
 pub mod runtime_busy_reconcile;

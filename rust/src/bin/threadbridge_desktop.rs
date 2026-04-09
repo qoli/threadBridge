@@ -16,6 +16,7 @@ mod macos_app {
     use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
     use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
     use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
+    use tokio::time::{Instant, sleep_until};
     use tracing::{info, warn};
     use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -54,6 +55,21 @@ mod macos_app {
         setup: SetupStateView,
         health: RuntimeHealthView,
         workspaces: Vec<ManagedWorkspaceView>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum DesktopPollMode {
+        Fast,
+        Slow,
+    }
+
+    impl DesktopPollMode {
+        fn interval(self) -> Duration {
+            match self {
+                Self::Fast => Duration::from_secs(3),
+                Self::Slow => Duration::from_secs(15),
+            }
+        }
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,7 +186,6 @@ mod macos_app {
             owner.clone(),
             proxy.clone(),
         );
-        let _ = proxy.send_event(UserEvent::Refresh);
 
         let mut app = DesktopApp {
             runtime,
@@ -259,11 +274,41 @@ mod macos_app {
         proxy: EventLoopProxy<UserEvent>,
     ) {
         runtime.spawn(async move {
+            let launched_at = Instant::now();
+            let mut latest_snapshot: Option<DesktopSnapshot> = None;
+            let mut next_snapshot_at = Instant::now();
+            let mut next_reconcile_at = Instant::now();
+
             loop {
-                reconcile_runtime_owner(&management_api, &owner).await;
-                maybe_start_bot_runtime(&management_api, &owner).await;
-                send_snapshot(&management_api, &proxy).await;
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                let now = Instant::now();
+
+                if now >= next_reconcile_at {
+                    reconcile_runtime_owner(&management_api, &owner).await;
+                    maybe_start_bot_runtime(&management_api, &owner).await;
+                    next_reconcile_at =
+                        Instant::now() + reconcile_interval(latest_snapshot.as_ref());
+                }
+
+                if now >= next_snapshot_at {
+                    match collect_snapshot(&management_api).await {
+                        Ok(snapshot) => {
+                            latest_snapshot = Some(snapshot.clone());
+                            let _ = proxy.send_event(UserEvent::Snapshot(Box::new(snapshot)));
+                        }
+                        Err(error) => {
+                            warn!(event = "desktop_runtime.snapshot.failed", error = %error);
+                        }
+                    }
+                    let poll_mode = snapshot_poll_mode(latest_snapshot.as_ref(), launched_at);
+                    next_snapshot_at = Instant::now() + poll_mode.interval();
+                    let desired_reconcile_at =
+                        Instant::now() + reconcile_interval(latest_snapshot.as_ref());
+                    if desired_reconcile_at < next_reconcile_at {
+                        next_reconcile_at = desired_reconcile_at;
+                    }
+                }
+
+                sleep_until(next_snapshot_at.min(next_reconcile_at)).await;
             }
         });
     }
@@ -281,19 +326,60 @@ mod macos_app {
         });
     }
 
+    fn snapshot_poll_mode(
+        snapshot: Option<&DesktopSnapshot>,
+        launched_at: Instant,
+    ) -> DesktopPollMode {
+        if launched_at.elapsed() < Duration::from_secs(60) {
+            return DesktopPollMode::Fast;
+        }
+        if snapshot.is_some_and(desktop_snapshot_requires_fast_poll) {
+            return DesktopPollMode::Fast;
+        }
+        DesktopPollMode::Slow
+    }
+
+    fn desktop_snapshot_requires_fast_poll(snapshot: &DesktopSnapshot) -> bool {
+        snapshot.workspaces.iter().any(|workspace| {
+            workspace.run_status == "running"
+                || workspace.runtime_readiness != "ready"
+                || workspace.binding_status == "broken"
+                || workspace.conflict
+                || workspace.tui_session_adoption_pending
+        })
+    }
+
+    fn reconcile_interval(snapshot: Option<&DesktopSnapshot>) -> Duration {
+        if snapshot.is_some_and(desktop_snapshot_requires_frequent_reconcile) {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_secs(60)
+        }
+    }
+
+    fn desktop_snapshot_requires_frequent_reconcile(snapshot: &DesktopSnapshot) -> bool {
+        snapshot.workspaces.iter().any(|workspace| {
+            workspace.runtime_readiness != "ready"
+                || workspace.binding_status == "broken"
+                || workspace.conflict
+        })
+    }
+
+    async fn collect_snapshot(management_api: &ManagementApiHandle) -> Result<DesktopSnapshot> {
+        let setup = management_api.setup_state().await?;
+        let runtime = management_api.runtime_overview().await?;
+        Ok(DesktopSnapshot {
+            setup,
+            health: runtime.health,
+            workspaces: runtime.workspaces,
+        })
+    }
+
     async fn send_snapshot(
         management_api: &ManagementApiHandle,
         proxy: &EventLoopProxy<UserEvent>,
     ) {
-        let snapshot = async {
-            Ok::<_, anyhow::Error>(DesktopSnapshot {
-                setup: management_api.setup_state().await?,
-                health: management_api.runtime_health().await?,
-                workspaces: management_api.workspace_views().await?,
-            })
-        }
-        .await;
-        match snapshot {
+        match collect_snapshot(management_api).await {
             Ok(snapshot) => {
                 let _ = proxy.send_event(UserEvent::Snapshot(Box::new(snapshot)));
             }
@@ -893,12 +979,14 @@ mod macos_app {
     #[cfg(test)]
     mod tests {
         use super::{
-            apple_script_user_cancelled, parse_choose_folder_output, workspace_display_name,
-            workspace_tray_label,
+            DesktopPollMode, apple_script_user_cancelled, parse_choose_folder_output,
+            reconcile_interval, snapshot_poll_mode, workspace_display_name, workspace_tray_label,
         };
+        use std::time::Duration;
         use threadbridge_rust::execution_mode::ExecutionMode;
         use threadbridge_rust::management_api::ManagedWorkspaceView;
         use threadbridge_rust::repository::RecentCodexSessionEntry;
+        use tokio::time::Instant;
 
         #[test]
         fn parse_choose_folder_output_trims_trailing_slash() {
@@ -977,6 +1065,213 @@ mod macos_app {
                 Some(-128),
                 "execution error: User canceled. (-128)"
             ));
+        }
+
+        #[test]
+        fn snapshot_poll_mode_starts_fast_then_slows_when_idle() {
+            let launched_at = Instant::now() - Duration::from_secs(61);
+            let snapshot = super::DesktopSnapshot {
+                setup: super::SetupStateView {
+                    first_run: false,
+                    telegram_token_configured: true,
+                    authorized_user_ids: Vec::new(),
+                    authorized_user_count: 0,
+                    telegram_polling_state:
+                        threadbridge_rust::management_api::TelegramPollingState::Active,
+                    management_base_url: "http://127.0.0.1:0".to_owned(),
+                    restart_required_after_setup_save: false,
+                    control_chat_ready: true,
+                    control_chat_id: Some(1),
+                    native_workspace_picker_available: true,
+                    launch_at_login: threadbridge_rust::launch_at_login::LaunchAtLoginView {
+                        supported: false,
+                        enabled: false,
+                        status: "unsupported",
+                        note: None,
+                    },
+                    bot_username: None,
+                    bot_url: None,
+                    bot_identity_error: None,
+                },
+                health: super::RuntimeHealthView {
+                    management_bind_addr: "127.0.0.1:0".to_owned(),
+                    broken_threads: 0,
+                    running_workspaces: 0,
+                    conflicted_workspaces: 0,
+                    ready_workspaces: 1,
+                    degraded_workspaces: 0,
+                    unavailable_workspaces: 0,
+                    app_server_status: "running",
+                    hcodex_ingress_status: "running",
+                    runtime_readiness: "ready",
+                    recovery_hint: None,
+                    runtime_owner: threadbridge_rust::runtime_owner::RuntimeOwnerStatus::inactive(),
+                    managed_codex: threadbridge_rust::management_api::ManagedCodexView {
+                        source: "brew",
+                        source_file_path: "source.txt".to_owned(),
+                        build_config_file_path: "build-config.json".to_owned(),
+                        build_info_file_path: "build-info.txt".to_owned(),
+                        binary_path: "codex".to_owned(),
+                        binary_ready: true,
+                        version: None,
+                        build_defaults:
+                            threadbridge_rust::management_api::ManagedCodexBuildDefaultsView {
+                                source_repo: "repo".to_owned(),
+                                source_rs_dir: "rs".to_owned(),
+                                build_profile: "dev".to_owned(),
+                            },
+                        build_info: None,
+                    },
+                },
+                workspaces: vec![ManagedWorkspaceView {
+                    workspace_cwd: "/tmp/threadBridge/workspaces/Trackly".to_owned(),
+                    title: Some("Trackly".to_owned()),
+                    thread_key: Some("thread-1".to_owned()),
+                    workspace_execution_mode: ExecutionMode::FullAuto,
+                    current_execution_mode: Some(ExecutionMode::FullAuto),
+                    current_approval_policy: Some("on-request".to_owned()),
+                    current_sandbox_policy: Some("workspace-write".to_owned()),
+                    current_collaboration_mode: None,
+                    mode_drift: false,
+                    binding_status: "healthy",
+                    run_status: "idle",
+                    run_phase: "idle",
+                    interrupt_status: "unavailable",
+                    interrupt_note: None,
+                    current_codex_thread_id: Some("thr_current".to_owned()),
+                    tui_active_codex_thread_id: None,
+                    tui_session_adoption_pending: false,
+                    last_used_at: None,
+                    conflict: false,
+                    app_server_status: "running",
+                    hcodex_ingress_status: "running",
+                    runtime_readiness: "ready",
+                    runtime_health_source: "owner",
+                    heartbeat_last_checked_at: None,
+                    heartbeat_last_error: None,
+                    session_broken_reason: None,
+                    recovery_hint: None,
+                    hcodex_path: "/tmp/threadBridge/workspaces/Trackly/.threadbridge/bin/hcodex"
+                        .to_owned(),
+                    hcodex_available: true,
+                    recent_codex_sessions: Vec::<RecentCodexSessionEntry>::new(),
+                }],
+            };
+
+            assert_eq!(
+                snapshot_poll_mode(Some(&snapshot), launched_at),
+                DesktopPollMode::Slow
+            );
+            assert_eq!(reconcile_interval(Some(&snapshot)), Duration::from_secs(60));
+        }
+
+        #[test]
+        fn snapshot_poll_mode_stays_fast_when_runtime_is_degraded() {
+            let launched_at = Instant::now() - Duration::from_secs(61);
+            let mut workspace = ManagedWorkspaceView {
+                workspace_cwd: "/tmp/threadBridge/workspaces/Trackly".to_owned(),
+                title: Some("Trackly".to_owned()),
+                thread_key: Some("thread-1".to_owned()),
+                workspace_execution_mode: ExecutionMode::FullAuto,
+                current_execution_mode: Some(ExecutionMode::FullAuto),
+                current_approval_policy: Some("on-request".to_owned()),
+                current_sandbox_policy: Some("workspace-write".to_owned()),
+                current_collaboration_mode: None,
+                mode_drift: false,
+                binding_status: "healthy",
+                run_status: "idle",
+                run_phase: "idle",
+                interrupt_status: "unavailable",
+                interrupt_note: None,
+                current_codex_thread_id: Some("thr_current".to_owned()),
+                tui_active_codex_thread_id: None,
+                tui_session_adoption_pending: false,
+                last_used_at: None,
+                conflict: false,
+                app_server_status: "running",
+                hcodex_ingress_status: "missing",
+                runtime_readiness: "degraded",
+                runtime_health_source: "owner",
+                heartbeat_last_checked_at: None,
+                heartbeat_last_error: Some("missing".to_owned()),
+                session_broken_reason: None,
+                recovery_hint: Some("repair".to_owned()),
+                hcodex_path: "/tmp/threadBridge/workspaces/Trackly/.threadbridge/bin/hcodex"
+                    .to_owned(),
+                hcodex_available: true,
+                recent_codex_sessions: Vec::<RecentCodexSessionEntry>::new(),
+            };
+            let snapshot = super::DesktopSnapshot {
+                setup: super::SetupStateView {
+                    first_run: false,
+                    telegram_token_configured: true,
+                    authorized_user_ids: Vec::new(),
+                    authorized_user_count: 0,
+                    telegram_polling_state:
+                        threadbridge_rust::management_api::TelegramPollingState::Active,
+                    management_base_url: "http://127.0.0.1:0".to_owned(),
+                    restart_required_after_setup_save: false,
+                    control_chat_ready: true,
+                    control_chat_id: Some(1),
+                    native_workspace_picker_available: true,
+                    launch_at_login: threadbridge_rust::launch_at_login::LaunchAtLoginView {
+                        supported: false,
+                        enabled: false,
+                        status: "unsupported",
+                        note: None,
+                    },
+                    bot_username: None,
+                    bot_url: None,
+                    bot_identity_error: None,
+                },
+                health: super::RuntimeHealthView {
+                    management_bind_addr: "127.0.0.1:0".to_owned(),
+                    broken_threads: 0,
+                    running_workspaces: 0,
+                    conflicted_workspaces: 0,
+                    ready_workspaces: 0,
+                    degraded_workspaces: 1,
+                    unavailable_workspaces: 0,
+                    app_server_status: "running",
+                    hcodex_ingress_status: "missing",
+                    runtime_readiness: "degraded",
+                    recovery_hint: None,
+                    runtime_owner: threadbridge_rust::runtime_owner::RuntimeOwnerStatus::inactive(),
+                    managed_codex: threadbridge_rust::management_api::ManagedCodexView {
+                        source: "brew",
+                        source_file_path: "source.txt".to_owned(),
+                        build_config_file_path: "build-config.json".to_owned(),
+                        build_info_file_path: "build-info.txt".to_owned(),
+                        binary_path: "codex".to_owned(),
+                        binary_ready: true,
+                        version: None,
+                        build_defaults:
+                            threadbridge_rust::management_api::ManagedCodexBuildDefaultsView {
+                                source_repo: "repo".to_owned(),
+                                source_rs_dir: "rs".to_owned(),
+                                build_profile: "dev".to_owned(),
+                            },
+                        build_info: None,
+                    },
+                },
+                workspaces: vec![workspace.clone()],
+            };
+
+            assert_eq!(
+                snapshot_poll_mode(Some(&snapshot), launched_at),
+                DesktopPollMode::Fast
+            );
+            assert_eq!(reconcile_interval(Some(&snapshot)), Duration::from_secs(10));
+
+            workspace.run_status = "running";
+            let running_snapshot = super::DesktopSnapshot {
+                workspaces: vec![workspace],
+                ..snapshot
+            };
+            assert_eq!(
+                snapshot_poll_mode(Some(&running_snapshot), launched_at),
+                DesktopPollMode::Fast
+            );
         }
     }
 }

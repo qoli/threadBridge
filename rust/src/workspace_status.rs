@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result, anyhow};
@@ -11,6 +10,8 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
+
+use crate::process_utils::process_exists;
 
 const STATUS_SCHEMA_VERSION: u32 = 2;
 const STATUS_DIR: &str = ".threadbridge/state/runtime-observer";
@@ -750,20 +751,8 @@ fn summarize_prompt(prompt: &str) -> Option<String> {
     Some(summary)
 }
 
-fn process_is_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
 fn local_tui_claim_is_live(claim: &LocalTuiSessionClaim) -> bool {
-    claim.child_pid.is_some_and(process_is_alive) || process_is_alive(claim.shell_pid)
+    claim.child_pid.is_some_and(process_exists) || process_exists(claim.shell_pid)
 }
 
 pub async fn stale_tui_busy_session_needs_recovery(
