@@ -215,6 +215,7 @@
   - 描述 `app-server-ws-backend` 作為 `desktop runtime owner` 受管 backend plane 的 today reality 與 target vision
   - 固定它是 `threadBridge` today runtime 的核心 Codex backend substrate，且 workspace-scoped backend worker 已落地為 `app_server_ws_worker`
   - 補清它與 owner、shared `runtime_control`、observer、`hcodex ingress`、Telegram / management surface 的邊界
+  - 已新增記錄一條方向：若 workspace ws runtime 長期預先 ensure，`threadbridge_desktop` 佔用可能過高，後續應評估按需啟動
 - [app-server-ws-backend-progress-2026-03-27.md](desktop-runtime-owner/app-server-ws-backend-progress-2026-03-27.md)
   - doc kind: `historical`
   - backend worker 主線進度快照（2026-03-27）

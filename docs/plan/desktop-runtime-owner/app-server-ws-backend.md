@@ -21,6 +21,15 @@
 - backend plane 與 shared runtime semantics 的長期 API 形狀仍未收斂成獨立 contract
 - 原生 busy truth 雖已開始透過 backend API（worker run-state）提供 authority，但產品層 busy gate 與兼容衍生路徑仍未完全收斂
 
+目前新增記錄的一個方向是：
+
+- `threadbridge_desktop` today 若對 workspace ws runtime 偏向預先 ensure / 常駐維持，整體進程與資源佔用可能過高
+- 後續應評估把 workspace ws backend 收斂成更明確的按需啟動模型，而不是默認 long-lived / always-on
+- 這條線的重點不是回到 ad hoc 啟動，而是定義清楚：
+  - 哪些 action / surface 會 claim 或喚起 workspace backend
+  - idle 多久後可以安全回收
+  - on-demand restart 與 session continuity / observer attach / hcodex ingress 之間的正式 contract
+
 ## 問題
 
 `threadBridge` 目前已經不是「Telegram bot 控制一個附帶的 Codex helper」的形狀。
@@ -42,6 +51,16 @@
 
 - 把 backend plane 本身錯誤吞進 `desktop runtime owner`，讓 owner 與 backend 本體混在一起
 - 把與 backend 相關的散落責任繼續掛在 observer / ingress / adapter 旁邊，誤以為它們只是局部 helper
+
+另外，若 owner 長期把所有 workspace ws runtime 預先拉起並常駐維持，還會出現另一個現實問題：
+
+- `threadbridge_desktop` 的常駐進程/資源成本可能隨 workspace 數量上升
+- 某些 workspace 明明長時間 idle，卻仍持續佔有 backend worker / daemon / ingress 成本
+
+因此這份文檔除了說明 backend plane 是誰，也需要記住一條 lifecycle 問題：
+
+- `desktop runtime owner` 是否應始終預先 ensure 全量 workspace ws runtime
+- 還是應改成 owner-canonical、但按需喚起的 backend lifecycle
 
 ## 定位
 
