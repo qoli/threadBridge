@@ -116,6 +116,10 @@ impl ManagementApiHandle {
         self.state.setup_state().await
     }
 
+    pub async fn current_telegram_polling_state(&self) -> TelegramPollingState {
+        self.state.current_telegram_polling_state().await
+    }
+
     pub async fn runtime_health(&self) -> Result<RuntimeHealthView> {
         self.state.runtime_health().await
     }
@@ -413,6 +417,10 @@ fn default_transcript_limit() -> usize {
 
 fn default_runtime_telemetry_limit() -> usize {
     200
+}
+
+fn bool_metric(value: bool) -> u64 {
+    u64::from(value)
 }
 
 pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementApiHandle> {
@@ -1040,6 +1048,10 @@ async fn get_events(
 }
 
 impl ManagementApiState {
+    async fn current_telegram_polling_state(&self) -> TelegramPollingState {
+        *self.telegram_polling_state.read().await
+    }
+
     async fn invalidate_managed_codex_version_cache(&self) {
         let mut cache = self.managed_codex_version_cache.write().await;
         *cache = None;
@@ -1089,12 +1101,42 @@ impl ManagementApiState {
     }
 
     async fn refresh_cached_bot_identity_for_token(&self, token: Option<&str>) {
+        let started_at = Instant::now();
         let next = resolve_cached_bot_identity(token).await;
-        let mut current = self.bot_identity.write().await;
-        *current = next;
+        {
+            let mut current = self.bot_identity.write().await;
+            *current = next.clone();
+        }
+        let mut fields = RuntimeTelemetryFields::new();
+        fields.insert(
+            "token_present".to_owned(),
+            token
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+                .to_string(),
+        );
+        let mut metrics = RuntimeTelemetryMetrics::new();
+        metrics.insert(
+            "username_present".to_owned(),
+            bool_metric(next.username.is_some()),
+        );
+        metrics.insert("url_present".to_owned(), bool_metric(next.url.is_some()));
+        metrics.insert(
+            "error_present".to_owned(),
+            bool_metric(next.error.is_some()),
+        );
+        self.runtime_telemetry.record_duration(
+            "management.bot_identity_refresh",
+            started_at,
+            if next.error.is_some() { "error" } else { "ok" },
+            fields,
+            metrics,
+            next.error.clone(),
+        );
     }
 
     async fn ensure_cached_bot_identity(&self, token: Option<&str>) -> CachedTelegramBotIdentity {
+        let started_at = Instant::now();
         let needs_refresh = {
             let current = self.bot_identity.read().await;
             current.token.as_deref() != token
@@ -1102,7 +1144,39 @@ impl ManagementApiState {
         if needs_refresh {
             self.refresh_cached_bot_identity_for_token(token).await;
         }
-        self.bot_identity.read().await.clone()
+        let current = self.bot_identity.read().await.clone();
+        let mut fields = RuntimeTelemetryFields::new();
+        fields.insert(
+            "token_present".to_owned(),
+            token
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+                .to_string(),
+        );
+        fields.insert("refreshed".to_owned(), needs_refresh.to_string());
+        let mut metrics = RuntimeTelemetryMetrics::new();
+        metrics.insert(
+            "username_present".to_owned(),
+            bool_metric(current.username.is_some()),
+        );
+        metrics.insert("url_present".to_owned(), bool_metric(current.url.is_some()));
+        metrics.insert(
+            "error_present".to_owned(),
+            bool_metric(current.error.is_some()),
+        );
+        self.runtime_telemetry.record_duration(
+            "management.bot_identity_lookup",
+            started_at,
+            if current.error.is_some() {
+                "error"
+            } else {
+                "ok"
+            },
+            fields,
+            metrics,
+            current.error.clone(),
+        );
+        current
     }
 
     async fn shared_control(&self) -> Result<SharedControlHandle> {
@@ -1122,9 +1196,95 @@ impl ManagementApiState {
     }
 
     async fn setup_state(&self) -> Result<SetupStateView> {
-        let telegram = load_optional_telegram_config_from_path(&self.runtime.config_env_path())?;
-        let main_thread = self.repository.find_main_thread().await?;
+        let setup_started_at = Instant::now();
         let config_env_path = self.runtime.config_env_path();
+
+        let telegram_started_at = Instant::now();
+        let telegram = match load_optional_telegram_config_from_path(&config_env_path) {
+            Ok(telegram) => {
+                let mut metrics = RuntimeTelemetryMetrics::new();
+                metrics.insert(
+                    "telegram_token_configured".to_owned(),
+                    bool_metric(telegram.is_some()),
+                );
+                metrics.insert(
+                    "authorized_user_count".to_owned(),
+                    telegram
+                        .as_ref()
+                        .map(|config| config.authorized_user_ids.len() as u64)
+                        .unwrap_or_default(),
+                );
+                self.runtime_telemetry.record_duration(
+                    "management.setup_state.telegram_config",
+                    telegram_started_at,
+                    "ok",
+                    RuntimeTelemetryFields::new(),
+                    metrics,
+                    None,
+                );
+                telegram
+            }
+            Err(error) => {
+                self.runtime_telemetry.record_duration(
+                    "management.setup_state.telegram_config",
+                    telegram_started_at,
+                    "error",
+                    RuntimeTelemetryFields::new(),
+                    RuntimeTelemetryMetrics::new(),
+                    Some(error.to_string()),
+                );
+                self.runtime_telemetry.record_duration(
+                    "management.setup_state",
+                    setup_started_at,
+                    "error",
+                    RuntimeTelemetryFields::new(),
+                    RuntimeTelemetryMetrics::new(),
+                    Some(error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+
+        let main_thread_started_at = Instant::now();
+        let main_thread = match self.repository.find_main_thread().await {
+            Ok(main_thread) => {
+                let mut metrics = RuntimeTelemetryMetrics::new();
+                metrics.insert(
+                    "control_chat_ready".to_owned(),
+                    bool_metric(main_thread.is_some()),
+                );
+                self.runtime_telemetry.record_duration(
+                    "management.setup_state.main_thread",
+                    main_thread_started_at,
+                    "ok",
+                    RuntimeTelemetryFields::new(),
+                    metrics,
+                    None,
+                );
+                main_thread
+            }
+            Err(error) => {
+                self.runtime_telemetry.record_duration(
+                    "management.setup_state.main_thread",
+                    main_thread_started_at,
+                    "error",
+                    RuntimeTelemetryFields::new(),
+                    RuntimeTelemetryMetrics::new(),
+                    Some(error.to_string()),
+                );
+                self.runtime_telemetry.record_duration(
+                    "management.setup_state",
+                    setup_started_at,
+                    "error",
+                    RuntimeTelemetryFields::new(),
+                    RuntimeTelemetryMetrics::new(),
+                    Some(error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+
+        let bot_identity_started_at = Instant::now();
         let bot_identity = self
             .ensure_cached_bot_identity(
                 telegram
@@ -1132,7 +1292,50 @@ impl ManagementApiState {
                     .map(|config| config.telegram_token.as_str()),
             )
             .await;
-        Ok(SetupStateView {
+        let mut bot_identity_metrics = RuntimeTelemetryMetrics::new();
+        bot_identity_metrics.insert(
+            "username_present".to_owned(),
+            bool_metric(bot_identity.username.is_some()),
+        );
+        bot_identity_metrics.insert(
+            "url_present".to_owned(),
+            bool_metric(bot_identity.url.is_some()),
+        );
+        bot_identity_metrics.insert(
+            "error_present".to_owned(),
+            bool_metric(bot_identity.error.is_some()),
+        );
+        self.runtime_telemetry.record_duration(
+            "management.setup_state.bot_identity",
+            bot_identity_started_at,
+            if bot_identity.error.is_some() {
+                "error"
+            } else {
+                "ok"
+            },
+            RuntimeTelemetryFields::new(),
+            bot_identity_metrics,
+            bot_identity.error.clone(),
+        );
+
+        let launch_at_login_started_at = Instant::now();
+        let launch_at_login = launch_at_login::current_view(&self.runtime);
+        let mut launch_metrics = RuntimeTelemetryMetrics::new();
+        launch_metrics.insert(
+            "supported".to_owned(),
+            bool_metric(launch_at_login.supported),
+        );
+        launch_metrics.insert("enabled".to_owned(), bool_metric(launch_at_login.enabled));
+        self.runtime_telemetry.record_duration(
+            "management.setup_state.launch_at_login",
+            launch_at_login_started_at,
+            "ok",
+            RuntimeTelemetryFields::new(),
+            launch_metrics,
+            None,
+        );
+
+        let setup = SetupStateView {
             first_run: !config_env_path.exists(),
             telegram_token_configured: telegram.is_some(),
             authorized_user_ids: telegram
@@ -1157,11 +1360,39 @@ impl ManagementApiState {
             control_chat_ready: main_thread.is_some(),
             control_chat_id: main_thread.map(|record| record.metadata.chat_id),
             native_workspace_picker_available: *self.native_workspace_picker_available.read().await,
-            launch_at_login: launch_at_login::current_view(&self.runtime),
+            launch_at_login,
             bot_username: bot_identity.username,
             bot_url: bot_identity.url,
             bot_identity_error: bot_identity.error,
-        })
+        };
+
+        let mut setup_metrics = RuntimeTelemetryMetrics::new();
+        setup_metrics.insert(
+            "telegram_token_configured".to_owned(),
+            bool_metric(setup.telegram_token_configured),
+        );
+        setup_metrics.insert(
+            "authorized_user_count".to_owned(),
+            setup.authorized_user_count as u64,
+        );
+        setup_metrics.insert(
+            "control_chat_ready".to_owned(),
+            bool_metric(setup.control_chat_ready),
+        );
+        setup_metrics.insert(
+            "native_workspace_picker_available".to_owned(),
+            bool_metric(setup.native_workspace_picker_available),
+        );
+        self.runtime_telemetry.record_duration(
+            "management.setup_state",
+            setup_started_at,
+            "ok",
+            RuntimeTelemetryFields::new(),
+            setup_metrics,
+            None,
+        );
+
+        Ok(setup)
     }
 
     async fn set_launch_at_login_enabled(&self, enabled: bool) -> Result<LaunchAtLoginView> {

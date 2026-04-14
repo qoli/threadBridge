@@ -28,7 +28,7 @@ mod macos_app {
     use threadbridge_rust::logging::init_runtime_json_logs;
     use threadbridge_rust::management_api::{
         LaunchLocalSessionTarget, ManagedWorkspaceView, ManagementApiHandle,
-        RuntimeControlActionRequest, RuntimeHealthView, SetupStateView, spawn_management_api,
+        RuntimeControlActionRequest, RuntimeHealthView, TelegramPollingState, spawn_management_api,
     };
     use threadbridge_rust::runtime_control::{
         RuntimeControlContext, RuntimeOwnershipMode, SharedControlHandle,
@@ -52,9 +52,14 @@ mod macos_app {
 
     #[derive(Debug, Clone)]
     struct DesktopSnapshot {
-        setup: SetupStateView,
+        setup: DesktopSetupSnapshot,
         health: RuntimeHealthView,
         workspaces: Vec<ManagedWorkspaceView>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct DesktopSetupSnapshot {
+        telegram_polling_state: TelegramPollingState,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,7 +376,9 @@ mod macos_app {
     async fn collect_snapshot(management_api: &ManagementApiHandle) -> Result<DesktopSnapshot> {
         let started_at = Instant::now();
         let result = async {
-            let setup = management_api.setup_state().await?;
+            let setup = DesktopSetupSnapshot {
+                telegram_polling_state: management_api.current_telegram_polling_state().await,
+            };
             let runtime = management_api.runtime_overview().await?;
             Ok::<DesktopSnapshot, anyhow::Error>(DesktopSnapshot {
                 setup,
@@ -391,6 +398,12 @@ mod macos_app {
                 metrics.insert(
                     "running_workspaces".to_owned(),
                     snapshot.health.running_workspaces as u64,
+                );
+                metrics.insert(
+                    "telegram_polling_active".to_owned(),
+                    u64::from(
+                        snapshot.setup.telegram_polling_state == TelegramPollingState::Active,
+                    ),
                 );
                 management_api.runtime_telemetry_handle().record_duration(
                     "desktop.collect_snapshot",
@@ -1159,27 +1172,9 @@ mod macos_app {
         fn snapshot_poll_mode_starts_fast_then_slows_when_idle() {
             let launched_at = Instant::now() - Duration::from_secs(61);
             let snapshot = super::DesktopSnapshot {
-                setup: super::SetupStateView {
-                    first_run: false,
-                    telegram_token_configured: true,
-                    authorized_user_ids: Vec::new(),
-                    authorized_user_count: 0,
+                setup: super::DesktopSetupSnapshot {
                     telegram_polling_state:
                         threadbridge_rust::management_api::TelegramPollingState::Active,
-                    management_base_url: "http://127.0.0.1:0".to_owned(),
-                    restart_required_after_setup_save: false,
-                    control_chat_ready: true,
-                    control_chat_id: Some(1),
-                    native_workspace_picker_available: true,
-                    launch_at_login: threadbridge_rust::launch_at_login::LaunchAtLoginView {
-                        supported: false,
-                        enabled: false,
-                        status: "unsupported",
-                        note: None,
-                    },
-                    bot_username: None,
-                    bot_url: None,
-                    bot_identity_error: None,
                 },
                 health: super::RuntimeHealthView {
                     management_bind_addr: "127.0.0.1:0".to_owned(),
@@ -1290,27 +1285,9 @@ mod macos_app {
                 recent_codex_sessions: Vec::<RecentCodexSessionEntry>::new(),
             };
             let snapshot = super::DesktopSnapshot {
-                setup: super::SetupStateView {
-                    first_run: false,
-                    telegram_token_configured: true,
-                    authorized_user_ids: Vec::new(),
-                    authorized_user_count: 0,
+                setup: super::DesktopSetupSnapshot {
                     telegram_polling_state:
                         threadbridge_rust::management_api::TelegramPollingState::Active,
-                    management_base_url: "http://127.0.0.1:0".to_owned(),
-                    restart_required_after_setup_save: false,
-                    control_chat_ready: true,
-                    control_chat_id: Some(1),
-                    native_workspace_picker_available: true,
-                    launch_at_login: threadbridge_rust::launch_at_login::LaunchAtLoginView {
-                        supported: false,
-                        enabled: false,
-                        status: "unsupported",
-                        note: None,
-                    },
-                    bot_username: None,
-                    bot_url: None,
-                    bot_identity_error: None,
                 },
                 health: super::RuntimeHealthView {
                     management_bind_addr: "127.0.0.1:0".to_owned(),

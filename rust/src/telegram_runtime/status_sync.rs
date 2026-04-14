@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde_json::Value;
@@ -31,6 +31,7 @@ use crate::runtime_busy_reconcile::reconcile_stale_bot_busy_sessions as reconcil
 pub(crate) use crate::runtime_busy_reconcile::{
     STARTUP_STALE_BUSY_RECOVERED_LOG, StaleBusyReconciliationReport,
 };
+use crate::telemetry::{RuntimeTelemetryFields, RuntimeTelemetryMetrics};
 use crate::thread_state::{
     BindingStatus, LifecycleStatus, resolve_binding_status, resolve_lifecycle_status,
 };
@@ -40,6 +41,12 @@ use crate::workspace_status::{
     read_local_tui_session_claim, read_workspace_event_log_repairing,
     record_tui_mirror_preview_sync,
 };
+
+#[derive(Clone)]
+struct ActiveThreadSnapshot {
+    record: ThreadRecord,
+    binding: Option<SessionBinding>,
+}
 
 struct MirrorPreviewState {
     preview: TurnPreviewController,
@@ -173,24 +180,79 @@ pub async fn spawn_workspace_status_watcher(bot: Bot, state: AppState) {
         let mut pending_local_user_prompts: HashSet<String> = HashSet::new();
         let mut mirror_previews: HashMap<String, MirrorPreviewState> = HashMap::new();
         loop {
-            if let Err(error) = sync_workspace_titles_once(&bot, &state, &mut applied_titles).await
-            {
-                warn!(event = "workspace_status.sync.failed", error = %error);
-            }
-            if let Err(error) = sync_local_transcript_mirrors_once(
-                &bot,
+            let loop_started_at = Instant::now();
+            let active_threads = match collect_active_thread_snapshots(&state).await {
+                Ok(active_threads) => active_threads,
+                Err(error) => {
+                    state.runtime_telemetry.record_duration(
+                        "status_sync.loop",
+                        loop_started_at,
+                        "error",
+                        RuntimeTelemetryFields::new(),
+                        RuntimeTelemetryMetrics::new(),
+                        Some(error.to_string()),
+                    );
+                    warn!(event = "workspace_status.sync.failed", error = %error);
+                    tokio::time::sleep(Duration::from_millis(
+                        state.config.workspace_status_poll_interval_ms,
+                    ))
+                    .await;
+                    continue;
+                }
+            };
+
+            let titles_started_at = Instant::now();
+            record_status_sync_stage(
                 &state,
-                &mut workspace_event_offsets,
-                &mut pending_local_user_prompts,
-                &mut mirror_previews,
-            )
-            .await
-            {
-                warn!(event = "workspace_mirror.sync.failed", error = %error);
-            }
-            if let Err(error) = sync_tui_adoption_prompts_once(&bot, &state).await {
-                warn!(event = "tui_adoption.sync.failed", error = %error);
-            }
+                "status_sync.sync_workspace_titles",
+                titles_started_at,
+                active_threads.len(),
+                sync_workspace_titles_once(&bot, &state, &active_threads, &mut applied_titles)
+                    .await,
+            );
+            let mirrors_started_at = Instant::now();
+            record_status_sync_stage(
+                &state,
+                "status_sync.sync_local_transcript_mirrors",
+                mirrors_started_at,
+                active_threads.len(),
+                sync_local_transcript_mirrors_once(
+                    &bot,
+                    &state,
+                    &active_threads,
+                    &mut workspace_event_offsets,
+                    &mut pending_local_user_prompts,
+                    &mut mirror_previews,
+                )
+                .await,
+            );
+            let adoption_started_at = Instant::now();
+            record_status_sync_stage(
+                &state,
+                "status_sync.sync_tui_adoption_prompts",
+                adoption_started_at,
+                active_threads.len(),
+                sync_tui_adoption_prompts_once(&bot, &state, &active_threads).await,
+            );
+
+            let mut metrics = active_thread_metrics(&active_threads);
+            metrics.insert(
+                "pending_local_user_prompts".to_owned(),
+                pending_local_user_prompts.len() as u64,
+            );
+            metrics.insert(
+                "workspace_event_offsets".to_owned(),
+                workspace_event_offsets.len() as u64,
+            );
+            metrics.insert("mirror_previews".to_owned(), mirror_previews.len() as u64);
+            state.runtime_telemetry.record_duration(
+                "status_sync.loop",
+                loop_started_at,
+                "ok",
+                RuntimeTelemetryFields::new(),
+                metrics,
+                None,
+            );
             tokio::time::sleep(Duration::from_millis(
                 state.config.workspace_status_poll_interval_ms,
             ))
@@ -199,24 +261,103 @@ pub async fn spawn_workspace_status_watcher(bot: Bot, state: AppState) {
     });
 }
 
+async fn collect_active_thread_snapshots(state: &AppState) -> Result<Vec<ActiveThreadSnapshot>> {
+    let started_at = Instant::now();
+    let records = state.repository.list_active_threads().await?;
+    let mut active_threads = Vec::with_capacity(records.len());
+    for record in records {
+        let binding = state.repository.read_session_binding(&record).await?;
+        active_threads.push(ActiveThreadSnapshot { record, binding });
+    }
+    state.runtime_telemetry.record_duration(
+        "status_sync.collect_active_threads",
+        started_at,
+        "ok",
+        RuntimeTelemetryFields::new(),
+        active_thread_metrics(&active_threads),
+        None,
+    );
+    Ok(active_threads)
+}
+
+fn active_thread_metrics(active_threads: &[ActiveThreadSnapshot]) -> RuntimeTelemetryMetrics {
+    let mut workspaces = HashSet::new();
+    let mut bound_threads = 0u64;
+    let mut tui_adoption_pending_threads = 0u64;
+    for snapshot in active_threads {
+        if let Some(binding) = snapshot.binding.as_ref() {
+            if let Some(workspace_cwd) = binding.workspace_cwd.as_deref() {
+                workspaces.insert(workspace_cwd.to_owned());
+                bound_threads += 1;
+            }
+            if binding.tui_session_adoption_pending {
+                tui_adoption_pending_threads += 1;
+            }
+        }
+    }
+
+    let mut metrics = RuntimeTelemetryMetrics::new();
+    metrics.insert("active_threads".to_owned(), active_threads.len() as u64);
+    metrics.insert("bound_threads".to_owned(), bound_threads);
+    metrics.insert("workspace_count".to_owned(), workspaces.len() as u64);
+    metrics.insert(
+        "tui_adoption_pending_threads".to_owned(),
+        tui_adoption_pending_threads,
+    );
+    metrics
+}
+
+fn record_status_sync_stage(
+    state: &AppState,
+    operation: &str,
+    started_at: Instant,
+    active_thread_count: usize,
+    result: Result<()>,
+) {
+    let mut metrics = RuntimeTelemetryMetrics::new();
+    metrics.insert("active_threads".to_owned(), active_thread_count as u64);
+    match result {
+        Ok(()) => state.runtime_telemetry.record_duration(
+            operation,
+            started_at,
+            "ok",
+            RuntimeTelemetryFields::new(),
+            metrics,
+            None,
+        ),
+        Err(error) => {
+            state.runtime_telemetry.record_duration(
+                operation,
+                started_at,
+                "error",
+                RuntimeTelemetryFields::new(),
+                metrics,
+                Some(error.to_string()),
+            );
+            warn!(event = "workspace_status.sync.stage_failed", operation, error = %error);
+        }
+    }
+}
+
 async fn sync_workspace_titles_once(
     bot: &Bot,
     state: &AppState,
+    active_threads: &[ActiveThreadSnapshot],
     applied_titles: &mut HashMap<String, String>,
 ) -> Result<()> {
-    let records = state.repository.list_active_threads().await?;
     let mut active_conversations = HashSet::new();
     let mut keep_workspaces = Vec::new();
     let mut aggregate_by_workspace: HashMap<String, WorkspaceAggregateStatus> = HashMap::new();
 
-    for record in records {
+    for snapshot in active_threads {
+        let record = &snapshot.record;
         if record.metadata.message_thread_id.is_none() {
             continue;
         }
         active_conversations.insert(record.conversation_key.clone());
 
-        let session = state.repository.read_session_binding(&record).await?;
-        let workspace_path = session
+        let workspace_path = snapshot
+            .binding
             .as_ref()
             .and_then(|binding| binding.workspace_cwd.as_deref())
             .map(PathBuf::from);
@@ -241,7 +382,7 @@ async fn sync_workspace_titles_once(
         } else {
             None
         };
-        let binding_status = resolve_binding_status(&record.metadata, session.as_ref());
+        let binding_status = resolve_binding_status(&record.metadata, snapshot.binding.as_ref());
         let rendered = render_topic_title(
             &record,
             workspace_path.as_deref(),
@@ -276,13 +417,17 @@ async fn sync_workspace_titles_once(
     Ok(())
 }
 
-async fn sync_tui_adoption_prompts_once(bot: &Bot, state: &AppState) -> Result<()> {
-    let records = state.repository.list_active_threads().await?;
-    for record in records {
+async fn sync_tui_adoption_prompts_once(
+    bot: &Bot,
+    state: &AppState,
+    active_threads: &[ActiveThreadSnapshot],
+) -> Result<()> {
+    for snapshot in active_threads {
+        let record = &snapshot.record;
         let Some(thread_id) = record.metadata.message_thread_id else {
             continue;
         };
-        let Some(binding) = state.repository.read_session_binding(&record).await? else {
+        let Some(binding) = snapshot.binding.as_ref() else {
             continue;
         };
         if !binding.tui_session_adoption_pending
@@ -297,7 +442,7 @@ async fn sync_tui_adoption_prompts_once(bot: &Bot, state: &AppState) -> Result<(
             .await?;
         let _ = state
             .repository
-            .set_tui_adoption_prompt_message_id(record, message.id.0)
+            .set_tui_adoption_prompt_message_id(record.clone(), message.id.0)
             .await?;
     }
     Ok(())
@@ -306,14 +451,15 @@ async fn sync_tui_adoption_prompts_once(bot: &Bot, state: &AppState) -> Result<(
 async fn sync_local_transcript_mirrors_once(
     bot: &Bot,
     state: &AppState,
+    active_threads: &[ActiveThreadSnapshot],
     workspace_event_offsets: &mut HashMap<String, usize>,
     pending_local_user_prompts: &mut HashSet<String>,
     mirror_previews: &mut HashMap<String, MirrorPreviewState>,
 ) -> Result<()> {
-    let records = state.repository.list_active_threads().await?;
-    let mut by_workspace: HashMap<String, Vec<ThreadRecord>> = HashMap::new();
+    let mut by_workspace: HashMap<String, Vec<ActiveThreadSnapshot>> = HashMap::new();
     let mut active_thread_keys = HashSet::new();
-    for record in records {
+    for snapshot in active_threads {
+        let record = &snapshot.record;
         if matches!(
             resolve_lifecycle_status(&record.metadata),
             LifecycleStatus::Archived
@@ -321,24 +467,23 @@ async fn sync_local_transcript_mirrors_once(
             continue;
         }
         active_thread_keys.insert(record.metadata.thread_key.clone());
-        let Some(binding) = state.repository.read_session_binding(&record).await? else {
+        let Some(binding) = snapshot.binding.as_ref() else {
             continue;
         };
-        let Some(workspace_cwd) = binding.workspace_cwd else {
+        let Some(workspace_cwd) = binding.workspace_cwd.clone() else {
             continue;
         };
-        by_workspace.entry(workspace_cwd).or_default().push(record);
+        by_workspace
+            .entry(workspace_cwd)
+            .or_default()
+            .push(snapshot.clone());
     }
 
     for (workspace_key, workspace_records) in by_workspace {
         let workspace_path = PathBuf::from(&workspace_key);
         let Some(local_tui_claim) = read_local_tui_session_claim(&workspace_path).await? else {
             pending_local_user_prompts.retain(|key| !key.starts_with(&workspace_key));
-            let Some(event_log) = read_workspace_event_log_repairing(&workspace_path).await? else {
-                continue;
-            };
-            log_workspace_event_log_diagnostics(&workspace_path, &workspace_key, &event_log);
-            workspace_event_offsets.insert(workspace_key.clone(), event_log.events.len());
+            workspace_event_offsets.remove(&workspace_key);
             continue;
         };
         let aggregate =
@@ -354,8 +499,8 @@ async fn sync_local_transcript_mirrors_once(
         }
         let Some(owner_record) = workspace_records
             .iter()
-            .find(|record| record.metadata.thread_key == local_tui_claim.thread_key)
-            .cloned()
+            .find(|snapshot| snapshot.record.metadata.thread_key == local_tui_claim.thread_key)
+            .map(|snapshot| snapshot.record.clone())
         else {
             pending_local_user_prompts.retain(|key| !key.starts_with(&workspace_key));
             let Some(event_log) = read_workspace_event_log_repairing(&workspace_path).await? else {
@@ -964,16 +1109,19 @@ fn turn_id_from_event_payload(payload: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MirrorPreviewState, STARTUP_STALE_BUSY_RECOVERED_LOG, busy_command_message,
-        busy_text_message, initial_workspace_event_offset, item_id_from_event_payload,
-        local_mirror_entry_from_event, preview_event_run_end,
-        reconcile_stale_bot_busy_sessions_for_repository, render_topic_title, thread_id_from_i32,
-        topic_title_suffix_label, tui_adoption_prompt_text, turn_id_from_event_payload,
+        ActiveThreadSnapshot, MirrorPreviewState, STARTUP_STALE_BUSY_RECOVERED_LOG,
+        busy_command_message, busy_text_message, initial_workspace_event_offset,
+        item_id_from_event_payload, local_mirror_entry_from_event, preview_event_run_end,
+        reconcile_stale_bot_busy_sessions_for_repository, render_topic_title,
+        sync_local_transcript_mirrors_once, thread_id_from_i32, topic_title_suffix_label,
+        tui_adoption_prompt_text, turn_id_from_event_payload,
     };
+    use crate::config::{AppConfig, RuntimeConfig, TelegramConfig};
     use crate::repository::{
         SessionBinding, ThreadMetadata, ThreadRecord, ThreadRepository, ThreadScope, ThreadStatus,
         TranscriptMirrorOrigin, TranscriptMirrorRole,
     };
+    use crate::telegram_runtime::AppState;
     use crate::telegram_runtime::preview::TurnPreviewController;
     use crate::thread_state::effective_busy_snapshot_for_binding;
     use crate::workspace_status::{
@@ -1581,6 +1729,99 @@ mod tests {
         let log_b = fs::read_to_string(&record_b.log_path).await.unwrap();
         assert!(log_a.contains(STARTUP_STALE_BUSY_RECOVERED_LOG));
         assert!(log_b.contains(STARTUP_STALE_BUSY_RECOVERED_LOG));
+
+        let _ = fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn sync_local_transcript_mirrors_skips_event_log_without_local_claim() {
+        let root = temp_path();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(root.join("runtime_support/templates"))
+            .await
+            .unwrap();
+        fs::write(
+            root.join("runtime_support/templates/AGENTS.md"),
+            "runtime appendix\n",
+        )
+        .await
+        .unwrap();
+        fs::create_dir_all(&workspace).await.unwrap();
+
+        let state = AppState::new(AppConfig {
+            telegram: TelegramConfig {
+                telegram_token: "test".to_owned(),
+                authorized_user_ids: std::collections::HashSet::from([7_i64]),
+            },
+            stream_edit_interval_ms: 10,
+            stream_message_max_chars: 1000,
+            command_output_tail_chars: 1000,
+            workspace_status_poll_interval_ms: 1000,
+            runtime: RuntimeConfig {
+                data_root_path: root.join("data"),
+                runtime_support_root_path: root.join("runtime_support"),
+                runtime_support_seed_root_path: root.join("runtime_support"),
+                codex_model: None,
+                debug_log_path: root.join("debug.jsonl"),
+                management_bind_addr: "127.0.0.1:38420".parse().unwrap(),
+            },
+        })
+        .await
+        .unwrap();
+
+        let record = state
+            .repository
+            .create_thread(1, 100, "status".to_owned())
+            .await
+            .unwrap();
+        let record = state
+            .repository
+            .bind_workspace(
+                record,
+                workspace.display().to_string(),
+                "thr_test".to_owned(),
+                crate::execution_mode::SessionExecutionSnapshot::from_mode(
+                    crate::execution_mode::ExecutionMode::FullAuto,
+                ),
+            )
+            .await
+            .unwrap();
+        record_bot_status_event(
+            &workspace,
+            "bot_turn_started",
+            Some("thr_test"),
+            Some("turn-1"),
+            Some("hello"),
+        )
+        .await
+        .unwrap();
+
+        let active_threads = vec![ActiveThreadSnapshot {
+            binding: state
+                .repository
+                .read_session_binding(&record)
+                .await
+                .unwrap(),
+            record,
+        }];
+        let mut workspace_event_offsets = std::collections::HashMap::new();
+        let mut pending_local_user_prompts = std::collections::HashSet::new();
+        let mut mirror_previews = std::collections::HashMap::new();
+
+        sync_local_transcript_mirrors_once(
+            &Bot::new("test"),
+            &state,
+            &active_threads,
+            &mut workspace_event_offsets,
+            &mut pending_local_user_prompts,
+            &mut mirror_previews,
+        )
+        .await
+        .unwrap();
+
+        assert!(workspace_event_offsets.is_empty());
+        assert!(pending_local_user_prompts.is_empty());
+        assert!(mirror_previews.is_empty());
 
         let _ = fs::remove_dir_all(root).await;
     }

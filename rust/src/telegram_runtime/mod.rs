@@ -29,6 +29,7 @@ pub(crate) use crate::repository::{
     TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin, TranscriptMirrorRole,
 };
 use crate::runtime_control::{RuntimeControlContext, RuntimeOwnershipMode};
+use crate::telemetry::RuntimeTelemetryHandle;
 use crate::thread_state::{
     BindingStatus, ResolvedThreadState, cached_effective_busy_snapshot_for_binding,
     resolve_thread_state_with_cache,
@@ -70,6 +71,8 @@ pub enum Command {
     WorkspaceInfo,
     #[command(description = "Launch the managed local hcodex session for this workspace")]
     LaunchLocalSession,
+    #[command(description = "Launch the managed local hcodex and continue the current session")]
+    ContinueCurrent,
     #[command(description = "Show this workspace's execution mode")]
     GetWorkspaceExecutionMode,
     #[command(description = "Set this workspace's execution mode")]
@@ -106,6 +109,7 @@ pub struct AppState {
     pub(crate) codex: CodexRunner,
     pub(crate) control: RuntimeControlContext,
     pub(crate) interactive_requests: InteractiveRequestRegistry,
+    pub(crate) runtime_telemetry: RuntimeTelemetryHandle,
     pub(crate) workspace_status_cache: WorkspaceStatusCache,
 }
 
@@ -164,9 +168,14 @@ impl AppState {
             control,
             interactive_requests,
             repository,
+            runtime_telemetry: RuntimeTelemetryHandle::new(config.runtime.runtime_telemetry_path()),
             workspace_status_cache: WorkspaceStatusCache::new(),
             config,
         })
+    }
+
+    pub(crate) fn set_runtime_telemetry(&mut self, runtime_telemetry: RuntimeTelemetryHandle) {
+        self.runtime_telemetry = runtime_telemetry;
     }
 }
 
@@ -1311,6 +1320,11 @@ mod tests {
         assert!(
             commands
                 .iter()
+                .any(|command| command == "/continue_current")
+        );
+        assert!(
+            commands
+                .iter()
                 .any(|command| command == "/get_workspace_execution_mode")
         );
         assert!(
@@ -1610,6 +1624,9 @@ mod tests {
                 runtime_ownership_mode: RuntimeOwnershipMode::DesktopOwner,
             },
             interactive_requests: InteractiveRequestRegistry::new(),
+            runtime_telemetry: crate::telemetry::RuntimeTelemetryHandle::new(
+                root.join("runtime-telemetry.jsonl"),
+            ),
             workspace_status_cache: WorkspaceStatusCache::new(),
         };
 
@@ -1678,6 +1695,10 @@ mod tests {
             Ok(Command::LaunchLocalSession)
         ));
         assert!(matches!(
+            Command::parse("/continue_current", ""),
+            Ok(Command::ContinueCurrent)
+        ));
+        assert!(matches!(
             Command::parse("/get_workspace_execution_mode", ""),
             Ok(Command::GetWorkspaceExecutionMode)
         ));
@@ -1726,6 +1747,10 @@ mod tests {
         assert!(matches!(
             parse_fallback_command_text("/launch_local_session@threadbridge_bot continue_current"),
             Some(Command::LaunchLocalSession)
+        ));
+        assert!(matches!(
+            parse_fallback_command_text("/continue_current@threadbridge_bot"),
+            Some(Command::ContinueCurrent)
         ));
         assert!(matches!(
             parse_fallback_command_text("/stop@threadbridge_bot"),

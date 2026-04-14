@@ -47,9 +47,10 @@ pub async fn spawn_bot_runtime_with_runtimes(
 async fn spawn_bot_runtime_from_state(
     config: AppConfig,
     management_api: ManagementApiHandle,
-    state: AppState,
+    mut state: AppState,
 ) -> Result<BotRuntimeHandle> {
     let bot = Bot::new(config.telegram.telegram_token.clone());
+    state.set_runtime_telemetry(management_api.runtime_telemetry_handle());
     management_api
         .set_telegram_polling_state(TelegramPollingState::Active)
         .await;

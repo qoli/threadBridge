@@ -95,9 +95,11 @@ async fn verify_session_binding_now(
         || async {
             tokio::time::timeout(
                 Duration::from_secs(TURN_ERROR_REVALIDATION_TIMEOUT_SECS),
-                state
-                    .codex
-                    .resume_session(codex_workspace, existing_thread_id, Some(execution_mode)),
+                state.codex.resume_session(
+                    codex_workspace,
+                    existing_thread_id,
+                    Some(execution_mode),
+                ),
             )
             .await
             .context("timed out while verifying saved session before Telegram auto-recovery")?
@@ -109,9 +111,7 @@ async fn verify_session_binding_now(
                     .codex
                     .read_thread_run_state(codex_workspace, &thread_id)
                     .await
-                    .context(
-                        "failed to inspect worker run state before Telegram auto-recovery",
-                    )
+                    .context("failed to inspect worker run state before Telegram auto-recovery")
             }
         },
     )
@@ -131,8 +131,9 @@ where
 {
     let binding = resume_session().await?;
     let run_state = read_run_state(&binding.thread_id).await?;
-    ensure_thread_run_state_idle(&binding.thread_id, &run_state)
-        .context("saved session resumed during Telegram auto-recovery, but worker did not settle")?;
+    ensure_thread_run_state_idle(&binding.thread_id, &run_state).context(
+        "saved session resumed during Telegram auto-recovery, but worker did not settle",
+    )?;
     Ok(binding)
 }
 
@@ -140,14 +141,19 @@ async fn maybe_auto_recover_broken_current_session_for_telegram_input(
     state: &AppState,
     record: ThreadRecord,
     session: Option<SessionBinding>,
-) -> Result<(ThreadRecord, Option<SessionBinding>, TelegramInputAutoRecovery)> {
+) -> Result<(
+    ThreadRecord,
+    Option<SessionBinding>,
+    TelegramInputAutoRecovery,
+)> {
     let Some(binding) = session.as_ref() else {
         return Ok((record, session, TelegramInputAutoRecovery::NotAttempted));
     };
     if !record.metadata.session_broken {
         return Ok((record, session, TelegramInputAutoRecovery::NotAttempted));
     }
-    let Some(existing_thread_id) = current_bound_session_id(Some(binding)).map(str::to_owned) else {
+    let Some(existing_thread_id) = current_bound_session_id(Some(binding)).map(str::to_owned)
+    else {
         return Ok((record, session, TelegramInputAutoRecovery::NotAttempted));
     };
     let workspace_path = workspace_path_from_binding(binding)?;
@@ -173,7 +179,10 @@ async fn maybe_auto_recover_broken_current_session_for_telegram_input(
         .await
     {
         Ok(binding_result) => {
-            let record = state.repository.mark_session_binding_verified(record).await?;
+            let record = state
+                .repository
+                .mark_session_binding_verified(record)
+                .await?;
             let record = state
                 .repository
                 .update_session_execution_snapshot(record, &binding_result.execution)
@@ -228,7 +237,10 @@ async fn maybe_auto_recover_broken_current_session_for_telegram_input(
                     None,
                 )
                 .await?;
-            let session = state.repository.read_session_binding(&repaired.record).await?;
+            let session = state
+                .repository
+                .read_session_binding(&repaired.record)
+                .await?;
             Ok((
                 repaired.record,
                 session,
@@ -591,13 +603,140 @@ fn render_launch_usage(config: &HcodexLaunchConfigView) -> String {
             .join(", ")
     };
     format!(
-        "Usage: `/launch_local_session new`, `/launch_local_session continue_current`, or `/launch_local_session resume <session_id>`.\ncurrent_codex_thread_id: `{}`\nrecent_sessions: `{}`",
+        "Usage: `/launch_local_session new`, `/launch_local_session continue_current`, `/continue_current`, or `/launch_local_session resume <session_id>`.\ncurrent_codex_thread_id: `{}`\nrecent_sessions: `{}`",
         config
             .current_codex_thread_id
             .clone()
             .unwrap_or_else(|| "none".to_owned()),
         recent,
     )
+}
+
+async fn handle_launch_local_session_command(
+    bot: &Bot,
+    msg: &Message,
+    state: &AppState,
+    direct_target: Option<LaunchCommandTarget>,
+) -> Result<()> {
+    let is_direct_continue_current = matches!(direct_target, Some(LaunchCommandTarget::Current));
+    if is_control_chat(msg) {
+        let usage = if is_direct_continue_current {
+            "Use /continue_current inside a workspace thread."
+        } else {
+            "Use /launch_local_session inside a workspace thread."
+        };
+        send_scoped_message(bot, msg.chat.id, None, usage).await?;
+        return Ok(());
+    }
+
+    let thread_id = msg.thread_id.context("thread message missing thread id")?;
+    let record = state
+        .repository
+        .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
+        .await?;
+    let session = state.repository.read_session_binding(&record).await?;
+    let (resolved_state, _) = resolve_busy_gate_state(state, &record, session.as_ref()).await?;
+    if resolved_state.is_archived() {
+        send_scoped_message(
+            bot,
+            msg.chat.id,
+            Some(thread_id),
+            "This workspace is archived.",
+        )
+        .await?;
+        return Ok(());
+    }
+    let Some(binding) = session.as_ref() else {
+        send_scoped_message(
+            bot,
+            msg.chat.id,
+            Some(thread_id),
+            "This workspace thread is not bound yet.",
+        )
+        .await?;
+        return Ok(());
+    };
+    let config = build_workspace_launch_config(state, &record, binding).await?;
+    let target = if let Some(target) = direct_target {
+        target
+    } else {
+        let Some(argument) = command_argument_text(msg, "launch_local_session") else {
+            send_scoped_message(
+                bot,
+                msg.chat.id,
+                Some(thread_id),
+                render_launch_usage(&config),
+            )
+            .await?;
+            return Ok(());
+        };
+        let Some(target) = parse_launch_command_target(argument) else {
+            send_scoped_warning_message(
+                bot,
+                msg.chat.id,
+                Some(thread_id),
+                render_launch_usage(&config),
+            )
+            .await?;
+            return Ok(());
+        };
+        target
+    };
+    if !config.hcodex_available {
+        send_scoped_warning_message(
+            bot,
+            msg.chat.id,
+            Some(thread_id),
+            "Managed hcodex is unavailable for this workspace.",
+        )
+        .await?;
+        return Ok(());
+    }
+    let (launch_target, session_id, label, origin) = match target {
+        LaunchCommandTarget::New => (
+            LaunchLocalSessionTarget::New,
+            None,
+            "new",
+            "telegram /launch_local_session",
+        ),
+        LaunchCommandTarget::Current => (
+            LaunchLocalSessionTarget::ContinueCurrent,
+            None,
+            "continue_current",
+            if is_direct_continue_current {
+                "telegram /continue_current"
+            } else {
+                "telegram /launch_local_session"
+            },
+        ),
+        LaunchCommandTarget::Resume(session_id) => (
+            LaunchLocalSessionTarget::Resume,
+            Some(session_id),
+            "resume",
+            "telegram /launch_local_session",
+        ),
+    };
+    execute_runtime_control_action(
+        state,
+        &record.metadata.thread_key,
+        RuntimeControlActionRequest::LaunchLocalSession {
+            target: launch_target,
+            session_id,
+        },
+        origin,
+    )
+    .await?;
+    send_scoped_message(
+        bot,
+        msg.chat.id,
+        Some(thread_id),
+        format!(
+            "Launched local hcodex via `{label}` in `{}` mode.",
+            config.workspace_execution_mode.as_str()
+        ),
+    )
+    .await?;
+    Ok(())
 }
 
 fn render_working_sessions(
@@ -1178,104 +1317,14 @@ pub(crate) async fn run_command(
             .await?;
         }
         Command::LaunchLocalSession => {
-            if is_control_chat(msg) {
-                send_scoped_message(
-                    bot,
-                    msg.chat.id,
-                    None,
-                    "Use /launch_local_session inside a workspace thread.",
-                )
-                .await?;
-                return Ok(());
-            }
-            let thread_id = msg.thread_id.context("thread message missing thread id")?;
-            let record = state
-                .repository
-                .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
-                .await?;
-            let session = state.repository.read_session_binding(&record).await?;
-            let (resolved_state, _) =
-                resolve_busy_gate_state(state, &record, session.as_ref()).await?;
-            if resolved_state.is_archived() {
-                send_scoped_message(
-                    bot,
-                    msg.chat.id,
-                    Some(thread_id),
-                    "This workspace is archived.",
-                )
-                .await?;
-                return Ok(());
-            }
-            let Some(binding) = session.as_ref() else {
-                send_scoped_message(
-                    bot,
-                    msg.chat.id,
-                    Some(thread_id),
-                    "This workspace thread is not bound yet.",
-                )
-                .await?;
-                return Ok(());
-            };
-            let config = build_workspace_launch_config(state, &record, binding).await?;
-            let Some(argument) = command_argument_text(msg, "launch_local_session") else {
-                send_scoped_message(
-                    bot,
-                    msg.chat.id,
-                    Some(thread_id),
-                    render_launch_usage(&config),
-                )
-                .await?;
-                return Ok(());
-            };
-            let Some(target) = parse_launch_command_target(argument) else {
-                send_scoped_warning_message(
-                    bot,
-                    msg.chat.id,
-                    Some(thread_id),
-                    render_launch_usage(&config),
-                )
-                .await?;
-                return Ok(());
-            };
-            if !config.hcodex_available {
-                send_scoped_warning_message(
-                    bot,
-                    msg.chat.id,
-                    Some(thread_id),
-                    "Managed hcodex is unavailable for this workspace.",
-                )
-                .await?;
-                return Ok(());
-            }
-            let (launch_target, session_id, label) = match target {
-                LaunchCommandTarget::New => (LaunchLocalSessionTarget::New, None, "new"),
-                LaunchCommandTarget::Current => (
-                    LaunchLocalSessionTarget::ContinueCurrent,
-                    None,
-                    "continue_current",
-                ),
-                LaunchCommandTarget::Resume(session_id) => {
-                    (LaunchLocalSessionTarget::Resume, Some(session_id), "resume")
-                }
-            };
-            execute_runtime_control_action(
-                state,
-                &record.metadata.thread_key,
-                RuntimeControlActionRequest::LaunchLocalSession {
-                    target: launch_target,
-                    session_id,
-                },
-                "telegram /launch_local_session",
-            )
-            .await?;
-            send_scoped_message(
+            handle_launch_local_session_command(bot, msg, state, None).await?;
+        }
+        Command::ContinueCurrent => {
+            handle_launch_local_session_command(
                 bot,
-                msg.chat.id,
-                Some(thread_id),
-                format!(
-                    "Launched local hcodex via `{label}` in `{}` mode.",
-                    config.workspace_execution_mode.as_str()
-                ),
+                msg,
+                state,
+                Some(LaunchCommandTarget::Current),
             )
             .await?;
         }
@@ -2804,7 +2853,7 @@ mod tests {
     use super::{
         LaunchCommandTarget, build_workspace_launch_config, format_error_chain,
         parse_execution_mode_argument, parse_launch_command_target,
-        persist_collaboration_mode_change, render_stop_started_message,
+        persist_collaboration_mode_change, render_launch_usage, render_stop_started_message,
         render_working_session_records, render_working_sessions,
     };
     use crate::collaboration_mode::CollaborationMode;
@@ -2815,7 +2864,9 @@ mod tests {
         ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorOrigin, TranscriptMirrorPhase,
         TranscriptMirrorRole,
     };
-    use crate::runtime_control::{RuntimeControlContext, RuntimeOwnershipMode};
+    use crate::runtime_control::{
+        HcodexLaunchConfigView, RuntimeControlContext, RuntimeOwnershipMode,
+    };
     use crate::runtime_protocol::{WorkingSessionRecordKind, WorkingSessionRecordView};
     use crate::telegram_runtime::AppState;
     use crate::workspace_status::{
@@ -2857,6 +2908,33 @@ mod tests {
         );
         assert_eq!(parse_launch_command_target("resume"), None);
         assert_eq!(parse_launch_command_target("unknown"), None);
+    }
+
+    #[test]
+    fn launch_usage_mentions_continue_current_alias() {
+        let config = HcodexLaunchConfigView {
+            workspace_cwd: "/tmp/workspace".to_owned(),
+            thread_key: "thread-1".to_owned(),
+            hcodex_path: "/tmp/workspace/.threadbridge/bin/hcodex".to_owned(),
+            hcodex_available: true,
+            workspace_execution_mode: ExecutionMode::FullAuto,
+            current_execution_mode: Some(ExecutionMode::FullAuto),
+            current_approval_policy: Some("on-request".to_owned()),
+            current_sandbox_policy: Some("workspace-write".to_owned()),
+            mode_drift: false,
+            current_codex_thread_id: Some("thr_current".to_owned()),
+            recent_codex_sessions: Vec::new(),
+            launch_new_command: "./.threadbridge/bin/hcodex".to_owned(),
+            launch_current_command: Some(
+                "./.threadbridge/bin/hcodex resume thr_current".to_owned(),
+            ),
+            launch_resume_commands: Vec::new(),
+        };
+
+        let usage = render_launch_usage(&config);
+
+        assert!(usage.contains("/launch_local_session continue_current"));
+        assert!(usage.contains("/continue_current"));
     }
 
     #[test]
@@ -3009,6 +3087,9 @@ mod tests {
                 runtime_ownership_mode: RuntimeOwnershipMode::SelfManaged,
             },
             interactive_requests: crate::interactive::InteractiveRequestRegistry::new(),
+            runtime_telemetry: crate::telemetry::RuntimeTelemetryHandle::new(
+                root.join("runtime-telemetry.jsonl"),
+            ),
             workspace_status_cache: WorkspaceStatusCache::new(),
         };
 
@@ -3107,6 +3188,9 @@ mod tests {
                 runtime_ownership_mode: RuntimeOwnershipMode::SelfManaged,
             },
             interactive_requests: crate::interactive::InteractiveRequestRegistry::new(),
+            runtime_telemetry: crate::telemetry::RuntimeTelemetryHandle::new(
+                root.join("runtime-telemetry.jsonl"),
+            ),
             workspace_status_cache: WorkspaceStatusCache::new(),
         };
 
