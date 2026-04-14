@@ -15,6 +15,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tracing::{debug, info, warn};
 
+use crate::approval::ApprovalRequestRegistry;
 use crate::app_server_observer::AppServerMirrorObserverManager;
 use crate::app_server_runtime::{
     WorkspaceRuntimeState, consume_hcodex_launch_ticket, read_workspace_runtime_state_file,
@@ -73,7 +74,13 @@ impl HcodexIngressManager {
             .await;
     }
 
-    pub async fn submit_request_user_input_response<T: serde::Serialize>(
+    pub async fn configure_approval_registry(&self, registry: ApprovalRequestRegistry) {
+        self.observer_runtime
+            .set_approval_registry(Some(registry))
+            .await;
+    }
+
+    pub async fn submit_server_request_response<T: serde::Serialize>(
         &self,
         thread_key: &str,
         request_id: i64,
@@ -94,6 +101,16 @@ impl HcodexIngressManager {
             .send(WsMessage::Text(payload))
             .map_err(|_| anyhow!("failed to forward response into live hcodex ingress"))?;
         Ok(())
+    }
+
+    pub async fn submit_request_user_input_response<T: serde::Serialize>(
+        &self,
+        thread_key: &str,
+        request_id: i64,
+        response: &T,
+    ) -> Result<()> {
+        self.submit_server_request_response(thread_key, request_id, response)
+            .await
     }
 
     pub async fn ensure_workspace_ingress(

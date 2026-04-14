@@ -2,6 +2,7 @@ const appState = {
   setup: null,
   health: null,
   workspaces: [],
+  pendingApprovals: [],
   archived: [],
   transcripts: {},
   sessions: {},
@@ -17,6 +18,7 @@ const appState = {
     launchOutputs: {},
     showLaunchConfigStates: {},
     resumeSessionDrafts: {},
+    permissionApprovalDrafts: {},
   },
   drafts: {
     setup: {
@@ -219,6 +221,10 @@ function workspaceNeedsAttention(item) {
   return item.conflict || item.binding_status === 'broken' || item.runtime_readiness !== 'ready'
 }
 
+function pendingApprovalIndexByKey(approvalKey) {
+  return (appState.pendingApprovals || []).findIndex(item => item.approval_key === approvalKey)
+}
+
 function renderMetricCell(label, value, note = '') {
   return `
     <div class="summary-cell">
@@ -414,6 +420,12 @@ function reconcileDrafts() {
       delete appState.collaborationModeDrafts[threadKey]
     }
   }
+  const activeApprovalKeys = new Set((appState.pendingApprovals || []).map(item => item.approval_key))
+  for (const approvalKey of Object.keys(appState.ui.permissionApprovalDrafts || {})) {
+    if (!activeApprovalKeys.has(approvalKey)) {
+      delete appState.ui.permissionApprovalDrafts[approvalKey]
+    }
+  }
 }
 
 function syncDraftsFromData() {
@@ -461,8 +473,29 @@ function attentionWorkspaces(items = appState.workspaces) {
   return sortByLastUsed(items.filter(item => workspaceNeedsAttention(item)))
 }
 
+function attentionApprovals(items = appState.pendingApprovals) {
+  return [...items].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+}
+
+function pendingApprovalsForThread(threadKey) {
+  return attentionApprovals(appState.pendingApprovals).filter(item => item.thread_key === threadKey)
+}
+
 function visibleManagedWorkspaces(items) {
   return items.filter(item => !workspaceNeedsAttention(item))
+}
+
+function permissionDraft(approvalKey, request = null) {
+  if (!appState.ui.permissionApprovalDrafts[approvalKey] && request) {
+    const fileSystem = request.permissions?.fileSystem || {}
+    appState.ui.permissionApprovalDrafts[approvalKey] = {
+      scope: 'turn',
+      networkEnabled: request.permissions?.network?.enabled === true,
+      read: [...(fileSystem.read || [])],
+      write: [...(fileSystem.write || [])],
+    }
+  }
+  return appState.ui.permissionApprovalDrafts[approvalKey] || null
 }
 
 function prettyLabel(value) {
@@ -786,7 +819,7 @@ function navItemsForRoute(route) {
   if (route.page === 'welcome') {
     return []
   }
-  const attentionCount = attentionWorkspaces().length
+  const attentionCount = attentionWorkspaces().length + attentionApprovals().length
   const items = [
     { page: 'overview', label: 'Overview', count: '' },
     { page: 'workspaces', label: 'Workspaces', count: appState.workspaces.length || '' },
@@ -1108,20 +1141,199 @@ function renderWorkspaceSection(title, items, options = {}) {
   `
 }
 
-function renderAttentionPage() {
-  const items = attentionWorkspaces()
+function approvalKindLabel(kind) {
+  switch (kind) {
+    case 'command_execution':
+      return 'Command Approval'
+    case 'file_change':
+      return 'File Change Approval'
+    case 'permissions':
+      return 'Permissions Approval'
+    default:
+      return 'Approval'
+  }
+}
+
+function renderApprovalOptionButtons(approval) {
+  const options = approval.decision_options || []
+  if (!options.length) {
+    return ''
+  }
+  return `
+    <div class="button-row detail-actions-grid">
+      ${options.map(option => `
+        <button
+          class="button button-secondary btn-sm"
+          ${dataAttrs({ action: 'submit-approval-preset', approvalKey: approval.approval_key, token: option.token })}
+          ${option.management_only ? 'title="Management only action"' : ''}
+        >
+          ${escapeHtml(option.label)}
+        </button>
+      `).join('')}
+    </div>
+  `
+}
+
+function renderPermissionPathChecklist(approvalKey, field, items = []) {
   if (!items.length) {
+    return ''
+  }
+  const draft = permissionDraft(approvalKey) || { read: [], write: [] }
+  const selected = new Set(draft[field] || [])
+  return `
+    <div class="subpanel">
+      <strong>${escapeHtml(field === 'read' ? 'Read Paths' : 'Write Paths')}</strong>
+      <div class="transcript-list">
+        ${items.map(path => `
+          <label class="transcript-entry">
+            <input
+              type="checkbox"
+              ${selected.has(path) ? 'checked' : ''}
+              ${dataAttrs({ changeAction: 'toggle-permission-item', approvalKey, field, value: path })}
+            />
+            <code>${escapeHtml(path)}</code>
+          </label>
+        `).join('')}
+      </div>
+    </div>
+  `
+}
+
+function renderPermissionsSubsetEditor(approval) {
+  if (approval.kind !== 'permissions') {
+    return ''
+  }
+  const request = approval.payload || {}
+  const draft = permissionDraft(approval.approval_key, request)
+  const fileSystem = request.permissions?.fileSystem || {}
+  return `
+    <div class="subpanel">
+      <strong>Partial Grant</strong>
+      <div class="form-split">
+        <div class="field">
+          <span>Scope</span>
+          <select ${dataAttrs({ changeAction: 'set-permission-scope', approvalKey: approval.approval_key })}>
+            <option value="turn" ${draft?.scope === 'turn' ? 'selected' : ''}>turn</option>
+            <option value="session" ${draft?.scope === 'session' ? 'selected' : ''}>session</option>
+          </select>
+        </div>
+      </div>
+      ${request.permissions?.network ? `
+        <label class="transcript-entry">
+          <input
+            type="checkbox"
+            ${draft?.networkEnabled ? 'checked' : ''}
+            ${dataAttrs({ changeAction: 'toggle-permission-network', approvalKey: approval.approval_key })}
+          />
+          <span>Grant requested network access</span>
+        </label>
+      ` : ''}
+      ${renderPermissionPathChecklist(approval.approval_key, 'read', fileSystem.read || [])}
+      ${renderPermissionPathChecklist(approval.approval_key, 'write', fileSystem.write || [])}
+      <div class="button-row">
+        <button class="button button-primary btn-sm" ${dataAttrs({ action: 'submit-permission-subset', approvalKey: approval.approval_key })}>Submit Partial Grant</button>
+      </div>
+    </div>
+  `
+}
+
+function renderPendingApprovalCard(approval, { showThreadLink = false } = {}) {
+  const payload = approval.payload || {}
+  const title = approvalKindLabel(approval.kind)
+  const workspace = workspaceByThreadKey(approval.thread_key)
+  const meta = [
+    approval.created_at ? formatRelativeTime(approval.created_at) : 'unknown',
+    approval.source || 'unknown',
+    approval.turn_id || 'turn?',
+  ]
+  const bodyLines = []
+  if (payload.reason) {
+    bodyLines.push(`Reason: ${payload.reason}`)
+  }
+  if (payload.command) {
+    bodyLines.push(`Command: ${payload.command}`)
+  }
+  if (payload.cwd) {
+    bodyLines.push(`cwd: ${payload.cwd}`)
+  }
+  if (payload.grantRoot) {
+    bodyLines.push(`Grant root: ${payload.grantRoot}`)
+  }
+  if (approval.kind === 'permissions') {
+    const perms = payload.permissions || {}
+    if (perms.network) {
+      bodyLines.push('Network access requested')
+    }
+    const fileSystem = perms.fileSystem || {}
+    if ((fileSystem.read || []).length) {
+      bodyLines.push(`Read: ${(fileSystem.read || []).join(', ')}`)
+    }
+    if ((fileSystem.write || []).length) {
+      bodyLines.push(`Write: ${(fileSystem.write || []).join(', ')}`)
+    }
+  }
+  return `
+    <article class="list-row summary-row is-problem">
+      <div class="summary-row-main">
+        <div class="summary-row-head">
+          <div class="summary-row-title">
+            <h3 class="list-row-headline">${escapeHtml(title)}</h3>
+            <div class="secondary-label">${escapeHtml(workspace ? workspacePrimaryLabel(workspace) : approval.thread_key)}</div>
+          </div>
+          <div class="summary-row-tags">
+            ${renderStatusToken(approvalKindLabel(approval.kind), 'warn')}
+          </div>
+        </div>
+        <div class="transcript-meta">${meta.map(value => escapeHtml(value)).join(' · ')}</div>
+        ${bodyLines.length ? `<div class="transcript-list">${bodyLines.map(line => `<div class="transcript-entry">${escapeHtml(line)}</div>`).join('')}</div>` : ''}
+        ${renderApprovalOptionButtons(approval)}
+        ${renderPermissionsSubsetEditor(approval)}
+      </div>
+      <div class="action-slot">
+        ${showThreadLink ? `<a class="button button-secondary" href="#/workspaces/${encodeURIComponent(approval.thread_key || '')}">Open Workspace</a>` : ''}
+      </div>
+    </article>
+  `
+}
+
+function renderAttentionPage() {
+  const workspaceItems = attentionWorkspaces()
+  const approvalItems = attentionApprovals()
+  if (!workspaceItems.length && !approvalItems.length) {
     return `
       <div class="page-body">
-        ${renderPageEmpty('No workspaces need attention.')}
+        ${renderPageEmpty('No approvals or workspaces need attention.')}
       </div>
     `
   }
   return `
-    <div class="page-body">
-      <div class="summary-list attention-list">
-        ${items.map(item => renderWorkspaceSummaryRow(item, { showOpenAction: true, emphasizeProblem: true })).join('')}
-      </div>
+    <div class="page-body section-stack">
+      ${approvalItems.length ? `
+        <section class="section-block">
+          <div class="section-head">
+            <div class="section-copy">
+              <h2>Pending Approvals</h2>
+            </div>
+            <span class="section-count">${escapeHtml(approvalItems.length)}</span>
+          </div>
+          <div class="summary-list attention-list">
+            ${approvalItems.map(item => renderPendingApprovalCard(item, { showThreadLink: true })).join('')}
+          </div>
+        </section>
+      ` : ''}
+      ${workspaceItems.length ? `
+        <section class="section-block">
+          <div class="section-head">
+            <div class="section-copy">
+              <h2>Workspace Issues</h2>
+            </div>
+            <span class="section-count">${escapeHtml(workspaceItems.length)}</span>
+          </div>
+          <div class="summary-list attention-list">
+            ${workspaceItems.map(item => renderWorkspaceSummaryRow(item, { showOpenAction: true, emphasizeProblem: true })).join('')}
+          </div>
+        </section>
+      ` : ''}
     </div>
   `
 }
@@ -1326,6 +1538,7 @@ function renderWorkspaceDetailPage(threadKey) {
   const selectedExecutionMode = effectiveExecutionModeValue(item)
   const selectedCollaborationMode = effectiveCollaborationModeValue(item)
   const resumeDraft = appState.ui.resumeSessionDrafts[threadKey] || ''
+  const approvals = pendingApprovalsForThread(threadKey)
   const showLaunchConfigState = appState.ui.showLaunchConfigStates[threadKey] || 'idle'
   const interruptDisabled = item.conflict || item.interrupt_status !== 'available'
   const headerStatuses = detailHeaderStatuses(item)
@@ -1414,6 +1627,16 @@ function renderWorkspaceDetailPage(threadKey) {
               ${runtimeNotes.map(note => `<div class="${note.tone}">${escapeHtml(note.text)}</div>`).join('')}
             </div>
           ` : ''}
+        </section>
+        <section class="matrix-panel matrix-panel-wide">
+          <div class="panel-head">
+            <div class="section-copy">
+              <h2 class="section-title">Pending Approvals</h2>
+            </div>
+          </div>
+          ${approvals.length
+            ? `<div class="summary-list attention-list">${approvals.map(approval => renderPendingApprovalCard(approval)).join('')}</div>`
+            : '<div class="empty-state">No pending approvals for this workspace.</div>'}
         </section>
         <section class="matrix-panel">
           <div class="panel-head">
@@ -1795,6 +2018,20 @@ function applyRuntimeEvent(payload) {
       }
       break
     }
+    case 'pending_approval_changed': {
+      const key = payload.key
+      const existingIndex = typeof key === 'string' ? pendingApprovalIndexByKey(key) : -1
+      if (payload.op === 'remove') {
+        removeArrayItem(appState.pendingApprovals, existingIndex)
+        shouldRender = true
+        break
+      }
+      if (payload.op === 'upsert' && payload.current) {
+        upsertArrayItem(appState.pendingApprovals, existingIndex, payload.current)
+        shouldRender = true
+      }
+      break
+    }
     case 'thread_state_changed':
       markObservabilityRefresh(payload.key || payload.current?.thread_key || null)
       break
@@ -1827,15 +2064,17 @@ async function fetchJson(url, options = {}, fallbackMessage = 'Request failed') 
 }
 
 async function refresh() {
-  const [setup, health, workspaces, archived] = await Promise.all([
+  const [setup, health, workspaces, pendingApprovals, archived] = await Promise.all([
     fetchJson('/api/setup', {}, 'Setup fetch failed'),
     fetchJson('/api/runtime-health', {}, 'Runtime health fetch failed'),
     fetchJson('/api/workspaces', {}, 'Workspace fetch failed'),
+    fetchJson('/api/pending-approvals', {}, 'Pending approvals fetch failed'),
     fetchJson('/api/archived-threads', {}, 'Archive fetch failed'),
   ])
   appState.setup = setup
   appState.health = health
   appState.workspaces = workspaces
+  appState.pendingApprovals = pendingApprovals
   appState.archived = archived
   initialSnapshotLoaded = true
   scheduleRender()
@@ -1978,6 +2217,12 @@ function handleDelegatedAction(target) {
     case 'save-managed-codex-build-defaults':
       void saveManagedCodexBuildDefaults()
       return
+    case 'submit-approval-preset':
+      void submitApprovalPreset(target.dataset.approvalKey || '', target.dataset.token || '')
+      return
+    case 'submit-permission-subset':
+      void submitPermissionSubset(target.dataset.approvalKey || '')
+      return
     default:
       return
   }
@@ -2014,6 +2259,23 @@ function handleDelegatedChange(target) {
       setCollaborationModeDraft(target.dataset.threadKey || '', target.value)
       scheduleRender()
       return
+    case 'set-permission-scope':
+      setPermissionScope(target.dataset.approvalKey || '', target.value)
+      scheduleRender()
+      return
+    case 'toggle-permission-network':
+      togglePermissionNetwork(target.dataset.approvalKey || '', target.checked)
+      scheduleRender()
+      return
+    case 'toggle-permission-item':
+      togglePermissionItem(
+        target.dataset.approvalKey || '',
+        target.dataset.field || '',
+        target.dataset.value || '',
+        target.checked,
+      )
+      scheduleRender()
+      return
     default:
       return
   }
@@ -2043,6 +2305,95 @@ function toggleWorkspacePanel(threadKey, panelKey) {
     loadTranscript(threadKey, false)
   }
   scheduleRender()
+}
+
+function setPermissionScope(approvalKey, scope) {
+  const approval = appState.pendingApprovals.find(item => item.approval_key === approvalKey)
+  const draft = permissionDraft(approvalKey, approval?.payload || null)
+  if (!draft) {
+    return
+  }
+  draft.scope = scope === 'session' ? 'session' : 'turn'
+}
+
+function togglePermissionNetwork(approvalKey, checked) {
+  const approval = appState.pendingApprovals.find(item => item.approval_key === approvalKey)
+  const draft = permissionDraft(approvalKey, approval?.payload || null)
+  if (!draft) {
+    return
+  }
+  draft.networkEnabled = Boolean(checked)
+}
+
+function togglePermissionItem(approvalKey, field, value, checked) {
+  if (!['read', 'write'].includes(field) || !value) {
+    return
+  }
+  const approval = appState.pendingApprovals.find(item => item.approval_key === approvalKey)
+  const draft = permissionDraft(approvalKey, approval?.payload || null)
+  if (!draft) {
+    return
+  }
+  const selected = new Set(draft[field] || [])
+  if (checked) {
+    selected.add(value)
+  } else {
+    selected.delete(value)
+  }
+  draft[field] = [...selected]
+}
+
+async function postPendingApprovalDecision(approvalKey, body, failureText) {
+  try {
+    await fetchJson(`/api/pending-approvals/${encodeURIComponent(approvalKey)}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }, failureText)
+    delete appState.ui.permissionApprovalDrafts[approvalKey]
+    await refresh()
+  } catch (error) {
+    alert(error instanceof Error ? error.message : failureText)
+  }
+}
+
+async function submitApprovalPreset(approvalKey, token) {
+  if (!approvalKey || !token) {
+    return
+  }
+  await postPendingApprovalDecision(
+    approvalKey,
+    {
+      decision_type: 'preset',
+      token,
+    },
+    'Approval response failed',
+  )
+}
+
+async function submitPermissionSubset(approvalKey) {
+  const approval = appState.pendingApprovals.find(item => item.approval_key === approvalKey)
+  const draft = permissionDraft(approvalKey, approval?.payload || null)
+  if (!approval || !draft) {
+    return
+  }
+  const permissions = {}
+  if (approval.payload?.permissions?.network) {
+    permissions.network = { enabled: draft.networkEnabled === true }
+  }
+  permissions.fileSystem = {
+    read: [...(draft.read || [])],
+    write: [...(draft.write || [])],
+  }
+  await postPendingApprovalDecision(
+    approvalKey,
+    {
+      decision_type: 'permissions_subset',
+      permissions,
+      scope: draft.scope || 'turn',
+    },
+    'Partial permission grant failed',
+  )
 }
 
 async function submitSetupForm(event) {
@@ -2546,6 +2897,7 @@ for (const eventName of [
   'managed_codex_changed',
   'thread_state_changed',
   'workspace_state_changed',
+  'pending_approval_changed',
   'archived_thread_changed',
 ]) {
   events.addEventListener(eventName, event => {

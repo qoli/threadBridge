@@ -47,6 +47,7 @@ pub enum RuntimeEventKind {
     ManagedCodexChanged,
     ThreadStateChanged,
     WorkspaceStateChanged,
+    PendingApprovalChanged,
     ArchivedThreadChanged,
     WorkingSessionChanged,
     TranscriptChanged,
@@ -61,6 +62,7 @@ impl RuntimeEventKind {
             Self::ManagedCodexChanged => "managed_codex_changed",
             Self::ThreadStateChanged => "thread_state_changed",
             Self::WorkspaceStateChanged => "workspace_state_changed",
+            Self::PendingApprovalChanged => "pending_approval_changed",
             Self::ArchivedThreadChanged => "archived_thread_changed",
             Self::WorkingSessionChanged => "working_session_changed",
             Self::TranscriptChanged => "transcript_changed",
@@ -247,6 +249,7 @@ pub struct RuntimeControlActionEnvelope {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeInteractionKind {
+    ApprovalRequested,
     RequestUserInput,
     RequestResolved,
     TurnCompleted,
@@ -255,6 +258,7 @@ pub enum RuntimeInteractionKind {
 impl RuntimeInteractionKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::ApprovalRequested => "approval_requested",
             Self::RequestUserInput => "request_user_input",
             Self::RequestResolved => "request_resolved",
             Self::TurnCompleted => "turn_completed",

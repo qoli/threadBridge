@@ -1,5 +1,6 @@
 use tokio::sync::mpsc;
 
+use crate::approval::PendingApprovalView;
 use crate::collaboration_mode::CollaborationMode;
 use crate::interactive::ToolRequestUserInputParams;
 use crate::runtime_protocol::RuntimeInteractionKind;
@@ -12,9 +13,17 @@ pub struct RuntimeInteractionRequest {
 }
 
 #[derive(Debug, Clone)]
+pub struct RuntimeApprovalRequest {
+    pub approval: PendingApprovalView,
+}
+
+#[derive(Debug, Clone)]
 pub struct RuntimeInteractionResolved {
     pub thread_id: String,
     pub request_id: serde_json::Value,
+    pub approval_key: Option<String>,
+    pub approval_thread_key: Option<String>,
+    pub approval_prompt_message_id: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +36,7 @@ pub struct TurnCompletionSummary {
 
 #[derive(Debug, Clone)]
 pub enum RuntimeInteractionEvent {
+    ApprovalRequested(RuntimeApprovalRequest),
     RequestUserInput(RuntimeInteractionRequest),
     RequestResolved(RuntimeInteractionResolved),
     TurnCompleted(TurnCompletionSummary),
@@ -35,6 +45,7 @@ pub enum RuntimeInteractionEvent {
 impl RuntimeInteractionEvent {
     pub fn kind(&self) -> RuntimeInteractionKind {
         match self {
+            Self::ApprovalRequested(_) => RuntimeInteractionKind::ApprovalRequested,
             Self::RequestUserInput(_) => RuntimeInteractionKind::RequestUserInput,
             Self::RequestResolved(_) => RuntimeInteractionKind::RequestResolved,
             Self::TurnCompleted(_) => RuntimeInteractionKind::TurnCompleted,

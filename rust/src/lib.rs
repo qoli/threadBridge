@@ -1,3 +1,4 @@
+pub mod approval;
 pub mod app_server_observer;
 pub mod app_server_runtime;
 pub mod app_server_ws_worker;

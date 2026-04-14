@@ -3,10 +3,16 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use teloxide::prelude::*;
 use teloxide::requests::Requester;
-use teloxide::types::{BotCommand, CallbackQuery, LinkPreviewOptions, ThreadId};
+use teloxide::types::{
+    BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions,
+    ThreadId,
+};
 use teloxide::utils::command::BotCommands;
 use tracing::{error, info, warn};
 
+use crate::approval::{
+    ApprovalResolution, PendingApprovalKind, PendingApprovalPayload, PendingApprovalView,
+};
 use crate::app_server_runtime::WorkspaceRuntimeManager;
 pub(crate) use crate::codex::{CodexInputItem, CodexRunner, CodexThreadEvent};
 use crate::collaboration_mode::CollaborationMode;
@@ -155,8 +161,14 @@ impl AppState {
             repository.clone(),
             control.delivery_bus.clone(),
             interactive_requests.clone(),
+            control.approval_requests.clone(),
         );
         if runtime_ownership_mode == RuntimeOwnershipMode::SelfManaged {
+            hcodex_ingress
+                .as_ref()
+                .context("self-managed telegram runtime is missing hcodex ingress manager")?
+                .configure_approval_registry(control.approval_requests.clone())
+                .await;
             hcodex_ingress
                 .as_ref()
                 .context("self-managed telegram runtime is missing hcodex ingress manager")?
@@ -475,6 +487,54 @@ async fn run_callback_query(bot: &Bot, query: &CallbackQuery, state: &AppState) 
             apply_interactive_advance(bot, state, message.chat.id, thread_id, advance).await?;
             bot.answer_callback_query(query.id.clone()).await?;
         }
+        CALLBACK_APPROVAL_DECISION => {
+            let approval_key = parts.get(1).copied().unwrap_or_default();
+            let token = parts.get(2).copied().unwrap_or_default();
+            let Some(approval) = state
+                .control
+                .approval_requests
+                .get_view(approval_key)
+                .await
+            else {
+                bot.answer_callback_query(query.id.clone())
+                    .text("Approval is no longer pending.")
+                    .show_alert(true)
+                    .await?;
+                return Ok(());
+            };
+            let Some(message_thread_id) = message.thread_id else {
+                bot.answer_callback_query(query.id.clone())
+                    .text("This button only works inside a thread.")
+                    .show_alert(true)
+                    .await?;
+                return Ok(());
+            };
+            let record = state
+                .repository
+                .get_thread(message.chat.id.0, thread_id_to_i32(message_thread_id))
+                .await?;
+            if record.metadata.thread_key != approval.thread_key {
+                bot.answer_callback_query(query.id.clone())
+                    .text("Approval belongs to another workspace thread.")
+                    .show_alert(true)
+                    .await?;
+                return Ok(());
+            }
+            let Some(resolution) = state
+                .control
+                .approval_requests
+                .resolve_preset(approval_key, token)
+                .await?
+            else {
+                bot.answer_callback_query(query.id.clone())
+                    .text("Approval is no longer pending.")
+                    .show_alert(true)
+                    .await?;
+                return Ok(());
+            };
+            apply_approval_resolution(bot, state, message.chat.id, resolution).await?;
+            bot.answer_callback_query(query.id.clone()).await?;
+        }
         media::CALLBACK_IMAGE_BATCH_ANALYZE => {
             let batch_id = parts.get(1).copied().unwrap_or_default();
             let Some(thread_id) = message.thread_id else {
@@ -709,6 +769,7 @@ pub(crate) async fn send_scoped_warning_message(
 }
 
 pub(crate) const CALLBACK_REQUEST_USER_INPUT_OPTION: &str = "request_user_input_option";
+pub(crate) const CALLBACK_APPROVAL_DECISION: &str = "approval_decision";
 pub(crate) const CALLBACK_PLAN_IMPLEMENT: &str = "plan_implement";
 pub(crate) const PLAN_IMPLEMENTATION_TEXT: &str = "Implement this plan?";
 pub(crate) const PLAN_IMPLEMENTATION_MESSAGE: &str = "Implement the plan.";
@@ -736,6 +797,61 @@ pub(crate) fn render_request_user_input_prompt(snapshot: &InteractivePromptSnaps
             lines.push(format!("- {}: {}", option.label, option.description));
         }
         lines.push("- Other: reply with your own text".to_owned());
+    }
+    lines.join("\n")
+}
+
+pub(crate) fn render_pending_approval_prompt(approval: &PendingApprovalView) -> String {
+    let mut lines = vec![format_system_text(
+        TelegramSystemIntent::Question,
+        &pending_approval_title(approval),
+    )];
+    match &approval.payload {
+        PendingApprovalPayload::CommandExecution { params } => {
+            if let Some(reason) = params.reason.as_deref().filter(|value| !value.trim().is_empty()) {
+                lines.push(format!("Reason: {reason}"));
+            }
+            if let Some(command) = params.command.as_deref().filter(|value| !value.trim().is_empty()) {
+                lines.push(format!("Command: `{command}`"));
+            }
+            if let Some(cwd) = params.cwd.as_deref().filter(|value| !value.trim().is_empty()) {
+                lines.push(format!("cwd: `{cwd}`"));
+            }
+            if params.additional_permissions.is_some() {
+                lines.push("Additional permissions were requested.".to_owned());
+            }
+            if let Some(context) = params.network_approval_context.as_ref() {
+                lines.push(format!("Network: {} ({})", context.host, context.protocol));
+            }
+        }
+        PendingApprovalPayload::FileChange { params } => {
+            if let Some(reason) = params.reason.as_deref().filter(|value| !value.trim().is_empty()) {
+                lines.push(format!("Reason: {reason}"));
+            }
+            if let Some(root) = params
+                .grant_root
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                lines.push(format!("Grant root: `{root}`"));
+            }
+        }
+        PendingApprovalPayload::Permissions { params } => {
+            if let Some(reason) = params.reason.as_deref().filter(|value| !value.trim().is_empty()) {
+                lines.push(format!("Reason: {reason}"));
+            }
+            lines.push(render_permission_profile_summary(&params.permissions));
+            lines.push("Need a partial grant? Use the management UI for this approval.".to_owned());
+        }
+    }
+    let labels = approval
+        .decision_options
+        .iter()
+        .filter(|option| option.telegram_supported && !option.management_only)
+        .map(|option| option.label.as_str())
+        .collect::<Vec<_>>();
+    if !labels.is_empty() {
+        lines.push(format!("Options: {}", labels.join(", ")));
     }
     lines.join("\n")
 }
@@ -811,26 +927,111 @@ pub(crate) async fn upsert_request_user_input_prompt(
     Ok(())
 }
 
+pub(crate) async fn upsert_approval_prompt(
+    bot: &Bot,
+    state: &AppState,
+    chat_id: ChatId,
+    thread_id: ThreadId,
+    approval: &PendingApprovalView,
+) -> Result<()> {
+    let text = render_pending_approval_prompt(approval);
+    let markup = approval_markup(approval);
+    let provisional_key =
+        provisional_key_for_request(&approval.thread_id, approval.request_id, &approval.item_id);
+    let claim = state
+        .control
+        .delivery_bus
+        .claim_delivery(DeliveryClaim {
+            thread_key: approval.thread_key.clone(),
+            session_id: approval.thread_id.clone(),
+            turn_id: Some(approval.turn_id.clone()),
+            provisional_key: Some(provisional_key.clone()),
+            channel: DeliveryChannel::Telegram,
+            kind: DeliveryKind::ApprovalPrompt,
+            owner: "telegram_runtime".to_owned(),
+        })
+        .await?;
+    if matches!(claim, ClaimStatus::Existing(_)) {
+        return Ok(());
+    }
+    let request = bot.send_message(chat_id, text).message_thread_id(thread_id);
+    let sent = if let Some(markup) = markup {
+        request.reply_markup(markup).await?
+    } else {
+        request.await?
+    };
+    state
+        .control
+        .approval_requests
+        .set_prompt_message_id(&approval.approval_key, sent.id.0)
+        .await;
+    let _ = state
+        .control
+        .delivery_bus
+        .commit_delivery(DeliveryAttempt {
+            thread_key: approval.thread_key.clone(),
+            session_id: approval.thread_id.clone(),
+            turn_id: Some(approval.turn_id.clone()),
+            provisional_key: Some(provisional_key),
+            channel: DeliveryChannel::Telegram,
+            kind: DeliveryKind::ApprovalPrompt,
+            executor: "telegram_runtime".to_owned(),
+            transport_ref: Some(format!("message:{}", sent.id.0)),
+            report_json: serde_json::json!({
+                "targets": [{
+                    "type": "telegram_approval_prompt",
+                    "target_ref": format!("chat:{}/thread:{}", chat_id.0, thread_id_to_i32(thread_id)),
+                    "state": "committed",
+                    "transport_ref": format!("message:{}", sent.id.0),
+                    "approval_key": approval.approval_key,
+                }]
+            }),
+        })
+        .await;
+    Ok(())
+}
+
 pub(crate) fn request_user_input_markup(
     request_id: i64,
     question: &ToolRequestUserInputQuestion,
-) -> Option<teloxide::types::InlineKeyboardMarkup> {
+    ) -> Option<InlineKeyboardMarkup> {
     let options = question.options.as_ref()?;
     let mut buttons = options
         .iter()
         .enumerate()
         .map(|(option_index, option)| {
-            vec![teloxide::types::InlineKeyboardButton::callback(
+            vec![InlineKeyboardButton::callback(
                 option.label.clone(),
                 format!("{CALLBACK_REQUEST_USER_INPUT_OPTION}:{request_id}:{option_index}"),
             )]
         })
         .collect::<Vec<_>>();
-    buttons.push(vec![teloxide::types::InlineKeyboardButton::callback(
+    buttons.push(vec![InlineKeyboardButton::callback(
         "Other",
         format!("{CALLBACK_REQUEST_USER_INPUT_OPTION}:{request_id}:other"),
     )]);
-    Some(teloxide::types::InlineKeyboardMarkup::new(buttons))
+    Some(InlineKeyboardMarkup::new(buttons))
+}
+
+pub(crate) fn approval_markup(approval: &PendingApprovalView) -> Option<InlineKeyboardMarkup> {
+    let buttons = approval
+        .decision_options
+        .iter()
+        .filter(|option| option.telegram_supported && !option.management_only)
+        .map(|option| {
+            vec![InlineKeyboardButton::callback(
+                option.label.clone(),
+                format!(
+                    "{CALLBACK_APPROVAL_DECISION}:{}:{}",
+                    approval.approval_key, option.token
+                ),
+            )]
+        })
+        .collect::<Vec<_>>();
+    if buttons.is_empty() {
+        return None;
+    }
+    Some(InlineKeyboardMarkup::new(buttons))
 }
 
 pub(crate) async fn apply_interactive_advance(
@@ -908,6 +1109,92 @@ pub(crate) async fn apply_interactive_advance(
         },
     }
     Ok(())
+}
+
+pub(crate) async fn apply_approval_resolution(
+    bot: &Bot,
+    state: &AppState,
+    chat_id: ChatId,
+    resolution: ApprovalResolution,
+) -> Result<()> {
+    if resolution.requires_runtime_forward {
+        let record = state
+            .repository
+            .find_active_thread_by_key(&resolution.thread_key)
+            .await?
+            .context("approval thread disappeared before completion")?;
+        let binding = state
+            .repository
+            .read_session_binding(&record)
+            .await?
+            .context("approval thread is missing session binding")?;
+        let workspace_path = binding
+            .workspace_cwd
+            .as_deref()
+            .map(PathBuf::from)
+            .context("approval thread is missing workspace path")?;
+        let codex_workspace = state
+            .control
+            .workspace_runtime_service()
+            .shared_codex_workspace(workspace_path)
+            .await?;
+        state
+            .codex
+            .respond_server_request(
+                &codex_workspace,
+                &resolution.thread_id,
+                resolution.request_id,
+                &resolution.response,
+            )
+            .await?;
+    }
+    if let Some(message_id) = resolution.prompt_message_id {
+        bot.edit_message_text(
+            chat_id,
+            teloxide::types::MessageId(message_id),
+            format_system_text(
+                TelegramSystemIntent::Info,
+                "Approval submitted. Waiting for Codex to continue.",
+            ),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn pending_approval_title(approval: &PendingApprovalView) -> String {
+    match approval.kind {
+        PendingApprovalKind::CommandExecution => "Command approval required".to_owned(),
+        PendingApprovalKind::FileChange => "File change approval required".to_owned(),
+        PendingApprovalKind::Permissions => "Additional permissions required".to_owned(),
+    }
+}
+
+fn render_permission_profile_summary(profile: &crate::approval::PermissionProfile) -> String {
+    let mut sections = Vec::new();
+    if let Some(network) = profile.network.as_ref() {
+        sections.push(format!(
+            "Network: {}",
+            if network.enabled == Some(true) {
+                "enabled"
+            } else {
+                "custom"
+            }
+        ));
+    }
+    if let Some(file_system) = profile.file_system.as_ref() {
+        if let Some(read) = file_system.read.as_ref() {
+            sections.push(format!("Read: {}", read.join(", ")));
+        }
+        if let Some(write) = file_system.write.as_ref() {
+            sections.push(format!("Write: {}", write.join(", ")));
+        }
+    }
+    if sections.is_empty() {
+        "No extra permissions listed.".to_owned()
+    } else {
+        sections.join("\n")
+    }
 }
 
 pub(crate) async fn send_plan_implementation_prompt(
@@ -1617,6 +1904,7 @@ mod tests {
                 delivery_bus: crate::delivery_bus::DeliveryBusCoordinator::new(&root)
                     .await
                     .unwrap(),
+                approval_requests: crate::approval::ApprovalRequestRegistry::new(),
                 codex: CodexRunner::new(None),
                 app_server_runtime: WorkspaceRuntimeManager::new(),
                 hcodex_ingress: None,

@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tracing::{info, warn};
 
+use crate::approval::{ApprovalRequestRegistry, PendingApprovalPayload};
 use crate::codex::{
     CodexServerNotification, CodexServerRequest, CodexThreadEvent, observe_thread_with_handlers,
 };
@@ -16,8 +17,8 @@ use crate::collaboration_mode::CollaborationMode;
 use crate::process_transcript::process_entry_from_codex_event;
 use crate::repository::{TranscriptMirrorOrigin, TranscriptMirrorPhase};
 use crate::runtime_interaction::{
-    RuntimeInteractionEvent, RuntimeInteractionRequest, RuntimeInteractionResolved,
-    RuntimeInteractionSender, TurnCompletionSummary,
+    RuntimeApprovalRequest, RuntimeInteractionEvent, RuntimeInteractionRequest,
+    RuntimeInteractionResolved, RuntimeInteractionSender, TurnCompletionSummary,
 };
 use crate::turn_completion::compose_visible_final_reply;
 use crate::workspace_status::{
@@ -31,6 +32,7 @@ pub struct AppServerMirrorObserverManager {
     turn_modes: Arc<Mutex<HashMap<String, CollaborationMode>>>,
     inner: Arc<Mutex<HashMap<String, RunningObserver>>>,
     interaction_sender: Arc<Mutex<Option<RuntimeInteractionSender>>>,
+    approval_registry: Arc<Mutex<Option<ApprovalRequestRegistry>>>,
 }
 
 #[derive(Debug)]
@@ -52,11 +54,16 @@ impl AppServerMirrorObserverManager {
             turn_modes,
             inner: Arc::new(Mutex::new(HashMap::new())),
             interaction_sender: Arc::new(Mutex::new(None)),
+            approval_registry: Arc::new(Mutex::new(None)),
         }
     }
 
     pub async fn set_interaction_sender(&self, sender: Option<RuntimeInteractionSender>) {
         self.interaction_sender.lock().await.clone_from(&sender);
+    }
+
+    pub async fn set_approval_registry(&self, registry: Option<ApprovalRequestRegistry>) {
+        self.approval_registry.lock().await.clone_from(&registry);
     }
 
     pub async fn ensure_thread_observer(
@@ -80,11 +87,13 @@ impl AppServerMirrorObserverManager {
         let observer_thread_id = thread_id.clone();
         let turn_modes = self.turn_modes.clone();
         let interaction_sender = self.interaction_sender.clone();
+        let approval_registry = self.approval_registry.clone();
         let (stop_tx, stop_rx) = oneshot::channel();
         let task = tokio::spawn(async move {
             if let Err(error) = run_thread_observer(
                 turn_modes,
                 interaction_sender,
+                approval_registry,
                 workspace_path,
                 observer_ws_url,
                 observer_thread_key,
@@ -212,6 +221,7 @@ fn stable_workspace_path(workspace_path: &Path) -> PathBuf {
 async fn run_thread_observer(
     turn_modes: Arc<Mutex<HashMap<String, CollaborationMode>>>,
     interaction_sender: Arc<Mutex<Option<RuntimeInteractionSender>>>,
+    approval_registry: Arc<Mutex<Option<ApprovalRequestRegistry>>>,
     workspace_path: PathBuf,
     observer_ws_url: String,
     thread_key: String,
@@ -253,19 +263,32 @@ async fn run_thread_observer(
         {
             let thread_key = thread_key.clone();
             let interaction_sender = interaction_sender.clone();
+            let approval_registry = approval_registry.clone();
             move |request| {
                 let thread_key = thread_key.clone();
                 let interaction_sender = interaction_sender.clone();
+                let approval_registry = approval_registry.clone();
                 async move {
-                    handle_server_request(&thread_key, &interaction_sender, request).await
+                    handle_server_request(
+                        &thread_key,
+                        &interaction_sender,
+                        &approval_registry,
+                        request,
+                    )
+                    .await
                 }
             }
         },
         {
             let interaction_sender = interaction_sender.clone();
+            let approval_registry = approval_registry.clone();
             move |notification| {
                 let interaction_sender = interaction_sender.clone();
-                async move { handle_server_notification(&interaction_sender, notification).await }
+                let approval_registry = approval_registry.clone();
+                async move {
+                    handle_server_notification(&interaction_sender, &approval_registry, notification)
+                        .await
+                }
             }
         },
         Some(shutdown_rx),
@@ -411,31 +434,109 @@ async fn finalize_turn(
 async fn handle_server_request(
     thread_key: &str,
     interaction_sender: &Arc<Mutex<Option<RuntimeInteractionSender>>>,
+    approval_registry: &Arc<Mutex<Option<ApprovalRequestRegistry>>>,
     request: CodexServerRequest,
 ) -> Result<()> {
-    let CodexServerRequest::RequestUserInput { request_id, params } = request;
-    emit_runtime_interaction(
-        interaction_sender,
-        RuntimeInteractionEvent::RequestUserInput(RuntimeInteractionRequest {
-            thread_key: thread_key.to_owned(),
-            request_id,
-            params,
-        }),
-    )
-    .await;
+    match request {
+        CodexServerRequest::CommandExecutionRequestApproval { request_id, params } => {
+            let Some(registry) = approval_registry.lock().await.as_ref().cloned() else {
+                return Ok(());
+            };
+            let registration = registry
+                .register_tui(
+                    thread_key.to_owned(),
+                    request_id,
+                    PendingApprovalPayload::CommandExecution {
+                        params: params.clone(),
+                    },
+                )
+                .await?;
+            emit_runtime_interaction(
+                interaction_sender,
+                RuntimeInteractionEvent::ApprovalRequested(RuntimeApprovalRequest {
+                    approval: registration.view,
+                }),
+            )
+            .await;
+        }
+        CodexServerRequest::FileChangeRequestApproval { request_id, params } => {
+            let Some(registry) = approval_registry.lock().await.as_ref().cloned() else {
+                return Ok(());
+            };
+            let registration = registry
+                .register_tui(
+                    thread_key.to_owned(),
+                    request_id,
+                    PendingApprovalPayload::FileChange {
+                        params: params.clone(),
+                    },
+                )
+                .await?;
+            emit_runtime_interaction(
+                interaction_sender,
+                RuntimeInteractionEvent::ApprovalRequested(RuntimeApprovalRequest {
+                    approval: registration.view,
+                }),
+            )
+            .await;
+        }
+        CodexServerRequest::PermissionsRequestApproval { request_id, params } => {
+            let Some(registry) = approval_registry.lock().await.as_ref().cloned() else {
+                return Ok(());
+            };
+            let registration = registry
+                .register_tui(
+                    thread_key.to_owned(),
+                    request_id,
+                    PendingApprovalPayload::Permissions {
+                        params: params.clone(),
+                    },
+                )
+                .await?;
+            emit_runtime_interaction(
+                interaction_sender,
+                RuntimeInteractionEvent::ApprovalRequested(RuntimeApprovalRequest {
+                    approval: registration.view,
+                }),
+            )
+            .await;
+        }
+        CodexServerRequest::RequestUserInput { request_id, params } => {
+            emit_runtime_interaction(
+                interaction_sender,
+                RuntimeInteractionEvent::RequestUserInput(RuntimeInteractionRequest {
+                    thread_key: thread_key.to_owned(),
+                    request_id,
+                    params,
+                }),
+            )
+            .await;
+        }
+    }
     Ok(())
 }
 
 async fn handle_server_notification(
     interaction_sender: &Arc<Mutex<Option<RuntimeInteractionSender>>>,
+    approval_registry: &Arc<Mutex<Option<ApprovalRequestRegistry>>>,
     notification: CodexServerNotification,
 ) -> Result<()> {
     let CodexServerNotification::ServerRequestResolved(resolved) = notification;
+    let cleared = if let Some(registry) = approval_registry.lock().await.as_ref().cloned() {
+        registry
+            .resolve_request_id(&resolved.thread_id, &resolved.request_id)
+            .await
+    } else {
+        None
+    };
     emit_runtime_interaction(
         interaction_sender,
         RuntimeInteractionEvent::RequestResolved(RuntimeInteractionResolved {
             thread_id: resolved.thread_id,
             request_id: resolved.request_id,
+            approval_key: cleared.as_ref().map(|value| value.approval_key.clone()),
+            approval_thread_key: cleared.as_ref().map(|value| value.thread_key.clone()),
+            approval_prompt_message_id: cleared.and_then(|value| value.prompt_message_id),
         }),
     )
     .await;

@@ -13,6 +13,7 @@ use super::media::{self, dispatch_workspace_telegram_outbox};
 use super::preview::{PreviewHeartbeat, TurnPreviewController, TypingHeartbeat};
 use super::restore;
 use super::*;
+use crate::approval::PendingApprovalPayload;
 use crate::codex::{
     COLLABORATION_MODE_UNAVAILABLE_PREFIX, CodexServerRequest, ensure_thread_run_state_idle,
 };
@@ -2316,6 +2317,85 @@ async fn execute_text_turn(
                 let interactive_thread_key = interactive_thread_key.clone();
                 async move {
                     match request {
+                        CodexServerRequest::CommandExecutionRequestApproval { request_id, params } => {
+                            let (tx, rx) = oneshot::channel();
+                            let registration = interactive_state
+                                .control
+                                .approval_requests
+                                .register_direct(
+                                    interactive_thread_key.clone(),
+                                    request_id,
+                                    PendingApprovalPayload::CommandExecution {
+                                        params: params.clone(),
+                                    },
+                                    tx,
+                                )
+                                .await?;
+                            upsert_approval_prompt(
+                                &interactive_bot,
+                                &interactive_state,
+                                chat_id,
+                                thread_id,
+                                &registration.view,
+                            )
+                            .await?;
+                            let response = rx
+                                .await
+                                .context("command approval response dropped")?;
+                            Ok(Some(response))
+                        }
+                        CodexServerRequest::FileChangeRequestApproval { request_id, params } => {
+                            let (tx, rx) = oneshot::channel();
+                            let registration = interactive_state
+                                .control
+                                .approval_requests
+                                .register_direct(
+                                    interactive_thread_key.clone(),
+                                    request_id,
+                                    PendingApprovalPayload::FileChange {
+                                        params: params.clone(),
+                                    },
+                                    tx,
+                                )
+                                .await?;
+                            upsert_approval_prompt(
+                                &interactive_bot,
+                                &interactive_state,
+                                chat_id,
+                                thread_id,
+                                &registration.view,
+                            )
+                            .await?;
+                            let response = rx.await.context("file approval response dropped")?;
+                            Ok(Some(response))
+                        }
+                        CodexServerRequest::PermissionsRequestApproval { request_id, params } => {
+                            let (tx, rx) = oneshot::channel();
+                            let registration = interactive_state
+                                .control
+                                .approval_requests
+                                .register_direct(
+                                    interactive_thread_key.clone(),
+                                    request_id,
+                                    PendingApprovalPayload::Permissions {
+                                        params: params.clone(),
+                                    },
+                                    tx,
+                                )
+                                .await?;
+                            upsert_approval_prompt(
+                                &interactive_bot,
+                                &interactive_state,
+                                chat_id,
+                                thread_id,
+                                &registration.view,
+                            )
+                            .await?;
+                            let response = rx
+                                .await
+                                .context("permissions approval response dropped")?;
+                            Ok(Some(response))
+                        }
                         CodexServerRequest::RequestUserInput { request_id, params } => {
                             if params.questions.iter().any(|question| question.is_secret) {
                                 return Ok(None);
@@ -2342,7 +2422,7 @@ async fn execute_text_turn(
                             .await?;
                             let response =
                                 rx.await.context("request_user_input response dropped")?;
-                            Ok(Some(response))
+                            Ok(Some(serde_json::to_value(response)?))
                         }
                     }
                 }
@@ -3080,6 +3160,7 @@ mod tests {
                 delivery_bus: crate::delivery_bus::DeliveryBusCoordinator::new(&root)
                     .await
                     .unwrap(),
+                approval_requests: crate::approval::ApprovalRequestRegistry::new(),
                 codex: crate::codex::CodexRunner::new(None),
                 app_server_runtime: crate::app_server_runtime::WorkspaceRuntimeManager::new(),
                 hcodex_ingress: Some(HcodexIngressManager::new(repository.clone())),
@@ -3181,6 +3262,7 @@ mod tests {
                 delivery_bus: crate::delivery_bus::DeliveryBusCoordinator::new(&root)
                     .await
                     .unwrap(),
+                approval_requests: crate::approval::ApprovalRequestRegistry::new(),
                 codex: crate::codex::CodexRunner::new(None),
                 app_server_runtime: crate::app_server_runtime::WorkspaceRuntimeManager::new(),
                 hcodex_ingress: Some(HcodexIngressManager::new(repository.clone())),

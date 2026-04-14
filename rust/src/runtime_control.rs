@@ -9,6 +9,10 @@ use tokio::net::TcpStream;
 use tokio::process::Command;
 use tracing::info;
 
+use crate::approval::{
+    ApprovalRequestRegistry, ApprovalResolution, PendingApprovalView,
+    SubmitPermissionsSubsetRequest,
+};
 use crate::app_server_runtime::{WorkspaceRuntimeManager, WorkspaceRuntimeState};
 use crate::codex::{CodexRunner, CodexWorkspace, ensure_thread_run_state_idle};
 use crate::collaboration_mode::CollaborationMode;
@@ -44,6 +48,7 @@ pub struct RuntimeControlContext {
     pub runtime: RuntimeConfig,
     pub repository: ThreadRepository,
     pub delivery_bus: DeliveryBusCoordinator,
+    pub approval_requests: ApprovalRequestRegistry,
     pub codex: CodexRunner,
     pub app_server_runtime: WorkspaceRuntimeManager,
     pub hcodex_ingress: Option<HcodexIngressManager>,
@@ -62,6 +67,7 @@ impl RuntimeControlContext {
         let seed_template_path = validate_seed_template(&runtime.runtime_template_path())?;
         Ok(Self {
             delivery_bus: DeliveryBusCoordinator::new(&runtime.data_root_path).await?,
+            approval_requests: ApprovalRequestRegistry::new(),
             codex: CodexRunner::new(runtime.codex_model.clone()),
             repository,
             app_server_runtime,
@@ -445,6 +451,72 @@ impl SharedControlHandle {
             )
             .await?;
         Ok(record)
+    }
+
+    pub async fn list_pending_approvals(&self) -> Vec<PendingApprovalView> {
+        self.ctx.approval_requests.list_views().await
+    }
+
+    pub async fn resolve_pending_approval_preset(
+        &self,
+        approval_key: &str,
+        token: &str,
+    ) -> Result<Option<ApprovalResolution>> {
+        self.ctx
+            .approval_requests
+            .resolve_preset(approval_key, token)
+            .await
+    }
+
+    pub async fn resolve_pending_permission_subset(
+        &self,
+        approval_key: &str,
+        request: SubmitPermissionsSubsetRequest,
+    ) -> Result<Option<ApprovalResolution>> {
+        self.ctx
+            .approval_requests
+            .resolve_permissions_subset(approval_key, request)
+            .await
+    }
+
+    pub async fn forward_approval_resolution(
+        &self,
+        resolution: &ApprovalResolution,
+    ) -> Result<()> {
+        if !resolution.requires_runtime_forward {
+            return Ok(());
+        }
+        let record = self
+            .ctx
+            .repository
+            .find_active_thread_by_key(&resolution.thread_key)
+            .await?
+            .context("approval thread disappeared before completion")?;
+        let binding = self
+            .ctx
+            .repository
+            .read_session_binding(&record)
+            .await?
+            .context("approval thread is missing session binding")?;
+        let workspace_path = binding
+            .workspace_cwd
+            .as_deref()
+            .map(PathBuf::from)
+            .context("approval thread is missing workspace path")?;
+        let codex_workspace = self
+            .ctx
+            .workspace_runtime_service()
+            .shared_codex_workspace(workspace_path)
+            .await?;
+        self.ctx
+            .codex
+            .respond_server_request(
+                &codex_workspace,
+                &resolution.thread_id,
+                resolution.request_id,
+                &resolution.response,
+            )
+            .await
     }
 
     pub async fn bind_workspace_record(

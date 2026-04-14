@@ -35,6 +35,7 @@ pub enum DeliveryKind {
     PreviewDraft,
     SystemNotice,
     RequestUserInputPrompt,
+    ApprovalPrompt,
     OutboxText,
     OutboxMedia,
 }
@@ -47,6 +48,7 @@ impl DeliveryKind {
             Self::PreviewDraft => "preview_draft",
             Self::SystemNotice => "system_notice",
             Self::RequestUserInputPrompt => "request_user_input_prompt",
+            Self::ApprovalPrompt => "approval_prompt",
             Self::OutboxText => "outbox_text",
             Self::OutboxMedia => "outbox_media",
         }
@@ -609,6 +611,7 @@ fn read_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeliveryRecord> {
             "preview_draft" => DeliveryKind::PreviewDraft,
             "system_notice" => DeliveryKind::SystemNotice,
             "request_user_input_prompt" => DeliveryKind::RequestUserInputPrompt,
+            "approval_prompt" => DeliveryKind::ApprovalPrompt,
             "outbox_text" => DeliveryKind::OutboxText,
             "outbox_media" => DeliveryKind::OutboxMedia,
             other => {

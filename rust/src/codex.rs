@@ -17,6 +17,10 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, info, warn};
 
+use crate::approval::{
+    CommandExecutionRequestApprovalParams, FileChangeRequestApprovalParams,
+    PermissionsRequestApprovalParams,
+};
 use crate::collaboration_mode::CollaborationMode;
 use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
 use crate::interactive::{
@@ -191,6 +195,18 @@ enum RpcMessage {
 
 #[derive(Debug, Clone)]
 pub enum CodexServerRequest {
+    CommandExecutionRequestApproval {
+        request_id: i64,
+        params: CommandExecutionRequestApprovalParams,
+    },
+    FileChangeRequestApproval {
+        request_id: i64,
+        params: FileChangeRequestApprovalParams,
+    },
+    PermissionsRequestApproval {
+        request_id: i64,
+        params: PermissionsRequestApprovalParams,
+    },
     RequestUserInput {
         request_id: i64,
         params: ToolRequestUserInputParams,
@@ -858,7 +874,10 @@ impl CodexRunner {
             on_event,
             |request| async move {
                 match request {
-                    CodexServerRequest::RequestUserInput { .. } => Ok(None),
+                    CodexServerRequest::CommandExecutionRequestApproval { .. }
+                    | CodexServerRequest::FileChangeRequestApproval { .. }
+                    | CodexServerRequest::PermissionsRequestApproval { .. }
+                    | CodexServerRequest::RequestUserInput { .. } => Ok(None),
                 }
             },
         )
@@ -879,7 +898,7 @@ impl CodexRunner {
         F: FnMut(CodexThreadEvent) -> Fut,
         Fut: Future<Output = ()>,
         H: FnMut(CodexServerRequest) -> Hf,
-        Hf: Future<Output = Result<Option<ToolRequestUserInputResponse>>>,
+        Hf: Future<Output = Result<Option<Value>>>,
     {
         let mut client = AppServerClient::start(workspace).await?;
         let (binding, selected_factory) = match existing_thread_id {
@@ -1198,7 +1217,7 @@ impl CodexRunner {
         F: FnMut(CodexThreadEvent) -> Fut,
         Fut: Future<Output = ()>,
         H: FnMut(CodexServerRequest) -> Hf,
-        Hf: Future<Output = Result<Option<ToolRequestUserInputResponse>>>,
+        Hf: Future<Output = Result<Option<Value>>>,
     {
         let result = self
             .run_with_events_and_server_requests(
@@ -1267,6 +1286,27 @@ impl CodexRunner {
         serde_json::from_value(result).context("invalid threadbridge/getThreadRunState result")
     }
 
+    pub async fn respond_server_request(
+        &self,
+        workspace: &CodexWorkspace,
+        thread_id: &str,
+        request_id: i64,
+        response: &Value,
+    ) -> Result<()> {
+        let mut client = AppServerClient::start(workspace).await?;
+        let _ = client
+            .request_simple(
+                "threadbridge/respondServerRequest",
+                json!({
+                    "threadId": thread_id,
+                    "requestId": request_id,
+                    "response": response,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn respond_request_user_input(
         &self,
         workspace: &CodexWorkspace,
@@ -1274,18 +1314,13 @@ impl CodexRunner {
         request_id: i64,
         response: &ToolRequestUserInputResponse,
     ) -> Result<()> {
-        let mut client = AppServerClient::start(workspace).await?;
-        let _ = client
-            .request_simple(
-                "threadbridge/respondRequestUserInput",
-                json!({
-                    "threadId": thread_id,
-                    "requestId": request_id,
-                    "response": serde_json::to_value(response)?,
-                }),
-            )
-            .await?;
-        Ok(())
+        self.respond_server_request(
+            workspace,
+            thread_id,
+            request_id,
+            &serde_json::to_value(response)?,
+        )
+        .await
     }
 
     fn ensure_locked_thread_id(
@@ -1316,7 +1351,7 @@ impl CodexRunner {
         F: FnMut(CodexThreadEvent) -> Fut,
         Fut: Future<Output = ()>,
         H: FnMut(CodexServerRequest) -> Hf,
-        Hf: Future<Output = Result<Option<ToolRequestUserInputResponse>>>,
+        Hf: Future<Output = Result<Option<Value>>>,
     {
         let collaboration_mode = self
             .resolve_collaboration_mode_payload(client, binding, collaboration_mode)
@@ -1426,6 +1461,58 @@ impl CodexRunner {
                     }
                 }
                 RpcMessage::Request { id, method, params } => match method.as_str() {
+                    "item/commandExecution/requestApproval" => {
+                        let params: CommandExecutionRequestApprovalParams =
+                            serde_json::from_value(params.unwrap_or(Value::Null)).with_context(
+                                || "invalid item/commandExecution/requestApproval params".to_owned(),
+                            )?;
+                        if let Some(response) = on_server_request(
+                            CodexServerRequest::CommandExecutionRequestApproval {
+                                request_id: id,
+                                params,
+                            },
+                        )
+                        .await?
+                        {
+                            client.send_server_request_response(id, &response).await?;
+                        } else {
+                            client.reject_server_request(id, &method).await?;
+                        }
+                    }
+                    "item/fileChange/requestApproval" => {
+                        let params: FileChangeRequestApprovalParams =
+                            serde_json::from_value(params.unwrap_or(Value::Null)).with_context(
+                                || "invalid item/fileChange/requestApproval params".to_owned(),
+                            )?;
+                        if let Some(response) =
+                            on_server_request(CodexServerRequest::FileChangeRequestApproval {
+                                request_id: id,
+                                params,
+                            })
+                            .await?
+                        {
+                            client.send_server_request_response(id, &response).await?;
+                        } else {
+                            client.reject_server_request(id, &method).await?;
+                        }
+                    }
+                    "item/permissions/requestApproval" => {
+                        let params: PermissionsRequestApprovalParams =
+                            serde_json::from_value(params.unwrap_or(Value::Null)).with_context(
+                                || "invalid item/permissions/requestApproval params".to_owned(),
+                            )?;
+                        if let Some(response) =
+                            on_server_request(CodexServerRequest::PermissionsRequestApproval {
+                                request_id: id,
+                                params,
+                            })
+                            .await?
+                        {
+                            client.send_server_request_response(id, &response).await?;
+                        } else {
+                            client.reject_server_request(id, &method).await?;
+                        }
+                    }
                     "item/tool/requestUserInput" => {
                         let params: ToolRequestUserInputParams = serde_json::from_value(
                             params.unwrap_or(Value::Null),
@@ -1555,16 +1642,42 @@ where
                 }
             }
             RpcMessage::Request { id, method, params } => {
-                if method == "item/tool/requestUserInput" {
-                    let params: ToolRequestUserInputParams = serde_json::from_value(
-                        params.unwrap_or(Value::Null),
-                    )
-                    .with_context(|| "invalid item/tool/requestUserInput params".to_owned())?;
-                    on_server_request(CodexServerRequest::RequestUserInput {
+                let params = params.unwrap_or(Value::Null);
+                let request = match method.as_str() {
+                    "item/commandExecution/requestApproval" => Some(
+                        CodexServerRequest::CommandExecutionRequestApproval {
+                            request_id: id,
+                            params: serde_json::from_value(params).with_context(|| {
+                                "invalid item/commandExecution/requestApproval params".to_owned()
+                            })?,
+                        },
+                    ),
+                    "item/fileChange/requestApproval" => Some(
+                        CodexServerRequest::FileChangeRequestApproval {
+                            request_id: id,
+                            params: serde_json::from_value(params).with_context(|| {
+                                "invalid item/fileChange/requestApproval params".to_owned()
+                            })?,
+                        },
+                    ),
+                    "item/permissions/requestApproval" => Some(
+                        CodexServerRequest::PermissionsRequestApproval {
+                            request_id: id,
+                            params: serde_json::from_value(params).with_context(|| {
+                                "invalid item/permissions/requestApproval params".to_owned()
+                            })?,
+                        },
+                    ),
+                    "item/tool/requestUserInput" => Some(CodexServerRequest::RequestUserInput {
                         request_id: id,
-                        params,
-                    })
-                    .await?;
+                        params: serde_json::from_value(params).with_context(|| {
+                            "invalid item/tool/requestUserInput params".to_owned()
+                        })?,
+                    }),
+                    _ => None,
+                };
+                if let Some(request) = request {
+                    on_server_request(request).await?;
                 }
             }
             RpcMessage::Response { .. } | RpcMessage::Error { .. } => {}

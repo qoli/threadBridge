@@ -449,22 +449,22 @@ where
                 .context("failed to send worker local response")?;
             Ok(LocalRequestAction::Consumed)
         }
-        "threadbridge/respondRequestUserInput" => {
+        "threadbridge/respondServerRequest" | "threadbridge/respondRequestUserInput" => {
             let thread_id = payload
                 .get("params")
                 .and_then(|params| params.get("threadId"))
                 .and_then(Value::as_str)
-                .context("threadbridge/respondRequestUserInput missing threadId")?;
+                .context("threadbridge/respondServerRequest missing threadId")?;
             let target_request_id = payload
                 .get("params")
                 .and_then(|params| params.get("requestId"))
                 .and_then(Value::as_i64)
-                .context("threadbridge/respondRequestUserInput missing requestId")?;
+                .context("threadbridge/respondServerRequest missing requestId")?;
             let response = payload
                 .get("params")
                 .and_then(|params| params.get("response"))
                 .cloned()
-                .context("threadbridge/respondRequestUserInput missing response")?;
+                .context("threadbridge/respondServerRequest missing response")?;
             let injected = {
                 let state = worker_state.lock().await;
                 let sender = state
@@ -483,9 +483,7 @@ where
                         .to_string()
                         .into(),
                     ))
-                    .map_err(|_| {
-                        anyhow!("failed to inject request_user_input response into worker session")
-                    })?;
+                    .map_err(|_| anyhow!("failed to inject server request response into worker session"))?;
                 json!({})
             };
             client_sink
@@ -610,6 +608,7 @@ fn observer_disallows_method(method: &str) -> bool {
             | "thread/resume"
             | "turn/start"
             | "turn/interrupt"
+            | "threadbridge/respondServerRequest"
             | "threadbridge/respondRequestUserInput"
             | "threadbridge/ensureHcodexIngress"
     )

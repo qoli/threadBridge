@@ -27,6 +27,9 @@ use tokio::sync::RwLock;
 use tokio::time::{Duration as TokioDuration, timeout};
 use tracing::{info, warn};
 
+use crate::approval::{
+    PendingApprovalView, PermissionGrantScope, PermissionProfile, SubmitPermissionsSubsetRequest,
+};
 use crate::config::{RuntimeConfig, load_optional_telegram_config_from_path};
 use crate::launch_at_login::{self, LaunchAtLoginView};
 use crate::local_control::{
@@ -288,6 +291,23 @@ struct OpenWorkspaceResponse {
     workspace_cwd: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "decision_type", rename_all = "snake_case")]
+enum SubmitApprovalDecisionRequest {
+    Preset { token: String },
+    PermissionsSubset {
+        permissions: PermissionProfile,
+        #[serde(default)]
+        scope: PermissionGrantScope,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct SubmitApprovalDecisionResponse {
+    ok: bool,
+    approval_key: String,
+}
+
 #[derive(Debug, Serialize)]
 struct PickAndAddWorkspaceResponse {
     ok: bool,
@@ -527,6 +547,11 @@ pub async fn spawn_management_api(runtime: RuntimeConfig) -> Result<ManagementAp
             "/api/workspaces/:thread_key/open",
             post(post_open_workspace),
         )
+        .route("/api/pending-approvals", get(get_pending_approvals))
+        .route(
+            "/api/pending-approvals/:approval_key/respond",
+            post(post_pending_approval_response),
+        )
         .route(
             "/api/workspaces/:thread_key/repair-runtime",
             post(post_repair_workspace_runtime),
@@ -712,6 +737,12 @@ async fn get_workspaces(
     Ok(Json(state.workspace_views().await?))
 }
 
+async fn get_pending_approvals(
+    State(state): State<Arc<ManagementApiState>>,
+) -> Result<Json<Vec<PendingApprovalView>>, ManagementApiError> {
+    Ok(Json(state.pending_approval_views().await?))
+}
+
 async fn post_pick_and_add_workspace(
     State(state): State<Arc<ManagementApiState>>,
 ) -> Result<Json<PickAndAddWorkspaceResponse>, ManagementApiError> {
@@ -788,6 +819,18 @@ async fn post_repair_workspace_runtime(
     Ok(Json(state.repair_workspace_runtime(&thread_key).await?))
 }
 
+async fn post_pending_approval_response(
+    State(state): State<Arc<ManagementApiState>>,
+    AxumPath(approval_key): AxumPath<String>,
+    Json(payload): Json<SubmitApprovalDecisionRequest>,
+) -> Result<Json<SubmitApprovalDecisionResponse>, ManagementApiError> {
+    Ok(Json(
+        state
+            .submit_pending_approval_response(&approval_key, payload)
+            .await?,
+    ))
+}
+
 async fn post_archive_thread(
     State(state): State<Arc<ManagementApiState>>,
     AxumPath(thread_key): AxumPath<String>,
@@ -808,6 +851,7 @@ struct ManagementEventSnapshot {
     runtime: Value,
     threads: BTreeMap<String, Value>,
     workspaces: BTreeMap<String, Value>,
+    pending_approvals: BTreeMap<String, Value>,
     archived_threads: BTreeMap<String, Value>,
     working_sessions: BTreeMap<String, Value>,
     transcripts: BTreeMap<String, Value>,
@@ -843,6 +887,10 @@ async fn build_management_event_snapshot(
         workspace.workspace_cwd.clone()
     })
     .map_err(anyhow::Error::from)?;
+    let pending_approvals = keyed_json_map(state.pending_approval_views().await?, |item| {
+        item.approval_key.clone()
+    })
+    .map_err(anyhow::Error::from)?;
     let archived_threads = keyed_json_map(state.archived_thread_views().await?, |thread| {
         thread.thread_key.clone()
     })
@@ -860,6 +908,7 @@ async fn build_management_event_snapshot(
         runtime,
         threads,
         workspaces,
+        pending_approvals,
         archived_threads,
         working_sessions,
         transcripts,
@@ -919,6 +968,12 @@ fn diff_management_event_snapshots(
         RuntimeEventKind::WorkspaceStateChanged,
         previous.map(|snapshot| &snapshot.workspaces),
         &current.workspaces,
+    );
+    push_keyed_runtime_events(
+        &mut events,
+        RuntimeEventKind::PendingApprovalChanged,
+        previous.map(|snapshot| &snapshot.pending_approvals),
+        &current.pending_approvals,
     );
     push_keyed_runtime_events(
         &mut events,
@@ -1185,6 +1240,10 @@ impl ManagementApiState {
         )
     }
 
+    async fn shared_control_optional(&self) -> Option<SharedControlHandle> {
+        self.shared_control.read().await.clone()
+    }
+
     async fn telegram_bridge(&self) -> Result<TelegramControlBridgeHandle> {
         self.telegram_bridge.read().await.clone().context(
             "Telegram bot runtime is unavailable. Reconnect Telegram polling before running this action.",
@@ -1193,6 +1252,42 @@ impl ManagementApiState {
 
     async fn restart_required_after_setup_save(&self) -> bool {
         self.runtime_owner.read().await.is_none()
+    }
+
+    async fn pending_approval_views(&self) -> Result<Vec<PendingApprovalView>> {
+        let Some(control) = self.shared_control_optional().await else {
+            return Ok(Vec::new());
+        };
+        Ok(control.list_pending_approvals().await)
+    }
+
+    async fn submit_pending_approval_response(
+        &self,
+        approval_key: &str,
+        request: SubmitApprovalDecisionRequest,
+    ) -> Result<SubmitApprovalDecisionResponse> {
+        let control = self.shared_control().await?;
+        let resolution = match request {
+            SubmitApprovalDecisionRequest::Preset { token } => {
+                control
+                    .resolve_pending_approval_preset(approval_key, &token)
+                    .await?
+            }
+            SubmitApprovalDecisionRequest::PermissionsSubset { permissions, scope } => {
+                control
+                    .resolve_pending_permission_subset(
+                        approval_key,
+                        SubmitPermissionsSubsetRequest { permissions, scope },
+                    )
+                    .await?
+            }
+        }
+        .context("approval is no longer pending")?;
+        control.forward_approval_resolution(&resolution).await?;
+        Ok(SubmitApprovalDecisionResponse {
+            ok: true,
+            approval_key: approval_key.to_owned(),
+        })
     }
 
     async fn setup_state(&self) -> Result<SetupStateView> {
@@ -3343,6 +3438,7 @@ mod tests {
                 json!({"workspace_cwd": "/tmp/workspace", "run_status": "idle", "run_phase": "idle"}),
             ))
             .collect(),
+            pending_approvals: BTreeMap::new(),
             archived_threads: BTreeMap::new(),
             working_sessions: std::iter::once((
                 "thread-1".to_owned(),
@@ -3368,6 +3464,7 @@ mod tests {
                 json!({"workspace_cwd": "/tmp/workspace", "run_status": "running", "run_phase": "turn_finalizing"}),
             ))
             .collect(),
+            pending_approvals: BTreeMap::new(),
             archived_threads: std::iter::once((
                 "thread-1".to_owned(),
                 json!({"thread_key": "thread-1", "archived_at": "2026-03-24T00:00:00.000Z"}),
@@ -3445,6 +3542,7 @@ mod tests {
             }),
             threads: BTreeMap::new(),
             workspaces: BTreeMap::new(),
+            pending_approvals: BTreeMap::new(),
             archived_threads: BTreeMap::new(),
             working_sessions: BTreeMap::new(),
             transcripts: BTreeMap::new(),
@@ -3457,6 +3555,7 @@ mod tests {
             }),
             threads: BTreeMap::new(),
             workspaces: BTreeMap::new(),
+            pending_approvals: BTreeMap::new(),
             archived_threads: BTreeMap::new(),
             working_sessions: BTreeMap::new(),
             transcripts: BTreeMap::new(),
