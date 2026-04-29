@@ -98,7 +98,7 @@
   - `app-server observer` 應只做 read-side projection
   - visible final reply composition 應由 shared helper 承接
 - 是否已在 `runtime-architecture` 記錄：
-  - 已記錄，對應 temporary exception #1
+  - 曾作為 temporary exception 記錄；目前 `runtime-architecture` 已改為記錄此例外已退出 active list
 - 收斂結果：
   - 這一項已不再是 active drift
   - observer 與 Telegram renderer / final reply helper 的直接耦合已解除

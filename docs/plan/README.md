@@ -62,7 +62,8 @@
   - current architecture 的角色與責任主文檔
   - 固定 `desktop runtime owner`、shared `runtime_control`、observer、`hcodex`、Telegram adapter、management / desktop surface 的邊界
   - 已補記 shared `DeliveryBusCoordinator` 是 `runtime_control` 子域，而不是新的 canonical actor
-  - 明確列出目前仍存在的 temporary exception，避免未來修 bug 又回到 CLI 時代的止血式修法
+  - 目前沒有 active temporary exception；已補記 observer final reply composition 例外已退出 active list
+  - 若未來再出現跨層捷徑，需在主文檔明確登記 code anchor、必要性與退出方向
 - [runtime-responsibility-drift-audit.md](runtime-control/runtime-responsibility-drift-audit.md)
   - doc kind: `plan`
   - depends_on: [runtime-architecture.md](runtime-control/runtime-architecture.md)
@@ -229,9 +230,10 @@
   - doc kind: `plan`
   - macOS public release 已不再只是純草稿：release data-root gate 已落地，repo 已新增 `scripts/release_threadbridge.sh`
   - 固定 `local_threadbridge.sh = dev helper`、`release_threadbridge.sh = shell release orchestrator`
+  - 已新增 `scripts/release_rc.sh` 作為日常 RC wrapper，並已有 `0.1.0-rc.2` replacement RC notes
   - 私有 ignored fastlane 只作 Apple bootstrap / `match` helper，不再承擔正式 notarize happy path
   - 第一輪 RC 先收斂到 GitHub draft prerelease；Homebrew tap 仍待 dedicated repo 建立後再補回
-  - 截至 2026-03-31，現行已發佈 release 版本已確認無法正常運行；這是當前 public release track 的 blocker，需先修正並以替換 RC 驗證
+  - 2026-03-31 broken release blocker 已有 root-cause 方向與 replacement RC 路徑；目前仍待 replacement artifact smoke、GitHub draft 發佈驗證與結果回寫
 - [hcodex-launch-contract.md](hcodex-local-ingress-launcher/hcodex-launch-contract.md)
   - doc kind: `plan`
   - 記錄 `hcodex` launch URL、local bridge、upstream Codex `--remote` 的實際契約

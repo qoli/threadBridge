@@ -12,10 +12,12 @@
 - `hcodex` 已是 owner-managed local entrypoint，而不是獨立 runtime owner
 - Telegram adapter 與本地 management / desktop surface 已形成兩條不同的 adapter / surface 路徑
 - Telegram 離散輸出的 claim / commit / fail 與 duplicate delivery 收斂，已回到 shared delivery registry，而不是由 mirror append 結果決定
+- observer final reply composition 已收斂到 shared `turn_completion` helper，不再直接依賴 Telegram adapter helper
 
 目前尚未完成的部分：
 
-- 少量跨層捷徑仍存在，但 `management / desktop control` 對 Telegram runtime 的硬依賴，以及 Telegram 對 `management_api` launch/view helper 的反向依賴，已在 2026-03-26 收斂完成
+- 先前列出的 active temporary exception 已收斂完成；後續若出現新的跨層捷徑，必須先回到本文件登記，而不是默認沿用舊例外
+- `management / desktop control` 對 Telegram runtime 的硬依賴，以及 Telegram 對 `management_api` launch/view helper 的反向依賴，已在 2026-03-26 收斂完成
 - `runtime_protocol` 雖已形成共享 view / event 語言，但仍未成為所有 control surface 的完整唯一 vocabulary
 - 舊 CLI / hook 時代遺留的止血式修法心智，仍可能在 bugfix 時重新長回 codebase
 
@@ -221,16 +223,17 @@
 
 ## 暫時例外
 
-下面這些是目前已知存在、但不應被複製的新常態：
+目前沒有 active temporary exception。
 
-### 1. observer 仍直接依賴 Telegram final reply 組裝
+已退出的歷史例外：
 
-- 現況：
-  - `rust/src/app_server_observer.rs` 直接使用 `telegram_runtime::final_reply::compose_visible_final_reply`
-- 問題：
-  - observer 仍碰到 adapter-specific final reply 組裝語言
-- 退出方向：
-  - 將 final text composition 收斂到 shared projection helper，或讓 adapter 在消費 observer 結果時自行組裝
+- observer 曾直接依賴 Telegram final reply 組裝；此例外已在 2026-03-27 收斂到 shared `turn_completion::compose_visible_final_reply` helper，observer 不再直接 import Telegram adapter final reply helper。
+
+如果後續出現新的跨層捷徑，應在本節明確登記：
+
+- 現況 code anchor
+- 為什麼不能立刻回到 owning role
+- 退出方向
 
 ## 與其他計劃的關係
 

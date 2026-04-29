@@ -15,15 +15,17 @@
 - repo source assets 已開始收斂到 `runtime_support/`
 - bundled app 已開始要求 seed runtime support 進入 `Contents/Resources/runtime_support/`
 - 已新增 `scripts/release_threadbridge.sh`，作為本地 operator 用的 public release pipeline 入口
+- 已新增 `scripts/release_rc.sh`，作為日常 RC wrapper，會套用 repo defaults、建立 release notes stub、並可 bootstrap local notary profile
+- 已有 `0.1.0-rc.2` replacement RC notes，記錄 runtime path resolution 修正方向
 
 目前尚未完成：
 
 - 尚未有 CI 自動化承接 public release pipeline
-- 尚未完成第一輪真實 RC 演練與 smoke 測試回寫
-- 尚未驗證完整 GitHub draft prerelease 發佈權限與實際資產內容
+- 尚未完成 replacement RC 的真實 smoke 測試結果回寫
+- 尚未驗證完整 GitHub draft prerelease 發佈權限、實際資產內容與 replacement RC 發佈狀態
 - 尚未建立 dedicated Homebrew tap repo 與 cask publish 流程
 - 尚未有 release branch / RC 退出條件 / 回滾流程的統一規範文檔
-- 截至 2026-03-31，已發布的 release 版本仍有「安裝後無法正常運行」的 blocker，尚未完成 root cause 收斂、替換 RC 與回寫驗證
+- 2026-03-31 已發布版本「安裝後無法正常運行」的 blocker 已完成 root cause 方向記錄，且已有 replacement RC 路徑；仍待用 replacement artifact 完成 smoke 驗證與發佈結果回寫
 
 ## 問題
 
@@ -42,13 +44,13 @@
 - release 所需的 codesign / notary / tap publish 前置檢查無法清楚 fail fast
 - README 與 operator runbook 會持續混淆「本地 dev helper」與「正式發佈流程」
 
-目前還有一個已確認的公開發佈 blocker：
+目前仍有一個需要追蹤到驗證閉環的公開發佈 blocker 歷史：
 
 - 截至 2026-03-31，現行已發佈的 release 版本無法正常運行
-- 這代表目前的 release pipeline 尚不能被視為「已驗證可公開交付」
-- 在找到 root cause 並用修正版 RC 完成 smoke 驗證前，不應把現行 release artifact 視為可用基線
 - 目前已確認根因不是單獨的 port conflict，而是 runtime support 與本地設定仍耦合 repo root / `cwd`
 - 既有 release app 在 repo 外啟動時，會把 `runtime_support/templates`、`runtime_support/tools`、`data/config.env.local` 解析到錯誤位置，導致啟動失敗
+- repo 已補上 bundled runtime support seed、release-mode Application Support data/runtime_support 路徑、`0.1.0-rc.2` release notes，以及 `scripts/release_rc.sh` wrapper
+- 但在 replacement RC 完成真實 smoke 驗證與發佈結果回寫前，public release pipeline 仍不能被視為已完成可公開交付閉環
 
 ## 定位
 
@@ -216,9 +218,9 @@ RC 發佈前，至少滿足：
 
 ## 建議的下一步
 
-1. 先針對截至 2026-03-31 已發佈但無法運行的 release 版本補 root cause 與 blocker runbook，確認是 packaging、signing、runtime bootstrap，或 app bundle 內容問題。
-2. 產出替換 RC，並完成最小啟動 smoke 測試與結果回寫，避免再次發佈不可運行 artifact。
-3. 再補齊 release discipline 文檔（本文件）與 `docs/plan/README.md` registry 對齊。
-4. 完成本機 Apple release bootstrap：Developer ID Application identity + `threadbridge-notary` profile。
+1. 用 `scripts/release_rc.sh 0.1.0-rc.2` 或後續 replacement version 完成真實 draft prerelease 演練，並把 artifact、notarization、GitHub draft 狀態與 smoke 結果回寫到 release notes / runbook。
+2. 對 replacement artifact 做最小 repo 外啟動 smoke：確認 `Application Support/threadBridge/{data,runtime_support}` 建立、workspace bootstrap 可讀 runtime support、且不依賴 repo root / `cwd`。
+3. 把 release branch / RC 退出條件 / blocker policy / rollback policy 從本計劃抽成可執行 runbook，避免每次 RC 都靠 operator 記憶。
+4. 完成本機 Apple release bootstrap 固化：Developer ID Application identity、`threadbridge-notary` profile、以及 local ASC key / fastlane fallback 的責任邊界。
 5. 建立 dedicated Homebrew tap repo，之後再把 cask publish 補回 `release` path。
 6. 再補 CI/workflow 或 release runbook 自動化，減少 operator 手動步驟。
