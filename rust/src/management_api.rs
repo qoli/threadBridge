@@ -1646,7 +1646,8 @@ impl ManagementApiState {
         let source = ManagedCodexSourcePreference::parse(source)?;
         write_managed_codex_source_preference(&self.runtime.data_root_path, source).await?;
         self.invalidate_managed_codex_version_cache().await;
-        let seed_template_path = validate_seed_template(&self.runtime.runtime_template_path())?;
+        let seed_template_path =
+            validate_seed_template(&self.runtime.runtime_skill_template_path())?;
         let mut synced_workspaces = 0usize;
         let mut seen = BTreeMap::new();
         for record in self.repository.list_active_threads().await? {
@@ -2990,9 +2991,12 @@ mod tests {
     }
 
     async fn install_shared_control(handle: &ManagementApiHandle, root: &PathBuf) {
-        let template_dir = root.join("runtime_support").join("templates");
+        let template_dir = root
+            .join("runtime_support")
+            .join("templates")
+            .join("threadbridge-runtime-skill");
         fs::create_dir_all(&template_dir).await.unwrap();
-        fs::write(template_dir.join("AGENTS.md"), "test template")
+        fs::write(template_dir.join("SKILL.md"), "test template")
             .await
             .unwrap();
         let control = RuntimeControlContext::new(

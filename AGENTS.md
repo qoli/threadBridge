@@ -3,7 +3,7 @@
 ## Purpose
 This root `AGENTS.md` is the maintainer guide for `threadBridge`. It documents the repo layout, runtime boundaries, workspace lifecycle, and contributor conventions for the Telegram bot and its Codex app-server integration.
 
-It is not the runtime appendix followed inside a bound project workspace. That appendix lives in [runtime_support/templates/AGENTS.md](/Volumes/Data/Github/threadBridge/runtime_support/templates/AGENTS.md) and is appended into a workspace `AGENTS.md` by the runtime bootstrap.
+It is not the runtime skill used inside a bound project workspace. That skill lives in [runtime_support/templates/threadbridge-runtime-skill/SKILL.md](/Volumes/Data/Github/threadBridge/runtime_support/templates/threadbridge-runtime-skill/SKILL.md) and is installed under `.threadbridge/skills/threadbridge-runtime/` by the runtime bootstrap.
 
 ## Project Structure & Runtime Architecture
 The runtime is organized in four layers:
@@ -23,25 +23,25 @@ Important repo areas:
 - `rust/src/app_server_observer.rs`: app-server observer that projects preview/final/process events and emits adapter-neutral interaction events.
 - `rust/src/runtime_interaction.rs`: shared interaction event types for `request_user_input`, resolved requests, and turn completion follow-up.
 - `rust/src/process_transcript.rs`: normalized final/process transcript mapping shared by management UI and Telegram preview surfaces.
-- `rust/src/workspace.rs`: workspace bootstrap logic that appends the managed runtime block into a real workspace `AGENTS.md` and installs `.threadbridge/`.
+- `rust/src/workspace.rs`: workspace bootstrap logic that installs `.threadbridge/`, workspace-local runtime skills, wrappers, and runtime state surfaces.
 - `rust/src/repository.rs`: persistent bot-local thread state for metadata, transcripts, session bindings, and image-state artifacts.
 - `rust/src/thread_state.rs`: canonical thread state resolver for `lifecycle_status`, `binding_status`, and `run_status`.
 - `rust/src/telegram_runtime/`: Telegram command handling, message flows, image handling, preview rendering, and adapter-owned interaction bridging.
-- `runtime_support/templates/AGENTS.md`: managed runtime appendix appended to real workspace `AGENTS.md` files.
+- `runtime_support/templates/threadbridge-runtime-skill/`: workspace-local runtime skill template and references installed into `.threadbridge/skills/threadbridge-runtime/`.
 - `runtime_support/tools/`: Python executors invoked from `.threadbridge/bin/*`.
 - bot-local runtime data root: debug builds default to `data/`; bundled release builds default to the platform local app-data directory under `threadBridge/data`. In debug mode, `data/main-thread/` stores the control console state and each thread maps to `data/<thread-key>/`.
 
 Treat `target/` and most bot-local runtime state as generated output.
 
-## AGENTS.md Roles
-There are two relevant `AGENTS.md` roles now:
+## Runtime Instructions
+There is one project `AGENTS.md` role and one threadBridge runtime skill role:
 
 - Root `AGENTS.md`: this maintainer guide.
-- `runtime_support/templates/AGENTS.md`: the workspace runtime appendix managed by threadBridge and appended into a real bound workspace `AGENTS.md`.
+- `runtime_support/templates/threadbridge-runtime-skill/SKILL.md`: workspace-local threadBridge runtime skill installed under `.threadbridge/skills/threadbridge-runtime/`.
 
 There is no thread-local runtime-root `<thread-key>/AGENTS.md` surface anymore.
 
-The runtime appendix block embedded later in this root file is a checked-in copy of the managed appendix for reference. Treat `runtime_support/templates/AGENTS.md` as the canonical source for appendix wording and behavior; do not hand-edit the root appendix block when maintaining the guide above it.
+Do not inject threadBridge runtime contracts into project `AGENTS.md` during ordinary workspace ensure, resume, or reconcile. Runtime capability documentation belongs in the workspace-local skill and its references. Legacy managed `AGENTS.md` cleanup belongs behind explicit runtime support rebuild/migration flows, not opportunistic reconcile.
 
 ## Workspace Lifecycle & Data Flow
 The operational flow is: desktop runtime owner -> local management API / Telegram adapter -> Codex app-server thread -> real workspace runtime -> Python tool wrappers -> Telegram reply or local management surface.
@@ -49,7 +49,7 @@ The operational flow is: desktop runtime owner -> local management API / Telegra
 From a maintainer perspective:
 
 - `threadbridge_desktop` is the supported startup path. It can start the tray and local management API before Telegram polling is configured, and it is the formal owner for runtime health and reconcile behavior.
-- `/add_workspace <absolute-path>` creates or reuses the Telegram workspace thread, installs the runtime appendix and `.threadbridge/` surface into that real workspace, and starts a fresh Codex session for that workspace through app-server.
+- `/add_workspace <absolute-path>` creates or reuses the Telegram workspace thread, installs the `.threadbridge/` surface and runtime skill into that real workspace, and starts a fresh Codex session for that workspace through app-server.
 - The local management API exposes equivalent create-bind, reconnect, archive/restore, launch, managed Codex, and runtime-owner reconcile flows for the desktop management UI.
 - Shared runtime control now owns workspace runtime ensure, session bind/new/repair, and live-TUI routing; Telegram and management surfaces call into that layer rather than each carrying their own runtime helper stack.
 - `session-binding.json` stores the mapping between the Telegram thread, the real workspace path, and the current Codex `thread.id`.
@@ -73,8 +73,8 @@ Maintain these ownership boundaries:
   - `state/images/source/`
   - `state/images/analysis/`
 - Workspace bootstrap owns:
-  - the managed block inside the real workspace `AGENTS.md`
   - `.threadbridge/bin/`
+  - `.threadbridge/skills/threadbridge-runtime/`
   - `.threadbridge/state/workspace-config.json`
   - `.threadbridge/codex/source.txt`
   - `.threadbridge/codex/build-config.json`
@@ -120,7 +120,7 @@ Add or update tests when behavior changes in:
 - runtime owner reconcile and health aggregation
 - transcript mirror and process transcript normalization
 - canonical thread/workspace state resolution
-- workspace bootstrap and appendix generation
+- workspace bootstrap and runtime skill generation
 - tool-result parsing and artifact path handling
 
 ## Commit & Pull Request Guidelines
@@ -132,174 +132,3 @@ Pull requests should explain the user-visible behavior change, note any config o
 Keep secrets in `data/config.env.local`; never commit real tokens. Start from `.env.example`, and avoid checking generated workspace files, debug logs, or image outputs into Git unless they are intentional fixtures.
 
 Treat bot-local runtime state and workspace-local generated files as potentially sensitive because they can contain prompts, transcripts, image references, provider payloads, and output metadata.
-
-<!-- threadbridge:runtime:start -->
-## threadBridge Runtime Appendix
-
-This managed block is appended by threadBridge to a real project workspace `AGENTS.md`.
-
-### Runtime Model
-
-- The current working directory is the real bound workspace, not a projected copy.
-- Preserve this workspace's own conventions and instructions. This appendix adds bot/runtime behavior; it does not replace project-local rules.
-- threadBridge tracks Telegram-thread metadata outside the workspace under its own bot-local runtime data root. In debug builds this defaults to repo-local `data/`; in release builds it defaults to the platform local app-data directory. That bot-local state is not the source of truth for project files.
-- Use the current Codex thread context as the primary continuity source. Do not rebuild long transcript replays unless a workflow explicitly requires it.
-
-### Runtime Surface
-
-- threadBridge installs wrapper commands under:
-  - `./.threadbridge/bin/build_prompt_config`
-  - `./.threadbridge/bin/generate_image`
-  - `./.threadbridge/bin/hcodex`
-  - `./.threadbridge/bin/send_telegram_media`
-- threadBridge installs local shell/runtime sync files under:
-  - `./.threadbridge/state/workspace-config.json`
-  - `./.threadbridge/state/app-server/current.json`
-  - `./.threadbridge/state/runtime-observer/current.json`
-  - `./.threadbridge/state/runtime-observer/events.jsonl`
-- threadBridge request/result files live under:
-  - `./.threadbridge/tool_requests/`
-  - `./.threadbridge/tool_results/`
-- Keep these wrapper names and paths stable.
-- `./.threadbridge/state/runtime-observer/*` is a workspace-local observation and activity surface.
-- Treat desktop owner heartbeat and management/runtime protocol views as the canonical runtime-health authority, not `runtime-observer/*` by itself.
-
-### Local Codex TUI
-
-- Run `./.threadbridge/bin/hcodex` for the managed local TUI path in this workspace.
-- `hcodex` resolves the shared workspace daemon from `./.threadbridge/state/app-server/current.json` and launches `codex --remote ...`.
-- `hcodex` also reads `./.threadbridge/state/workspace-config.json` so local launch and resume use the workspace execution mode.
-- With no extra args, `hcodex` starts a fresh local TUI session for this workspace.
-- Fresh `hcodex` sessions project mirror activity from the existing live daemon stream; standalone observer attach is reserved for explicit resume flows.
-- Use `hcodex resume <session-id>` when you explicitly want to continue an existing Codex session.
-
-### `./.threadbridge/bin/build_prompt_config`
-
-- Use this command when the current thread needs to build or refresh prompt artifacts in this workspace.
-- Before running it, decide whether the current Codex thread already has enough information.
-- If information is still missing, ask follow-up questions and do not run the tool.
-- If information is sufficient:
-  1. Write `./.threadbridge/tool_requests/build_prompt_config.request.json`.
-  2. Run `./.threadbridge/bin/build_prompt_config`.
-  3. Inspect `./.threadbridge/tool_results/build_prompt_config.result.json`.
-
-The request file must look like this:
-
-```json
-{
-  "concept": {
-    "concept_id": "c_001",
-    "title": "Short concept title",
-    "summary": "One concise paragraph for the current thread brief.",
-    "keywords": ["keyword 1", "keyword 2"],
-    "style_notes": ["style note 1", "style note 2"],
-    "constraints": ["constraint 1", "constraint 2"],
-    "source": "buildpromptconfig",
-    "updated_at": "2026-03-16T00:00:00.000Z"
-  },
-  "prompt": {
-    "concept_id": "c_001",
-    "variant_id": "primary",
-    "provider": "nanobanana",
-    "mode": "text_to_image",
-    "instruction": "A complete final instruction for Nanobanana.",
-    "image_inputs": [],
-    "generation_config": {
-      "response_modalities": ["IMAGE"],
-      "image_config": {
-        "aspect_ratio": "1:1",
-        "image_size": "1K"
-      }
-    },
-    "safety_settings": [
-      {
-        "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-      }
-    ],
-    "metadata": {
-      "source": "buildpromptconfig",
-      "timestamp": "2026-03-16T00:00:00.000Z",
-      "notes": ["Short implementation note."]
-    }
-  }
-}
-```
-
-### Prompt Guide For `instruction`
-
-- Build the final Nanobanana `instruction` from the current session and any workspace-local images.
-- For text-to-image requests, structure the instruction around:
-  - `Subject + Action + Setting + Style + Composition + Lighting + Key details + Constraints`
-- For image-edit requests, structure the instruction around:
-  - `Keep + Change + How/Style + Constraints`
-- The `instruction` must be a final provider-ready prompt, not a question to the user.
-- Do not invent diffusion-style fields or hidden model settings.
-- Only reference source images that actually exist in this workspace.
-
-### `./.threadbridge/bin/generate_image`
-
-- Use this command when the current thread needs to generate images from workspace artifacts.
-- By default, use the latest prompt config in `prompts/` unless the session clearly requires another one.
-- If the workspace still lacks a usable prompt config or required image inputs, ask follow-up questions and do not run the tool.
-- After a successful run, inspect `./.threadbridge/tool_results/generate_image.result.json`.
-
-### `./.threadbridge/bin/send_telegram_media`
-
-- Use this command only when sending text, images, or files back into the current Telegram thread would materially help the user.
-- This capability is optional. Ordinary chat replies still work without it.
-- Before running it:
-  1. Write `./.threadbridge/tool_requests/send_telegram_media.request.json`.
-  2. Keep all referenced files inside the current workspace.
-  3. Prefer concise captions and user-facing filenames that already exist on disk.
-- Each item may include an optional `surface` field. The default is `content`.
-- Telegram delivery does upload-size preflight before sending queued files.
-- Oversized `photo` items may fall back to `document`; oversized files may fall back to a warning instead of a Telegram upload.
-- After a successful run, inspect `./.threadbridge/tool_results/send_telegram_media.result.json`.
-- The bot runtime will deliver queued items from the workspace outbox after the Codex turn completes.
-
-The request file must look like this:
-
-```json
-{
-  "items": [
-    {
-      "type": "text",
-      "text": "Short user-facing message.",
-      "surface": "content"
-    },
-    {
-      "type": "photo",
-      "path": "images/generated/005/example.png",
-      "caption": "Optional caption."
-    },
-    {
-      "type": "document",
-      "path": "prompts/005_primary.json",
-      "caption": "Optional caption."
-    }
-  ]
-}
-```
-
-### Artifact Boundaries
-
-- threadBridge-owned runtime surface inside this workspace:
-  - `.threadbridge/bin/`
-  - `.threadbridge/state/workspace-config.json`
-  - `.threadbridge/state/app-server/`
-  - `.threadbridge/state/runtime-observer/`
-  - `.threadbridge/tool_requests/`
-  - `.threadbridge/tool_results/`
-- `runtime-observer/` remains a workspace-local observability/activity lane; it is not the machine-level owner authority.
-- Workspace/project artifacts produced by the tools:
-  - `concept.json`
-  - `prompts/*.json`
-  - `images/generated/`
-
-### Implementation Discipline
-
-- Keep ordinary chat behavior grounded in the current Codex thread and the actual artifacts on disk.
-- Do not overwrite or redefine the rest of the workspace `AGENTS.md`.
-- Do not reintroduce diffusion-style placeholder parameters for Nanobanana configs.
-<!-- threadbridge:runtime:end -->

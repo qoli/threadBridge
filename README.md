@@ -46,7 +46,7 @@ The current runtime is organized like this:
 4. App-server observer owns transcript and process projection; Telegram interaction UI is bridged separately.
 5. Telegram is an adapter on top of the runtime, not the runtime owner.
 6. Each managed workspace is a real local directory, not a projected copy under the bot-local data root.
-7. Each workspace gets a managed `.threadbridge/` surface plus an appended runtime block in `AGENTS.md`.
+7. Each workspace gets a managed `.threadbridge/` surface plus a workspace-local `threadbridge-runtime` skill.
 8. Codex session continuity is stored in bot-local metadata under the runtime data root, for example `data/<thread-key>/session-binding.json` in debug builds.
 
 The supported startup path is desktop-first. Any non-desktop compatibility paths are internal support surfaces, not the intended operating model.
@@ -260,11 +260,12 @@ Bot-local state lives under the runtime data root:
 
 Workspace-local managed runtime surface:
 
-- `AGENTS.md` managed appendix block
 - `.threadbridge/bin/build_prompt_config`
 - `.threadbridge/bin/generate_image`
 - `.threadbridge/bin/hcodex`
 - `.threadbridge/bin/send_telegram_media`
+- `.threadbridge/skills/threadbridge-runtime/SKILL.md`
+- `.threadbridge/skills/threadbridge-runtime/references/`
 - `.threadbridge/state/workspace-config.json`
 - `.threadbridge/state/app-server/current.json`
 - `.threadbridge/state/runtime-observer/current.json`
@@ -278,7 +279,7 @@ The real workspace is authoritative for project files. The bot-local runtime dat
 
 - plan registry and design references: [docs/plan/README.md](docs/plan/README.md)
 - maintainer guide: [AGENTS.md](AGENTS.md)
-- workspace runtime appendix source: [runtime_support/templates/AGENTS.md](runtime_support/templates/AGENTS.md)
+- workspace runtime skill source: [runtime_support/templates/threadbridge-runtime-skill/SKILL.md](runtime_support/templates/threadbridge-runtime-skill/SKILL.md)
 - slash-command reference: [docs/telegram-slash-commands.md](docs/telegram-slash-commands.md)
 - release notes index: [docs/releases/README.md](docs/releases/README.md)
 

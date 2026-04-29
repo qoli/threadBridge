@@ -62,7 +62,8 @@ async fn ensure_seed_template_exists(runtime: &RuntimeConfig) -> Result<()> {
     let seed_template = runtime
         .runtime_support_seed_root_path
         .join("templates")
-        .join("AGENTS.md");
+        .join("threadbridge-runtime-skill")
+        .join("SKILL.md");
     ensure!(
         fs::try_exists(&seed_template)
             .await
@@ -74,7 +75,7 @@ async fn ensure_seed_template_exists(runtime: &RuntimeConfig) -> Result<()> {
 }
 
 async fn ensure_active_template_exists(runtime: &RuntimeConfig) -> Result<()> {
-    let active_template = runtime.runtime_template_path();
+    let active_template = runtime.runtime_skill_template_path();
     ensure!(
         fs::try_exists(&active_template)
             .await

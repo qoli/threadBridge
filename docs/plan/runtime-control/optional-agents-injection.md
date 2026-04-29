@@ -2,14 +2,15 @@
 
 ## 目前進度
 
-這份文檔目前仍是草稿，尚未開始實作。
+這份文檔記錄已被取代的設計方向。Baseline 已改為不在普通 workspace ensure 中注入 project `AGENTS.md`，runtime capability documentation 改由 `.threadbridge/skills/threadbridge-runtime/` 承載。
 
-目前實際行為仍然是：
+目前實際行為是：
 
 - `/add_workspace` / 等價 create-bind flow 會安裝 `.threadbridge/`
-- `/add_workspace` / 等價 create-bind flow 會同步更新 workspace `AGENTS.md` 的 managed appendix
+- `/add_workspace` / 等價 create-bind flow 會安裝 workspace-local `threadbridge-runtime` skill
+- 普通 ensure / resume / reconcile 不應更新 workspace `AGENTS.md`
 
-也就是說，目前還沒有 `tools only` 或 `no injection` 模式。
+Legacy managed appendix cleanup 應由明確的 runtime support rebuild / migration 入口負責，不由普通 reconcile 順手修改 repo。
 
 ## 問題
 
@@ -176,7 +177,7 @@
 
 如果 appendix 注入變成可選，Codex 就不能永遠假設：
 
-- workspace `AGENTS.md` 一定直接內嵌 threadBridge appendix
+- workspace `AGENTS.md` 一定直接內嵌 threadBridge appendix（這個假設已被 workspace-local skill baseline 取代）
 
 所以 runtime 需要有 fallback：
 

@@ -71,7 +71,7 @@ pub struct DesktopRuntimeOwner {
 
 impl DesktopRuntimeOwner {
     pub async fn new(runtime: RuntimeConfig, telemetry: RuntimeTelemetryHandle) -> Result<Self> {
-        let seed_template_path = validate_seed_template(&runtime.runtime_template_path())?;
+        let seed_template_path = validate_seed_template(&runtime.runtime_skill_template_path())?;
         Ok(Self {
             app_server_runtime: WorkspaceRuntimeManager::new_with_data_root(
                 runtime.data_root_path.clone(),

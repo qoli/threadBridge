@@ -30,10 +30,11 @@ impl RuntimeConfig {
         self.data_root_path.join(".threadbridge/codex")
     }
 
-    pub fn runtime_template_path(&self) -> PathBuf {
+    pub fn runtime_skill_template_path(&self) -> PathBuf {
         self.runtime_support_root_path
             .join("templates")
-            .join("AGENTS.md")
+            .join("threadbridge-runtime-skill")
+            .join("SKILL.md")
     }
 
     pub fn runtime_telemetry_path(&self) -> PathBuf {

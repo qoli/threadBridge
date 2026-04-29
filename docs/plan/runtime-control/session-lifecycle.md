@@ -61,7 +61,7 @@
 
 - 綁定 workspace path
 - 建立或重用 Telegram workspace thread
-- 安裝 runtime appendix 與 `.threadbridge/`
+- 安裝 `.threadbridge/` 與 workspace-local `threadbridge-runtime` skill
 - 確保共享 app-server daemon 可用
 - 建立 fresh Codex thread
 - 將該 `thread.id` 寫進 `current_codex_thread_id`

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "threadBridge send_telegram_media request",
+  "type": "object",
+  "required": ["items"],
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "enum": ["text", "photo", "document"] },
+          "text": { "type": "string" },
+          "path": { "type": "string" },
+          "caption": { "type": "string" },
+          "surface": { "type": "string" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "type": { "const": "text" } } },
+            "then": { "required": ["text"] }
+          },
+          {
+            "if": { "properties": { "type": { "enum": ["photo", "document"] } } },
+            "then": { "required": ["path"] }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1738,11 +1738,11 @@ mod tests {
     async fn sync_local_transcript_mirrors_skips_event_log_without_local_claim() {
         let root = temp_path();
         let workspace = root.join("workspace");
-        fs::create_dir_all(root.join("runtime_support/templates"))
+        fs::create_dir_all(root.join("runtime_support/templates/threadbridge-runtime-skill"))
             .await
             .unwrap();
         fs::write(
-            root.join("runtime_support/templates/AGENTS.md"),
+            root.join("runtime_support/templates/threadbridge-runtime-skill/SKILL.md"),
             "runtime appendix\n",
         )
         .await

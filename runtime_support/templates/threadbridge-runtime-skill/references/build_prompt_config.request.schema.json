@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "threadBridge build_prompt_config request",
+  "type": "object",
+  "required": ["concept", "prompt"],
+  "additionalProperties": false,
+  "properties": {
+    "concept": {
+      "type": "object",
+      "required": ["concept_id", "title", "summary", "keywords", "style_notes", "constraints", "source", "updated_at"],
+      "additionalProperties": true,
+      "properties": {
+        "concept_id": { "type": "string" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "keywords": { "type": "array", "items": { "type": "string" } },
+        "style_notes": { "type": "array", "items": { "type": "string" } },
+        "constraints": { "type": "array", "items": { "type": "string" } },
+        "source": { "const": "buildpromptconfig" },
+        "updated_at": { "type": "string" }
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "required": ["concept_id", "variant_id", "provider", "mode", "instruction", "image_inputs", "generation_config", "safety_settings", "metadata"],
+      "additionalProperties": true,
+      "properties": {
+        "concept_id": { "type": "string" },
+        "variant_id": { "type": "string" },
+        "provider": { "const": "nanobanana" },
+        "mode": { "enum": ["text_to_image", "image_edit"] },
+        "instruction": { "type": "string", "minLength": 1 },
+        "image_inputs": { "type": "array" },
+        "generation_config": { "type": "object" },
+        "safety_settings": { "type": "array" },
+        "metadata": { "type": "object" }
+      }
+    }
+  }
+}

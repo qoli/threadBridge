@@ -29,7 +29,7 @@ use crate::interactive::{
 
 const APP_SERVER_CLIENT_NAME: &str = "threadbridge";
 const APP_SERVER_CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const WORKSPACE_READY_PROMPT: &str = "Read and follow the workspace AGENTS.md, including the threadBridge appendix if present, then reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
+const WORKSPACE_READY_PROMPT: &str = "Read and follow the workspace AGENTS.md if present, then reply with exactly READY. Do not ask follow-up questions. Do not run tools.";
 pub(crate) const COLLABORATION_MODE_UNAVAILABLE_PREFIX: &str = "collaboration mode unavailable:";
 
 #[derive(Debug, Clone, Serialize)]

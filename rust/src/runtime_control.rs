@@ -65,7 +65,7 @@ impl RuntimeControlContext {
         runtime_ownership_mode: RuntimeOwnershipMode,
     ) -> Result<Self> {
         let repository = ThreadRepository::open(&runtime.data_root_path).await?;
-        let seed_template_path = validate_seed_template(&runtime.runtime_template_path())?;
+        let seed_template_path = validate_seed_template(&runtime.runtime_skill_template_path())?;
         Ok(Self {
             delivery_bus: DeliveryBusCoordinator::new(&runtime.data_root_path).await?,
             approval_requests: ApprovalRequestRegistry::new(),

@@ -11,8 +11,11 @@ use crate::workspace_status::ensure_workspace_status_surface;
 pub const THREADBRIDGE_RUNTIME_DIR: &str = ".threadbridge";
 pub const THREADBRIDGE_RUNTIME_START: &str = "<!-- threadbridge:runtime:start -->";
 pub const THREADBRIDGE_RUNTIME_END: &str = "<!-- threadbridge:runtime:end -->";
+pub const THREADBRIDGE_RUNTIME_SKILL_DIR: &str = "skills/threadbridge-runtime";
 const MANAGED_CODEX_CACHE_BINARY: &str = ".threadbridge/codex/codex";
 const MANAGED_CODEX_SOURCE_FILE: &str = ".threadbridge/codex/source.txt";
+const THREADBRIDGE_RUNTIME_SKILL_FILE: &str = "SKILL.md";
+const THREADBRIDGE_RUNTIME_SKILL_REFERENCES_DIR: &str = "references";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CodexSourcePreference {
@@ -252,42 +255,6 @@ fn build_runtime_gitignore() -> &'static str {
     "*\n!.gitignore\n"
 }
 
-fn managed_appendix_block(appendix: &str) -> String {
-    format!(
-        "{THREADBRIDGE_RUNTIME_START}\n{}\n{THREADBRIDGE_RUNTIME_END}\n",
-        appendix.trim_end()
-    )
-}
-
-fn sync_managed_appendix(existing: &str, appendix: &str) -> String {
-    let block = managed_appendix_block(appendix);
-    if let (Some(start), Some(end)) = (
-        existing.find(THREADBRIDGE_RUNTIME_START),
-        existing.find(THREADBRIDGE_RUNTIME_END),
-    ) {
-        let suffix_end = end + THREADBRIDGE_RUNTIME_END.len();
-        let mut updated = String::new();
-        updated.push_str(existing[..start].trim_end());
-        if !updated.is_empty() {
-            updated.push_str("\n\n");
-        }
-        updated.push_str(block.trim_end());
-        let suffix = existing[suffix_end..].trim();
-        if !suffix.is_empty() {
-            updated.push_str("\n\n");
-            updated.push_str(suffix);
-        }
-        updated.push('\n');
-        return updated;
-    }
-
-    if existing.trim().is_empty() {
-        return block;
-    }
-
-    format!("{}\n\n{}", existing.trim_end(), block)
-}
-
 async fn write_text_file_if_changed(path: &Path, contents: &str) -> Result<bool> {
     match fs::read_to_string(path).await {
         Ok(existing) if existing == contents => return Ok(false),
@@ -302,6 +269,82 @@ async fn write_text_file_if_changed(path: &Path, contents: &str) -> Result<bool>
         .await
         .map_err(|error| anyhow!("failed to write {}: {}", path.display(), error))?;
     Ok(true)
+}
+
+async fn sync_workspace_runtime_skill(
+    skill_template_path: &Path,
+    runtime_root: &Path,
+    stats: &mut WorkspaceEnsureStats,
+) -> Result<()> {
+    let skill_template = fs::read_to_string(skill_template_path)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to read threadBridge runtime skill template: {}",
+                skill_template_path.display()
+            )
+        })?;
+    let skill_dir = runtime_root.join(THREADBRIDGE_RUNTIME_SKILL_DIR);
+    fs::create_dir_all(&skill_dir).await.with_context(|| {
+        format!(
+            "failed to create threadBridge runtime skill directory: {}",
+            skill_dir.display()
+        )
+    })?;
+    stats.record_write(
+        write_text_file_if_changed(
+            &skill_dir.join(THREADBRIDGE_RUNTIME_SKILL_FILE),
+            &skill_template,
+        )
+        .await?,
+    );
+
+    let Some(template_dir) = skill_template_path.parent() else {
+        return Ok(());
+    };
+    let references_src = template_dir.join(THREADBRIDGE_RUNTIME_SKILL_REFERENCES_DIR);
+    if !fs::try_exists(&references_src).await.with_context(|| {
+        format!(
+            "failed to inspect threadBridge runtime skill references: {}",
+            references_src.display()
+        )
+    })? {
+        return Ok(());
+    }
+
+    let references_dst = skill_dir.join(THREADBRIDGE_RUNTIME_SKILL_REFERENCES_DIR);
+    fs::create_dir_all(&references_dst).await.with_context(|| {
+        format!(
+            "failed to create threadBridge runtime skill references directory: {}",
+            references_dst.display()
+        )
+    })?;
+    let mut entries = fs::read_dir(&references_src).await.with_context(|| {
+        format!(
+            "failed to read threadBridge runtime skill references: {}",
+            references_src.display()
+        )
+    })?;
+    while let Some(entry) = entries.next_entry().await? {
+        let file_type = entry.file_type().await?;
+        if !file_type.is_file() {
+            return Err(anyhow!(
+                "unsupported threadBridge runtime skill reference entry: {}",
+                entry.path().display()
+            ));
+        }
+        let content = fs::read_to_string(entry.path()).await.with_context(|| {
+            format!(
+                "failed to read threadBridge runtime skill reference: {}",
+                entry.path().display()
+            )
+        })?;
+        stats.record_write(
+            write_text_file_if_changed(&references_dst.join(entry.file_name()), &content).await?,
+        );
+    }
+
+    Ok(())
 }
 
 async fn set_mode_if_changed(path: &Path, mode: u32) -> Result<bool> {
@@ -328,13 +371,13 @@ async fn set_mode_if_changed(path: &Path, mode: u32) -> Result<bool> {
 pub async fn ensure_workspace_runtime(
     runtime_support_root: &Path,
     data_root: &Path,
-    seed_template_path: &Path,
+    runtime_skill_template_path: &Path,
     workspace_path: &Path,
 ) -> Result<PathBuf> {
     ensure_workspace_runtime_with_mode_and_telemetry(
         runtime_support_root,
         data_root,
-        seed_template_path,
+        runtime_skill_template_path,
         workspace_path,
         WorkspaceRuntimeEnsureMode::ExplicitSync,
         None,
@@ -345,14 +388,14 @@ pub async fn ensure_workspace_runtime(
 pub async fn ensure_workspace_runtime_with_mode(
     runtime_support_root: &Path,
     data_root: &Path,
-    seed_template_path: &Path,
+    runtime_skill_template_path: &Path,
     workspace_path: &Path,
     ensure_mode: WorkspaceRuntimeEnsureMode,
 ) -> Result<PathBuf> {
     ensure_workspace_runtime_with_mode_and_telemetry(
         runtime_support_root,
         data_root,
-        seed_template_path,
+        runtime_skill_template_path,
         workspace_path,
         ensure_mode,
         None,
@@ -363,7 +406,7 @@ pub async fn ensure_workspace_runtime_with_mode(
 pub async fn ensure_workspace_runtime_with_mode_and_telemetry(
     runtime_support_root: &Path,
     data_root: &Path,
-    seed_template_path: &Path,
+    runtime_skill_template_path: &Path,
     workspace_path: &Path,
     ensure_mode: WorkspaceRuntimeEnsureMode,
     telemetry: Option<&RuntimeTelemetryHandle>,
@@ -382,40 +425,6 @@ pub async fn ensure_workspace_runtime_with_mode_and_telemetry(
             )
         })?;
 
-        let appendix = fs::read_to_string(seed_template_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to read threadBridge appendix template: {}",
-                    seed_template_path.display()
-                )
-            })?;
-
-        let agents_path = workspace_path.join("AGENTS.md");
-        match fs::read_to_string(&agents_path).await {
-            Ok(existing) => {
-                let updated = sync_managed_appendix(&existing, &appendix);
-                if updated != existing {
-                    stats.record_write(write_text_file_if_changed(&agents_path, &updated).await?);
-                } else {
-                    stats.record_write(false);
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let initial_content = managed_appendix_block(&appendix);
-                stats.record_write(
-                    write_text_file_if_changed(&agents_path, &initial_content).await?,
-                );
-            }
-            Err(error) => {
-                return Err(anyhow!(
-                    "failed to read {}: {}",
-                    agents_path.display(),
-                    error
-                ));
-            }
-        }
-
         let runtime_root = workspace_path.join(THREADBRIDGE_RUNTIME_DIR);
         let bin_dir = runtime_root.join("bin");
         let shell_dir = runtime_root.join("shell");
@@ -429,6 +438,8 @@ pub async fn ensure_workspace_runtime_with_mode_and_telemetry(
             write_text_file_if_changed(&runtime_root.join(".gitignore"), build_runtime_gitignore())
                 .await?,
         );
+        sync_workspace_runtime_skill(runtime_skill_template_path, &runtime_root, &mut stats)
+            .await?;
         ensure_workspace_status_surface(workspace_path).await?;
         ensure_workspace_execution_config(workspace_path).await?;
 
@@ -550,21 +561,21 @@ pub async fn ensure_workspace_runtime_with_mode_and_telemetry(
     result
 }
 
-pub fn validate_seed_template(seed_template_path: &Path) -> Result<PathBuf> {
-    if !seed_template_path.exists() {
+pub fn validate_seed_template(runtime_skill_template_path: &Path) -> Result<PathBuf> {
+    if !runtime_skill_template_path.exists() {
         anyhow::bail!(
-            "Missing template AGENTS.md: {}",
-            seed_template_path.display()
+            "Missing threadBridge runtime skill template: {}",
+            runtime_skill_template_path.display()
         );
     }
-    Ok(seed_template_path.to_path_buf())
+    Ok(runtime_skill_template_path.to_path_buf())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        THREADBRIDGE_RUNTIME_DIR, THREADBRIDGE_RUNTIME_END, THREADBRIDGE_RUNTIME_START,
-        WorkspaceRuntimeEnsureMode, ensure_workspace_runtime, ensure_workspace_runtime_with_mode,
+        THREADBRIDGE_RUNTIME_DIR, THREADBRIDGE_RUNTIME_SKILL_DIR, WorkspaceRuntimeEnsureMode,
+        ensure_workspace_runtime, ensure_workspace_runtime_with_mode,
     };
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -577,7 +588,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_runtime_appends_managed_block_without_overwriting() {
+    async fn workspace_runtime_preserves_project_agents_without_injection() {
         let root = temp_path();
         let workspace = root.join("workspace");
         let template = root.join("template.md");
@@ -604,9 +615,16 @@ mod tests {
         let content = fs::read_to_string(workspace.join("AGENTS.md"))
             .await
             .unwrap();
-        assert!(content.contains("# Project AGENTS"));
-        assert!(content.contains(THREADBRIDGE_RUNTIME_START));
-        assert!(content.contains(THREADBRIDGE_RUNTIME_END));
+        assert_eq!(content, "# Project AGENTS\n\nKeep local rules.\n");
+        let skill = fs::read_to_string(
+            workspace
+                .join(THREADBRIDGE_RUNTIME_DIR)
+                .join(THREADBRIDGE_RUNTIME_SKILL_DIR)
+                .join("SKILL.md"),
+        )
+        .await
+        .unwrap();
+        assert!(skill.contains("## threadBridge Runtime"));
     }
 
     #[tokio::test]
@@ -658,6 +676,16 @@ mod tests {
                 .unwrap()
         );
         assert!(
+            fs::try_exists(
+                workspace
+                    .join(".threadbridge")
+                    .join(THREADBRIDGE_RUNTIME_SKILL_DIR)
+                    .join("SKILL.md")
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
             fs::try_exists(workspace.join(".threadbridge/state/runtime-observer/current.json"))
                 .await
                 .unwrap()
@@ -699,6 +727,48 @@ mod tests {
         assert!(build_prompt_wrapper.contains("--config-env \"$THREADBRIDGE_CONFIG_ENV\""));
         assert!(compat_shell.contains("hcodex() {"));
         assert!(compat_shell.contains(".threadbridge/bin/hcodex"));
+    }
+
+    #[tokio::test]
+    async fn workspace_runtime_copies_runtime_skill_references() {
+        let root = temp_path();
+        let runtime_support_root = root.join("runtime_support");
+        let workspace = root.join("workspace");
+        let template_dir = root.join("templates/threadbridge-runtime-skill");
+        let template = template_dir.join("SKILL.md");
+        fs::create_dir_all(template_dir.join("references"))
+            .await
+            .unwrap();
+        fs::create_dir_all(&runtime_support_root).await.unwrap();
+        fs::write(&template, "runtime skill\n").await.unwrap();
+        fs::write(template_dir.join("references/runtime-tools.md"), "tools\n")
+            .await
+            .unwrap();
+
+        ensure_workspace_runtime(
+            &runtime_support_root,
+            Path::new("/data"),
+            &template,
+            &workspace,
+        )
+        .await
+        .unwrap();
+
+        let skill_root = workspace
+            .join(THREADBRIDGE_RUNTIME_DIR)
+            .join(THREADBRIDGE_RUNTIME_SKILL_DIR);
+        assert_eq!(
+            fs::read_to_string(skill_root.join("SKILL.md"))
+                .await
+                .unwrap(),
+            "runtime skill\n"
+        );
+        assert_eq!(
+            fs::read_to_string(skill_root.join("references/runtime-tools.md"))
+                .await
+                .unwrap(),
+            "tools\n"
+        );
     }
 
     #[tokio::test]
@@ -803,7 +873,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_runtime_creates_agents_file_when_missing() {
+    async fn workspace_runtime_does_not_create_agents_file_when_missing() {
         let root = temp_path();
         let workspace = root.join("workspace");
         let template = root.join("template.md");
@@ -819,12 +889,16 @@ mod tests {
         .await
         .unwrap();
 
-        let content = fs::read_to_string(workspace.join("AGENTS.md"))
-            .await
-            .unwrap();
-        assert!(content.contains(THREADBRIDGE_RUNTIME_START));
+        assert!(!fs::try_exists(workspace.join("AGENTS.md")).await.unwrap());
+        let content = fs::read_to_string(
+            workspace
+                .join(THREADBRIDGE_RUNTIME_DIR)
+                .join(THREADBRIDGE_RUNTIME_SKILL_DIR)
+                .join("SKILL.md"),
+        )
+        .await
+        .unwrap();
         assert!(content.contains("runtime appendix"));
-        assert!(content.contains(THREADBRIDGE_RUNTIME_END));
     }
 
     #[tokio::test]
