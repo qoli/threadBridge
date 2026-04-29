@@ -103,6 +103,8 @@ server notification 例子：
 - `thread/read`
 - `thread/resume`
 - `turn/start`
+- `turn/steer`
+- `turn/interrupt`
 
 相關代碼：
 
@@ -178,6 +180,40 @@ server notification 例子：
 - `threadBridge` 現在也會在需要時帶 `collaborationMode`
   - direct Telegram thread 會使用 sticky thread-local mode
   - local `hcodex` ingress 也會追蹤 `turn/start.collaborationMode`
+
+### `turn/steer`
+
+用途：
+
+- 對正在執行中的 active regular turn 追加 user input
+- 不建立新的 turn
+- 不期待新的 `turn/started` notification
+
+上游最低版本：
+
+- 正式版本：Codex `rust-v0.99.0`
+- alpha 版本：`rust-v0.99.0-alpha.4`
+
+`threadBridge` 若支援 Telegram running input policy 的 `steer` 模式，應送出的 params 形狀：
+
+```json
+{
+  "threadId": "thr_123",
+  "input": [
+    { "type": "text", "text": "Actually focus on failing tests first." }
+  ],
+  "expectedTurnId": "turn_456"
+}
+```
+
+重要限制：
+
+- `expectedTurnId` 必須匹配 backend active turn id
+- 沒有 active turn 會失敗
+- review / manual compaction / user shell 等 non-steerable turn 會失敗
+- `turn/steer` 不接受 `turn/start` 的 context overrides，例如 model、cwd、sandbox / permission profile、collaboration mode
+- 回傳的 `turnId` 是接受該 input 的既有 active turn id
+- Telegram / delivery / transcript surface 不應把 steer 當成新的 turn lifecycle
 
 ## 對 `threadBridge` 重要的 notification
 

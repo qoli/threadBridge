@@ -52,6 +52,7 @@
 目前新增記錄的近期方向是：
 
 - Telegram 已能透過正式 control action 設定 execution mode / collaboration mode，並觸發 interrupt current turn
+- Telegram running input policy 已新增設計方向：`reject | queue | steer`，其中 `steer` 應對應 app-server `turn/steer`，而不是新的 turn 或隱性 queue
 - Codex 工作模型設定仍待補成正式 control action，而不是停留在 Telegram-only command flag 想像
 - 後續重點已轉為讓更多 control / interaction capability 共享同一套 protocol-facing naming 與 public stream 邊界
 
@@ -426,6 +427,8 @@ v1 至少定義：
 - `set_workspace_execution_mode`
 - `set_workspace_codex_model`
 - `set_thread_collaboration_mode`
+- `set_thread_running_input_policy`
+- `append_to_running_turn`
 - `launch_local_session`
 - `interrupt_running_turn`
 - `adopt_tui_session`
@@ -453,6 +456,17 @@ v1 至少定義：
   - v1 合法值：
     - `default`
     - `plan`
+- `set_thread_running_input_policy`
+  - 這是 Telegram ingress policy 的 protocol-facing 名稱；不應和 workspace execution mode 混用
+  - v1 合法值：
+    - `reject`
+    - `queue`
+    - `steer`
+- `append_to_running_turn`
+  - 對應 app-server `turn/steer`
+  - 只在 backend busy truth 顯示目前 active turn 可 steer 時成立
+  - 不新增 turn、不產生 `turn/started`
+  - 若輸入應成為下一個任務，應使用 queue policy 或明確的新 turn 流程，而不是此 action
 - `interrupt_running_turn`
   - 近期即 `/stop` 這條能力
   - 若之後補 `STOP 並插入發言` / `序列發言`，應視為新的 control action 或新的 action mode，而不是回頭改寫 `/stop` 的語義
@@ -525,6 +539,12 @@ v1 至少定義：
 - `set_thread_collaboration_mode(mode=default)`
   - HTTP: `POST /api/threads/:thread_key/actions` + `{ "action": "set_thread_collaboration_mode", "mode": "default" }`
   - Telegram: `/default_mode`
+- `set_thread_running_input_policy(policy=reject|queue|steer)`
+  - HTTP: `POST /api/threads/:thread_key/actions` + `{ "action": "set_thread_running_input_policy", "policy": "reject|queue|steer" }`
+  - Telegram: `/set_running_input_policy reject|queue|steer`
+- `append_to_running_turn`
+  - HTTP: `POST /api/threads/:thread_key/actions` + `{ "action": "append_to_running_turn", "text": "..." }`
+  - Telegram: running text when `running_input_policy=steer`
 - `interrupt_running_turn`
   - HTTP: `POST /api/threads/:thread_key/actions` + `{ "action": "interrupt_running_turn" }`
   - Telegram: `/stop`
