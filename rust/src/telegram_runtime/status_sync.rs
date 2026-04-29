@@ -1118,8 +1118,8 @@ mod tests {
     };
     use crate::config::{AppConfig, RuntimeConfig, TelegramConfig};
     use crate::repository::{
-        SessionBinding, ThreadMetadata, ThreadRecord, ThreadRepository, ThreadScope, ThreadStatus,
-        TranscriptMirrorOrigin, TranscriptMirrorRole,
+        RunningInputPolicy, SessionBinding, ThreadMetadata, ThreadRecord, ThreadRepository,
+        ThreadScope, ThreadStatus, TranscriptMirrorOrigin, TranscriptMirrorRole,
     };
     use crate::telegram_runtime::AppState;
     use crate::telegram_runtime::preview::TurnPreviewController;
@@ -1181,6 +1181,7 @@ mod tests {
                 last_codex_turn_at: None,
                 message_thread_id: Some(123),
                 previous_message_thread_ids: Vec::new(),
+                running_input_policy: RunningInputPolicy::default(),
                 scope: ThreadScope::Thread,
                 session_broken,
                 session_broken_at: None,

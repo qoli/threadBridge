@@ -214,7 +214,9 @@ fn restore(
 mod tests {
     use super::{BindingMutation, ThreadTransition, apply_transition};
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
-    use crate::repository::{SessionBinding, ThreadMetadata, ThreadScope, ThreadStatus};
+    use crate::repository::{
+        RunningInputPolicy, SessionBinding, ThreadMetadata, ThreadScope, ThreadStatus,
+    };
 
     fn metadata() -> ThreadMetadata {
         ThreadMetadata {
@@ -224,6 +226,7 @@ mod tests {
             last_codex_turn_at: None,
             message_thread_id: Some(7),
             previous_message_thread_ids: Vec::new(),
+            running_input_policy: RunningInputPolicy::default(),
             scope: ThreadScope::Thread,
             session_broken: false,
             session_broken_at: None,

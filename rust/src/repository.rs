@@ -39,6 +39,30 @@ pub enum ThreadStatus {
     Archived,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunningInputPolicy {
+    Reject,
+    Queue,
+    Steer,
+}
+
+impl Default for RunningInputPolicy {
+    fn default() -> Self {
+        Self::Reject
+    }
+}
+
+impl RunningInputPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reject => "reject",
+            Self::Queue => "queue",
+            Self::Steer => "steer",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadMetadata {
     pub archived_at: Option<String>,
@@ -47,6 +71,8 @@ pub struct ThreadMetadata {
     pub last_codex_turn_at: Option<String>,
     pub message_thread_id: Option<i32>,
     pub previous_message_thread_ids: Vec<i32>,
+    #[serde(default)]
+    pub running_input_policy: RunningInputPolicy,
     pub scope: ThreadScope,
     pub session_broken: bool,
     pub session_broken_at: Option<String>,
@@ -175,6 +201,15 @@ pub struct RecentCodexSessionEntry {
     pub updated_at: String,
     #[serde(default)]
     pub execution_mode: Option<ExecutionMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingRunningInput {
+    pub queued_at: String,
+    pub session_id: String,
+    pub text: String,
+    pub user_id: Option<i64>,
+    pub source_message_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -658,6 +693,54 @@ impl ThreadRepository {
 
     pub async fn clear_pending_image_batch(&self, record: &ThreadRecord) -> Result<()> {
         let path = record.state_path().join("pending-image-batch.json");
+        if fs::try_exists(&path).await? {
+            fs::remove_file(path).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn read_pending_running_input(
+        &self,
+        record: &ThreadRecord,
+    ) -> Result<Option<PendingRunningInput>> {
+        let path = record.state_path().join("pending-running-input.json");
+        if !fs::try_exists(&path).await? {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_str(
+            &fs::read_to_string(&path).await?,
+        )?))
+    }
+
+    pub async fn save_pending_running_input(
+        &self,
+        record: &ThreadRecord,
+        session_id: impl Into<String>,
+        text: impl Into<String>,
+        user_id: Option<i64>,
+        source_message_id: Option<i32>,
+    ) -> Result<PendingRunningInput> {
+        let pending = PendingRunningInput {
+            queued_at: now_iso(),
+            session_id: session_id.into(),
+            text: text.into(),
+            user_id,
+            source_message_id,
+        };
+        let path = record.state_path().join("pending-running-input.json");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(
+            path,
+            format!("{}\n", serde_json::to_string_pretty(&pending)?),
+        )
+        .await?;
+        Ok(pending)
+    }
+
+    pub async fn clear_pending_running_input(&self, record: &ThreadRecord) -> Result<()> {
+        let path = record.state_path().join("pending-running-input.json");
         if fs::try_exists(&path).await? {
             fs::remove_file(path).await?;
         }
@@ -1245,6 +1328,21 @@ impl ThreadRepository {
         Ok(record)
     }
 
+    pub async fn update_running_input_policy(
+        &self,
+        record: ThreadRecord,
+        policy: RunningInputPolicy,
+    ) -> Result<ThreadRecord> {
+        self.update_metadata(ThreadRecord {
+            metadata: ThreadMetadata {
+                running_input_policy: policy,
+                ..record.metadata.clone()
+            },
+            ..record
+        })
+        .await
+    }
+
     pub async fn update_metadata(&self, record: ThreadRecord) -> Result<ThreadRecord> {
         let updated = ThreadMetadata {
             updated_at: now_iso(),
@@ -1312,6 +1410,7 @@ impl ThreadRepository {
             last_codex_turn_at: None,
             message_thread_id,
             previous_message_thread_ids: Vec::new(),
+            running_input_policy: RunningInputPolicy::default(),
             scope: scope.clone(),
             session_broken: false,
             session_broken_at: None,
@@ -1506,9 +1605,9 @@ pub struct AppendPendingImageInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppendPendingImageInput, LogDirection, SessionBinding, ThreadLogEntry, ThreadRepository,
-        ThreadScope, ThreadStatus, TranscriptMirrorDelivery, TranscriptMirrorEntry,
-        TranscriptMirrorOrigin, TranscriptMirrorPhase, TranscriptMirrorRole,
+        AppendPendingImageInput, LogDirection, RunningInputPolicy, SessionBinding, ThreadLogEntry,
+        ThreadRepository, ThreadScope, ThreadStatus, TranscriptMirrorDelivery,
+        TranscriptMirrorEntry, TranscriptMirrorOrigin, TranscriptMirrorPhase, TranscriptMirrorRole,
     };
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
     use crate::image_artifacts::ImageAnalysisArtifact;
@@ -1549,6 +1648,57 @@ mod tests {
             !fs::try_exists(record.folder_path.join("AGENTS.md"))
                 .await
                 .unwrap()
+        );
+        assert_eq!(
+            record.metadata.running_input_policy,
+            RunningInputPolicy::Reject
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_running_input_roundtrip_uses_state_directory() {
+        let root = temp_path();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+        let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
+
+        let pending = repo
+            .save_pending_running_input(&record, "thr_123", "queued text", Some(42), Some(99))
+            .await
+            .unwrap();
+        assert_eq!(pending.session_id, "thr_123");
+        assert_eq!(pending.text, "queued text");
+
+        let path = record.state_path().join("pending-running-input.json");
+        assert!(fs::try_exists(&path).await.unwrap());
+        assert_eq!(
+            repo.read_pending_running_input(&record)
+                .await
+                .unwrap()
+                .unwrap(),
+            pending
+        );
+
+        repo.clear_pending_running_input(&record).await.unwrap();
+        assert!(!fs::try_exists(path).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn update_running_input_policy_persists_metadata() {
+        let root = temp_path();
+        let repo = ThreadRepository::open(&root).await.unwrap();
+        let record = repo.create_thread(1, 7, "Title".to_owned()).await.unwrap();
+
+        let updated = repo
+            .update_running_input_policy(record, RunningInputPolicy::Steer)
+            .await
+            .unwrap();
+        let reloaded = repo
+            .get_thread(1, updated.metadata.message_thread_id.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            reloaded.metadata.running_input_policy,
+            RunningInputPolicy::Steer
         );
     }
 

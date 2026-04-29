@@ -125,6 +125,7 @@
 - `title`
 - `chat_id`
 - `message_thread_id`
+- `running_input_policy`
 - `workspace_cwd`
 - `workspace_execution_mode`
 - `current_execution_mode`
@@ -185,6 +186,7 @@
 - `workspace_cwd`
 - `title`
 - `thread_key`
+- `running_input_policy`
 - `workspace_execution_mode`
 - `current_execution_mode`
 - `current_approval_policy`

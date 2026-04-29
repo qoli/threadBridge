@@ -40,6 +40,8 @@
 | `/launch_local_session` | `new`、`continue_current` 或 `resume <session_id>` | 為這個 workspace 啟動受管的本地 `hcodex` 終端 session。 | 用法：`/launch_local_session new`、`/launch_local_session continue_current`、`/launch_local_session resume <session_id>`。 |
 | `/get_workspace_execution_mode` | 無 | 查看 workspace 級別的 execution mode。 | 會顯示 workspace mode、目前 session mode、approval policy、sandbox policy 與 drift 狀態。 |
 | `/set_workspace_execution_mode` | `full_auto` / `full-auto` / `yolo` | 修改 workspace 級別的 execution mode。 | 用法：`/set_workspace_execution_mode full_auto` 或 `/set_workspace_execution_mode yolo`。 |
+| `/get_running_input_policy` | 無 | 查看 running 狀態下普通文字訊息的處理策略。 | 顯示目前策略，以及可用的 `reject`、`queue`、`steer` 選項。 |
+| `/set_running_input_policy` | `reject`、`queue` 或 `steer` | 修改 running 狀態下普通文字訊息的處理策略。 | `reject` 會拒絕插入；`queue` 會排到目前 turn 完成後執行；`steer` 會透過 Codex `turn/steer` 注入目前 turn。 |
 | `/sessions` | 無 | 列出此 workspace 最近的 working sessions。 | 顯示 session id、是否為 current、run status、record 數、tool 數、是否有 final reply，以及來源。 |
 | `/session_log` | `<session_id>` | 顯示某個 working session 的最近記錄。 | 用法：`/session_log <session_id>`。 |
 | `/stop` | 無 | 中斷目前 workspace 正在執行中的 turn。 | 只有在存在活動 turn 且 turn id 可用時才能生效。 |

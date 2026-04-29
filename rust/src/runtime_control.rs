@@ -9,11 +9,11 @@ use tokio::net::TcpStream;
 use tokio::process::Command;
 use tracing::info;
 
+use crate::app_server_runtime::{WorkspaceRuntimeManager, WorkspaceRuntimeState};
 use crate::approval::{
     ApprovalRequestRegistry, ApprovalResolution, PendingApprovalView,
     SubmitPermissionsSubsetRequest,
 };
-use crate::app_server_runtime::{WorkspaceRuntimeManager, WorkspaceRuntimeState};
 use crate::codex::{CodexRunner, CodexWorkspace, ensure_thread_run_state_idle};
 use crate::collaboration_mode::CollaborationMode;
 use crate::config::RuntimeConfig;
@@ -23,7 +23,8 @@ use crate::execution_mode::{
 };
 use crate::hcodex_ingress::HcodexIngressManager;
 use crate::repository::{
-    LogDirection, RecentCodexSessionEntry, SessionBinding, ThreadRecord, ThreadRepository,
+    LogDirection, RecentCodexSessionEntry, RunningInputPolicy, SessionBinding, ThreadRecord,
+    ThreadRepository,
 };
 use crate::runtime_protocol::{
     InterruptRunningTurnState, LaunchLocalSessionTarget, RuntimeControlAction,
@@ -479,10 +480,7 @@ impl SharedControlHandle {
             .await
     }
 
-    pub async fn forward_approval_resolution(
-        &self,
-        resolution: &ApprovalResolution,
-    ) -> Result<()> {
+    pub async fn forward_approval_resolution(&self, resolution: &ApprovalResolution) -> Result<()> {
         if !resolution.requires_runtime_forward {
             return Ok(());
         }
@@ -681,6 +679,34 @@ impl SharedControlHandle {
                     "Action `{}` changed collaboration mode to `{}` from {origin}.",
                     RuntimeControlAction::SetThreadCollaborationMode.as_str(),
                     mode.as_str()
+                ),
+                None,
+            )
+            .await?;
+        Ok(updated)
+    }
+
+    pub async fn set_thread_running_input_policy(
+        &self,
+        thread_key: &str,
+        policy: RunningInputPolicy,
+        origin: &str,
+    ) -> Result<ThreadRecord> {
+        let record = self.active_thread(thread_key).await?;
+        let updated = self
+            .ctx
+            .repository
+            .update_running_input_policy(record, policy)
+            .await?;
+        self.ctx
+            .repository
+            .append_log(
+                &updated,
+                LogDirection::System,
+                format!(
+                    "Action `{}` changed running input policy to `{}` from {origin}.",
+                    RuntimeControlAction::SetThreadRunningInputPolicy.as_str(),
+                    policy.as_str()
                 ),
                 None,
             )
@@ -912,6 +938,19 @@ impl SharedControlHandle {
                     result: RuntimeControlActionResult::SetThreadCollaborationMode {
                         thread_key: updated.metadata.thread_key,
                         mode,
+                    },
+                })
+            }
+            RuntimeControlActionRequest::SetThreadRunningInputPolicy { policy } => {
+                let updated = self
+                    .set_thread_running_input_policy(thread_key, policy, origin)
+                    .await?;
+                Ok(RuntimeControlActionEnvelope {
+                    ok: true,
+                    action,
+                    result: RuntimeControlActionResult::SetThreadRunningInputPolicy {
+                        thread_key: updated.metadata.thread_key,
+                        policy,
                     },
                 })
             }

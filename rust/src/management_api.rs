@@ -294,7 +294,9 @@ struct OpenWorkspaceResponse {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "decision_type", rename_all = "snake_case")]
 enum SubmitApprovalDecisionRequest {
-    Preset { token: String },
+    Preset {
+        token: String,
+    },
     PermissionsSubset {
         permissions: PermissionProfile,
         #[serde(default)]
@@ -2301,6 +2303,7 @@ impl ManagementApiState {
                 }
                 RuntimeControlActionResult::SetWorkspaceExecutionMode { .. }
                 | RuntimeControlActionResult::LaunchLocalSession { .. }
+                | RuntimeControlActionResult::SetThreadRunningInputPolicy { .. }
                 | RuntimeControlActionResult::InterruptRunningTurn { .. } => {}
             }
         }

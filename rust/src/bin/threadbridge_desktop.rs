@@ -1086,7 +1086,7 @@ mod macos_app {
         use std::time::Duration;
         use threadbridge_rust::execution_mode::ExecutionMode;
         use threadbridge_rust::management_api::ManagedWorkspaceView;
-        use threadbridge_rust::repository::RecentCodexSessionEntry;
+        use threadbridge_rust::repository::{RecentCodexSessionEntry, RunningInputPolicy};
         use tokio::time::Instant;
 
         #[test]
@@ -1124,6 +1124,7 @@ mod macos_app {
                 workspace_cwd: "/tmp/threadBridge/workspaces/Trackly".to_owned(),
                 title: Some("查看 TracklyReborn 專案結構".to_owned()),
                 thread_key: Some("thread-1".to_owned()),
+                running_input_policy: Some(RunningInputPolicy::Reject),
                 workspace_execution_mode: ExecutionMode::Yolo,
                 current_execution_mode: Some(ExecutionMode::FullAuto),
                 current_approval_policy: Some("on-request".to_owned()),
@@ -1210,6 +1211,7 @@ mod macos_app {
                     workspace_cwd: "/tmp/threadBridge/workspaces/Trackly".to_owned(),
                     title: Some("Trackly".to_owned()),
                     thread_key: Some("thread-1".to_owned()),
+                    running_input_policy: Some(RunningInputPolicy::Reject),
                     workspace_execution_mode: ExecutionMode::FullAuto,
                     current_execution_mode: Some(ExecutionMode::FullAuto),
                     current_approval_policy: Some("on-request".to_owned()),
@@ -1255,6 +1257,7 @@ mod macos_app {
                 workspace_cwd: "/tmp/threadBridge/workspaces/Trackly".to_owned(),
                 title: Some("Trackly".to_owned()),
                 thread_key: Some("thread-1".to_owned()),
+                running_input_policy: Some(RunningInputPolicy::Reject),
                 workspace_execution_mode: ExecutionMode::FullAuto,
                 current_execution_mode: Some(ExecutionMode::FullAuto),
                 current_approval_policy: Some("on-request".to_owned()),

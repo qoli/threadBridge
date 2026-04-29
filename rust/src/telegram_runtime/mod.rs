@@ -10,10 +10,10 @@ use teloxide::types::{
 use teloxide::utils::command::BotCommands;
 use tracing::{error, info, warn};
 
+use crate::app_server_runtime::WorkspaceRuntimeManager;
 use crate::approval::{
     ApprovalResolution, PendingApprovalKind, PendingApprovalPayload, PendingApprovalView,
 };
-use crate::app_server_runtime::WorkspaceRuntimeManager;
 pub(crate) use crate::codex::{CodexInputItem, CodexRunner, CodexThreadEvent};
 use crate::collaboration_mode::CollaborationMode;
 pub(crate) use crate::config::AppConfig;
@@ -31,8 +31,9 @@ use crate::interactive::{
     InteractiveRequestRegistry, ToolRequestUserInputQuestion,
 };
 pub(crate) use crate::repository::{
-    AppendPendingImageInput, LogDirection, SessionBinding, ThreadRecord, ThreadRepository,
-    TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin, TranscriptMirrorRole,
+    AppendPendingImageInput, LogDirection, RunningInputPolicy, SessionBinding, ThreadRecord,
+    ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin,
+    TranscriptMirrorRole,
 };
 use crate::runtime_control::{RuntimeControlContext, RuntimeOwnershipMode};
 use crate::telemetry::RuntimeTelemetryHandle;
@@ -93,6 +94,10 @@ pub enum Command {
     PlanMode,
     #[command(description = "Set this workspace thread to Default collaboration mode")]
     DefaultMode,
+    #[command(description = "Show how this workspace handles text while a turn is running")]
+    GetRunningInputPolicy,
+    #[command(description = "Set how this workspace handles text while a turn is running")]
+    SetRunningInputPolicy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -490,11 +495,7 @@ async fn run_callback_query(bot: &Bot, query: &CallbackQuery, state: &AppState) 
         CALLBACK_APPROVAL_DECISION => {
             let approval_key = parts.get(1).copied().unwrap_or_default();
             let token = parts.get(2).copied().unwrap_or_default();
-            let Some(approval) = state
-                .control
-                .approval_requests
-                .get_view(approval_key)
-                .await
+            let Some(approval) = state.control.approval_requests.get_view(approval_key).await
             else {
                 bot.answer_callback_query(query.id.clone())
                     .text("Approval is no longer pending.")
@@ -808,13 +809,25 @@ pub(crate) fn render_pending_approval_prompt(approval: &PendingApprovalView) -> 
     )];
     match &approval.payload {
         PendingApprovalPayload::CommandExecution { params } => {
-            if let Some(reason) = params.reason.as_deref().filter(|value| !value.trim().is_empty()) {
+            if let Some(reason) = params
+                .reason
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
                 lines.push(format!("Reason: {reason}"));
             }
-            if let Some(command) = params.command.as_deref().filter(|value| !value.trim().is_empty()) {
+            if let Some(command) = params
+                .command
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
                 lines.push(format!("Command: `{command}`"));
             }
-            if let Some(cwd) = params.cwd.as_deref().filter(|value| !value.trim().is_empty()) {
+            if let Some(cwd) = params
+                .cwd
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
                 lines.push(format!("cwd: `{cwd}`"));
             }
             if params.additional_permissions.is_some() {
@@ -825,7 +838,11 @@ pub(crate) fn render_pending_approval_prompt(approval: &PendingApprovalView) -> 
             }
         }
         PendingApprovalPayload::FileChange { params } => {
-            if let Some(reason) = params.reason.as_deref().filter(|value| !value.trim().is_empty()) {
+            if let Some(reason) = params
+                .reason
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
                 lines.push(format!("Reason: {reason}"));
             }
             if let Some(root) = params
@@ -837,7 +854,11 @@ pub(crate) fn render_pending_approval_prompt(approval: &PendingApprovalView) -> 
             }
         }
         PendingApprovalPayload::Permissions { params } => {
-            if let Some(reason) = params.reason.as_deref().filter(|value| !value.trim().is_empty()) {
+            if let Some(reason) = params
+                .reason
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
                 lines.push(format!("Reason: {reason}"));
             }
             lines.push(render_permission_profile_summary(&params.permissions));
@@ -994,7 +1015,7 @@ pub(crate) async fn upsert_approval_prompt(
 pub(crate) fn request_user_input_markup(
     request_id: i64,
     question: &ToolRequestUserInputQuestion,
-    ) -> Option<InlineKeyboardMarkup> {
+) -> Option<InlineKeyboardMarkup> {
     let options = question.options.as_ref()?;
     let mut buttons = options
         .iter()
@@ -1365,7 +1386,15 @@ pub(crate) async fn resolve_busy_gate_state(
 pub(crate) fn command_argument_text<'a>(msg: &'a Message, command_name: &str) -> Option<&'a str> {
     let text = msg.text()?.trim();
     let prefix = format!("/{command_name}");
-    let remainder = text.strip_prefix(&prefix)?.trim();
+    let remainder = text.strip_prefix(&prefix)?;
+    let remainder = match remainder.strip_prefix('@') {
+        Some(after_at) => after_at
+            .find(char::is_whitespace)
+            .map(|index| &after_at[index..])
+            .unwrap_or_default(),
+        None => remainder,
+    }
+    .trim();
     if remainder.is_empty() {
         None
     } else {
@@ -1624,6 +1653,16 @@ mod tests {
         assert!(commands.iter().any(|command| command == "/stop"));
         assert!(commands.iter().any(|command| command == "/plan_mode"));
         assert!(commands.iter().any(|command| command == "/default_mode"));
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == "/get_running_input_policy")
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == "/set_running_input_policy")
+        );
         assert!(
             commands
                 .iter()
@@ -2011,6 +2050,14 @@ mod tests {
             Command::parse("/default_mode", ""),
             Ok(Command::DefaultMode)
         ));
+        assert!(matches!(
+            Command::parse("/get_running_input_policy", ""),
+            Ok(Command::GetRunningInputPolicy)
+        ));
+        assert!(matches!(
+            Command::parse("/set_running_input_policy", ""),
+            Ok(Command::SetRunningInputPolicy)
+        ));
         assert!(Command::parse("/new", "").is_err());
         assert!(Command::parse("/generate_title", "").is_err());
         assert!(Command::parse("/reconnect_codex", "").is_err());
@@ -2043,6 +2090,10 @@ mod tests {
         assert!(matches!(
             parse_fallback_command_text("/stop@threadbridge_bot"),
             Some(Command::Stop)
+        ));
+        assert!(matches!(
+            parse_fallback_command_text("/set_running_input_policy@threadbridge_bot steer"),
+            Some(Command::SetRunningInputPolicy)
         ));
         assert_eq!(
             normalize_slash_command_text("/add_workspace@threadbridge_bot /tmp/workspace"),

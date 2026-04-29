@@ -333,7 +333,9 @@ mod tests {
     };
     use crate::app_server_runtime::WorkspaceRuntimeState;
     use crate::codex::{BackendThreadRunState, CodexRunner, CodexWorkspace};
-    use crate::repository::{SessionBinding, ThreadMetadata, ThreadScope, ThreadStatus};
+    use crate::repository::{
+        RunningInputPolicy, SessionBinding, ThreadMetadata, ThreadScope, ThreadStatus,
+    };
     use crate::workspace_status::{
         SessionActivitySource, SessionCurrentStatus, WorkspaceStatusPhase,
         default_local_tui_session_claim, ensure_workspace_status_surface, read_session_status,
@@ -358,6 +360,7 @@ mod tests {
             last_codex_turn_at: None,
             message_thread_id: Some(100),
             previous_message_thread_ids: Vec::new(),
+            running_input_policy: RunningInputPolicy::default(),
             scope: ThreadScope::Thread,
             session_broken,
             session_broken_at: None,

@@ -521,6 +521,22 @@ fn parse_execution_mode_argument(argument: &str) -> Option<ExecutionMode> {
     }
 }
 
+fn parse_running_input_policy_argument(argument: &str) -> Option<RunningInputPolicy> {
+    match argument.trim().to_ascii_lowercase().as_str() {
+        "reject" => Some(RunningInputPolicy::Reject),
+        "queue" => Some(RunningInputPolicy::Queue),
+        "steer" => Some(RunningInputPolicy::Steer),
+        _ => None,
+    }
+}
+
+fn render_running_input_policy_view(record: &ThreadRecord) -> String {
+    format!(
+        "running_input_policy: `{}`\n\nUse `/set_running_input_policy reject`, `/set_running_input_policy queue`, or `/set_running_input_policy steer`.",
+        record.metadata.running_input_policy.as_str()
+    )
+}
+
 async fn build_workspace_launch_config(
     state: &AppState,
     record: &ThreadRecord,
@@ -1481,6 +1497,91 @@ pub(crate) async fn run_command(
             )
             .await?;
         }
+        Command::GetRunningInputPolicy => {
+            if is_control_chat(msg) {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    None,
+                    "Use /get_running_input_policy inside a workspace thread.",
+                )
+                .await?;
+                return Ok(());
+            }
+            let thread_id = msg.thread_id.context("thread message missing thread id")?;
+            let record = state
+                .repository
+                .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
+                .await?;
+            send_scoped_message(
+                bot,
+                msg.chat.id,
+                Some(thread_id),
+                render_running_input_policy_view(&record),
+            )
+            .await?;
+        }
+        Command::SetRunningInputPolicy => {
+            if is_control_chat(msg) {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    None,
+                    "Use /set_running_input_policy inside a workspace thread.",
+                )
+                .await?;
+                return Ok(());
+            }
+            let thread_id = msg.thread_id.context("thread message missing thread id")?;
+            let record = state
+                .repository
+                .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
+                .await?;
+            let Some(argument) = command_argument_text(msg, "set_running_input_policy") else {
+                send_scoped_warning_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    render_running_input_policy_view(&record),
+                )
+                .await?;
+                return Ok(());
+            };
+            let Some(policy) = parse_running_input_policy_argument(argument) else {
+                send_scoped_warning_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    render_running_input_policy_view(&record),
+                )
+                .await?;
+                return Ok(());
+            };
+            let result = execute_runtime_control_action(
+                state,
+                &record.metadata.thread_key,
+                RuntimeControlActionRequest::SetThreadRunningInputPolicy { policy },
+                "telegram /set_running_input_policy",
+            )
+            .await?;
+            let RuntimeControlActionResult::SetThreadRunningInputPolicy { policy, .. } =
+                result.result
+            else {
+                return Err(anyhow::anyhow!(
+                    "unexpected runtime control result for set_thread_running_input_policy"
+                ));
+            };
+            send_scoped_message(
+                bot,
+                msg.chat.id,
+                Some(thread_id),
+                format!(
+                    "Running input policy is now `{}`.\n\nUse `/set_running_input_policy reject`, `/set_running_input_policy queue`, or `/set_running_input_policy steer`.",
+                    policy.as_str()
+                ),
+            )
+            .await?;
+        }
         Command::Sessions => {
             if is_control_chat(msg) {
                 send_scoped_message(
@@ -2008,13 +2109,63 @@ pub(crate) async fn run_text_message(
         .ensure_bound_workspace_runtime(session.as_ref().context("missing binding")?)
         .await?;
     if let Some(busy) = blocking_snapshot.as_ref() {
-        send_scoped_message(
-            bot,
-            msg.chat.id,
-            Some(thread_id),
-            busy_copy::busy_text_message(busy, false),
-        )
-        .await?;
+        match record.metadata.running_input_policy {
+            RunningInputPolicy::Reject => {
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    busy_copy::busy_text_message(busy, false),
+                )
+                .await?;
+            }
+            RunningInputPolicy::Queue => {
+                let pending = state
+                    .repository
+                    .save_pending_running_input(
+                        &record,
+                        &busy.session_id,
+                        text,
+                        msg.from.as_ref().map(|user| user.id.0 as i64),
+                        Some(msg.id.0),
+                    )
+                    .await?;
+                state
+                    .repository
+                    .append_log(
+                        &record,
+                        LogDirection::System,
+                        format!(
+                            "Queued running input for session `{}` from Telegram message `{}`.",
+                            pending.session_id,
+                            pending.source_message_id.unwrap_or_default()
+                        ),
+                        None,
+                    )
+                    .await?;
+                send_scoped_message(
+                    bot,
+                    msg.chat.id,
+                    Some(thread_id),
+                    "Queued this message as the next turn for this workspace. A newer queued message will replace it.",
+                )
+                .await?;
+            }
+            RunningInputPolicy::Steer => {
+                steer_running_turn_from_text(
+                    bot,
+                    state,
+                    &record,
+                    session.as_ref().context("missing binding")?,
+                    msg.chat.id,
+                    thread_id,
+                    busy,
+                    text,
+                    msg.from.as_ref().map(|user| user.id.0 as i64),
+                )
+                .await?;
+            }
+        }
         return Ok(());
     }
     info!(
@@ -2052,14 +2203,111 @@ pub(crate) async fn run_text_message(
         }
     }
 
+    start_text_turn_from_input(
+        bot,
+        state,
+        record,
+        msg.chat.id,
+        thread_id,
+        workspace_path,
+        existing_thread_id,
+        text,
+        msg.from.as_ref().map(|user| user.id.0 as i64),
+        Some(msg.id.0),
+        collaboration_mode_for_session(session.as_ref()),
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn steer_running_turn_from_text(
+    bot: &Bot,
+    state: &AppState,
+    record: &ThreadRecord,
+    binding: &SessionBinding,
+    chat_id: ChatId,
+    thread_id: ThreadId,
+    busy: &SessionCurrentStatus,
+    text: &str,
+    user_id: Option<i64>,
+) -> Result<()> {
+    let turn_id = busy.turn_id.as_deref().context(format!(
+        "A turn is running for session `{}`, but its turn id is unavailable, so it cannot be steered yet.",
+        busy.session_id
+    ))?;
+    let workspace_path = workspace_path_from_binding(binding)?;
+    let codex_workspace = state
+        .control
+        .workspace_runtime_service()
+        .shared_codex_workspace(workspace_path)
+        .await?;
+    let accepted_turn_id = state
+        .codex
+        .steer_turn(
+            &codex_workspace,
+            &busy.session_id,
+            turn_id,
+            vec![CodexInputItem::Text {
+                text: text.to_owned(),
+            }],
+        )
+        .await?;
+    state
+        .repository
+        .append_log(record, LogDirection::User, text.to_owned(), user_id)
+        .await?;
+    let _ = state
+        .repository
+        .append_transcript_mirror(
+            record,
+            &TranscriptMirrorEntry {
+                timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                session_id: busy.session_id.clone(),
+                turn_id: Some(accepted_turn_id.clone()),
+                origin: TranscriptMirrorOrigin::Telegram,
+                role: TranscriptMirrorRole::User,
+                delivery: TranscriptMirrorDelivery::Final,
+                phase: None,
+                text: text.to_owned(),
+            },
+        )
+        .await?;
     state
         .repository
         .append_log(
-            &record,
-            LogDirection::User,
-            text.to_owned(),
-            msg.from.as_ref().map(|user| user.id.0 as i64),
+            record,
+            LogDirection::System,
+            format!("Steered running turn `{accepted_turn_id}` from Telegram text."),
+            None,
         )
+        .await?;
+    send_scoped_message(
+        bot,
+        chat_id,
+        Some(thread_id),
+        format!("Added this message to the running turn `{accepted_turn_id}`."),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn start_text_turn_from_input(
+    bot: &Bot,
+    state: &AppState,
+    record: ThreadRecord,
+    chat_id: ChatId,
+    thread_id: ThreadId,
+    workspace_path: PathBuf,
+    existing_thread_id: &str,
+    text: &str,
+    user_id: Option<i64>,
+    source_message_id: Option<i32>,
+    collaboration_mode: CollaborationMode,
+) -> Result<()> {
+    state
+        .repository
+        .append_log(&record, LogDirection::User, text.to_owned(), user_id)
         .await?;
     let _ = state
         .repository
@@ -2098,6 +2346,7 @@ pub(crate) async fn run_text_message(
             owner: "telegram_thread_flow".to_owned(),
         })
         .await?;
+    let transport_ref = source_message_id.map(|id| format!("message:{id}"));
     let _ = state
         .control
         .delivery_bus
@@ -2109,7 +2358,7 @@ pub(crate) async fn run_text_message(
             channel: DeliveryChannel::Telegram,
             kind: DeliveryKind::UserEcho,
             executor: "telegram_inbound".to_owned(),
-            transport_ref: Some(format!("message:{}", msg.id.0)),
+            transport_ref: transport_ref.clone(),
             report_json: serde_json::json!({
                 "targets": [{
                     "type": "telegram_inbound_message",
@@ -2119,7 +2368,7 @@ pub(crate) async fn run_text_message(
                         thread_id_to_i32(thread_id)
                     ),
                     "state": "committed",
-                    "transport_ref": format!("message:{}", msg.id.0),
+                    "transport_ref": transport_ref,
                 }]
             }),
         })
@@ -2137,15 +2386,14 @@ pub(crate) async fn run_text_message(
         bot.clone(),
         state.clone(),
         record,
-        msg.chat.id,
+        chat_id,
         thread_id,
         workspace_path,
         existing_thread_id.to_owned(),
         user_echo_key,
         text.to_owned(),
-        collaboration_mode_for_session(session.as_ref()),
+        collaboration_mode,
     );
-
     Ok(())
 }
 
@@ -2317,7 +2565,10 @@ async fn execute_text_turn(
                 let interactive_thread_key = interactive_thread_key.clone();
                 async move {
                     match request {
-                        CodexServerRequest::CommandExecutionRequestApproval { request_id, params } => {
+                        CodexServerRequest::CommandExecutionRequestApproval {
+                            request_id,
+                            params,
+                        } => {
                             let (tx, rx) = oneshot::channel();
                             let registration = interactive_state
                                 .control
@@ -2339,9 +2590,7 @@ async fn execute_text_turn(
                                 &registration.view,
                             )
                             .await?;
-                            let response = rx
-                                .await
-                                .context("command approval response dropped")?;
+                            let response = rx.await.context("command approval response dropped")?;
                             Ok(Some(response))
                         }
                         CodexServerRequest::FileChangeRequestApproval { request_id, params } => {
@@ -2391,9 +2640,8 @@ async fn execute_text_turn(
                                 &registration.view,
                             )
                             .await?;
-                            let response = rx
-                                .await
-                                .context("permissions approval response dropped")?;
+                            let response =
+                                rx.await.context("permissions approval response dropped")?;
                             Ok(Some(response))
                         }
                         CodexServerRequest::RequestUserInput { request_id, params } => {
@@ -2780,7 +3028,102 @@ async fn execute_text_turn(
         }
     }
 
+    launch_pending_running_input_if_ready(
+        bot,
+        state,
+        record,
+        chat_id,
+        thread_id,
+        existing_thread_id,
+    )
+    .await?;
+
     Ok(())
+}
+
+async fn launch_pending_running_input_if_ready(
+    bot: &Bot,
+    state: &AppState,
+    record: ThreadRecord,
+    chat_id: ChatId,
+    thread_id: ThreadId,
+    completed_session_id: &str,
+) -> Result<()> {
+    let Some(pending) = state.repository.read_pending_running_input(&record).await? else {
+        return Ok(());
+    };
+    if pending.session_id != completed_session_id {
+        state
+            .repository
+            .clear_pending_running_input(&record)
+            .await?;
+        state
+            .repository
+            .append_log(
+                &record,
+                LogDirection::System,
+                format!(
+                    "Discarded queued running input for stale session `{}` after `{}` completed.",
+                    pending.session_id, completed_session_id
+                ),
+                None,
+            )
+            .await?;
+        return Ok(());
+    }
+    let binding = state.repository.read_session_binding(&record).await?;
+    let (resolved_state, blocking_snapshot) =
+        resolve_busy_gate_state(state, &record, binding.as_ref()).await?;
+    if blocking_snapshot.is_some() {
+        return Ok(());
+    }
+    let Some(existing_thread_id) = usable_bound_session_id(resolved_state, binding.as_ref()) else {
+        state
+            .repository
+            .clear_pending_running_input(&record)
+            .await?;
+        state
+            .repository
+            .append_log(
+                &record,
+                LogDirection::System,
+                "Discarded queued running input because the workspace no longer has a usable session.",
+                None,
+            )
+            .await?;
+        return Ok(());
+    };
+    let binding = binding.as_ref().context("missing binding")?;
+    let workspace_path = state
+        .control
+        .workspace_runtime_service()
+        .ensure_bound_workspace_runtime(binding)
+        .await?;
+    state
+        .repository
+        .clear_pending_running_input(&record)
+        .await?;
+    send_scoped_message(
+        bot,
+        chat_id,
+        Some(thread_id),
+        "Starting the queued message now.",
+    )
+    .await?;
+    start_text_turn_from_input(
+        bot,
+        state,
+        record,
+        chat_id,
+        thread_id,
+        workspace_path,
+        existing_thread_id,
+        &pending.text,
+        pending.user_id,
+        pending.source_message_id,
+        collaboration_mode_for_session(Some(binding)),
+    )
+    .await
 }
 
 pub(crate) async fn launch_plan_implementation_turn(

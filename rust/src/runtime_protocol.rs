@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::collaboration_mode::CollaborationMode;
 use crate::execution_mode::{ExecutionMode, workspace_execution_mode};
 use crate::repository::{
-    RecentCodexSessionEntry, SessionBinding, ThreadRecord, ThreadRepository,
+    RecentCodexSessionEntry, RunningInputPolicy, SessionBinding, ThreadRecord, ThreadRepository,
     TranscriptMirrorDelivery, TranscriptMirrorEntry, TranscriptMirrorOrigin, TranscriptMirrorPhase,
     TranscriptMirrorRole,
 };
@@ -79,6 +79,7 @@ pub enum RuntimeControlAction {
     LaunchLocalSession,
     SetWorkspaceExecutionMode,
     SetThreadCollaborationMode,
+    SetThreadRunningInputPolicy,
     InterruptRunningTurn,
     AdoptTuiSession,
     RejectTuiSession,
@@ -95,6 +96,7 @@ impl RuntimeControlAction {
             Self::LaunchLocalSession => "launch_local_session",
             Self::SetWorkspaceExecutionMode => "set_workspace_execution_mode",
             Self::SetThreadCollaborationMode => "set_thread_collaboration_mode",
+            Self::SetThreadRunningInputPolicy => "set_thread_running_input_policy",
             Self::InterruptRunningTurn => "interrupt_running_turn",
             Self::AdoptTuiSession => "adopt_tui_session",
             Self::RejectTuiSession => "reject_tui_session",
@@ -155,6 +157,9 @@ pub enum RuntimeControlActionRequest {
     SetThreadCollaborationMode {
         mode: CollaborationMode,
     },
+    SetThreadRunningInputPolicy {
+        policy: RunningInputPolicy,
+    },
     InterruptRunningTurn,
 }
 
@@ -169,6 +174,9 @@ impl RuntimeControlActionRequest {
             Self::LaunchLocalSession { .. } => RuntimeControlAction::LaunchLocalSession,
             Self::SetThreadCollaborationMode { .. } => {
                 RuntimeControlAction::SetThreadCollaborationMode
+            }
+            Self::SetThreadRunningInputPolicy { .. } => {
+                RuntimeControlAction::SetThreadRunningInputPolicy
             }
             Self::InterruptRunningTurn => RuntimeControlAction::InterruptRunningTurn,
         }
@@ -229,6 +237,10 @@ pub enum RuntimeControlActionResult {
     SetThreadCollaborationMode {
         thread_key: String,
         mode: CollaborationMode,
+    },
+    SetThreadRunningInputPolicy {
+        thread_key: String,
+        policy: RunningInputPolicy,
     },
     InterruptRunningTurn {
         thread_key: String,
@@ -319,6 +331,7 @@ pub struct ManagedWorkspaceView {
     pub workspace_cwd: String,
     pub title: Option<String>,
     pub thread_key: Option<String>,
+    pub running_input_policy: Option<RunningInputPolicy>,
     pub workspace_execution_mode: ExecutionMode,
     pub current_execution_mode: Option<ExecutionMode>,
     pub current_approval_policy: Option<String>,
@@ -354,6 +367,7 @@ pub struct ThreadStateView {
     pub title: Option<String>,
     pub chat_id: i64,
     pub message_thread_id: Option<i32>,
+    pub running_input_policy: RunningInputPolicy,
     pub workspace_cwd: Option<String>,
     pub workspace_execution_mode: Option<ExecutionMode>,
     pub current_execution_mode: Option<ExecutionMode>,
@@ -634,6 +648,7 @@ pub async fn build_workspace_views(
             workspace_cwd: workspace_cwd.clone(),
             title: record.metadata.title.clone(),
             thread_key: Some(record.metadata.thread_key.clone()),
+            running_input_policy: Some(record.metadata.running_input_policy),
             workspace_execution_mode,
             current_execution_mode: binding.current_execution_mode,
             current_approval_policy: binding.current_approval_policy.clone(),
@@ -743,6 +758,7 @@ pub async fn build_thread_views(repository: &ThreadRepository) -> Result<Vec<Thr
             title: metadata.title,
             chat_id: metadata.chat_id,
             message_thread_id: metadata.message_thread_id,
+            running_input_policy: metadata.running_input_policy,
             workspace_cwd,
             workspace_execution_mode,
             current_execution_mode: binding
@@ -1456,7 +1472,7 @@ pub fn workspace_mode_drift(
 mod tests {
     use super::{
         LaunchLocalSessionTarget, ManagedCodexBuildDefaultsView, ManagedCodexView,
-        ManagedWorkspaceView, RuntimeControlActionRequest, ThreadStateView,
+        ManagedWorkspaceView, RunningInputPolicy, RuntimeControlActionRequest, ThreadStateView,
         WorkingSessionRecordKind, WorkspaceRuntimeHealth, aggregate_runtime_readiness,
         build_runtime_health, build_thread_views, build_working_session_mirror_debug_events,
         build_working_session_records, build_working_session_summaries, build_workspace_views,
@@ -1590,6 +1606,7 @@ mod tests {
             title: Some("Workspace".to_owned()),
             chat_id: 1,
             message_thread_id: Some(42),
+            running_input_policy: RunningInputPolicy::Steer,
             workspace_cwd: Some("/tmp/workspace".to_owned()),
             workspace_execution_mode: Some(ExecutionMode::FullAuto),
             current_execution_mode: Some(ExecutionMode::FullAuto),
@@ -1617,6 +1634,7 @@ mod tests {
         assert_eq!(value["binding_status"], "healthy");
         assert_eq!(value["run_status"], "idle");
         assert_eq!(value["run_phase"], "idle");
+        assert_eq!(value["running_input_policy"], "steer");
         assert_eq!(value["current_collaboration_mode"], "plan");
         assert_eq!(value["last_verified_at"], "2026-03-24T09:00:00.000Z");
         assert_eq!(value["last_codex_turn_at"], "2026-03-24T10:00:00.000Z");
@@ -1630,6 +1648,7 @@ mod tests {
             workspace_cwd: "/tmp/workspace".to_owned(),
             title: Some("Workspace".to_owned()),
             thread_key: Some("thread-1".to_owned()),
+            running_input_policy: Some(RunningInputPolicy::Queue),
             workspace_execution_mode: ExecutionMode::FullAuto,
             current_execution_mode: Some(ExecutionMode::Yolo),
             current_approval_policy: Some("on-request".to_owned()),
@@ -1664,6 +1683,7 @@ mod tests {
         assert_eq!(value["run_status"], "idle");
         assert_eq!(value["run_phase"], "idle");
         assert_eq!(value["interrupt_status"], "unavailable");
+        assert_eq!(value["running_input_policy"], "queue");
         assert_eq!(value["current_collaboration_mode"], "default");
         assert_eq!(value["current_codex_thread_id"], "thr_current");
         assert_eq!(value["hcodex_ingress_status"], "running");
@@ -1867,6 +1887,7 @@ mod tests {
                 workspace_cwd: "/tmp/a".to_owned(),
                 title: Some("A".to_owned()),
                 thread_key: Some("thread-a".to_owned()),
+                running_input_policy: Some(RunningInputPolicy::Reject),
                 workspace_execution_mode: ExecutionMode::FullAuto,
                 current_execution_mode: Some(ExecutionMode::FullAuto),
                 current_approval_policy: None,
@@ -1899,6 +1920,7 @@ mod tests {
                 workspace_cwd: "/tmp/b".to_owned(),
                 title: Some("B".to_owned()),
                 thread_key: Some("thread-b".to_owned()),
+                running_input_policy: Some(RunningInputPolicy::Steer),
                 workspace_execution_mode: ExecutionMode::Yolo,
                 current_execution_mode: Some(ExecutionMode::Yolo),
                 current_approval_policy: None,

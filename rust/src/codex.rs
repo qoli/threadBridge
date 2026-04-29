@@ -630,6 +630,18 @@ impl CodexRunner {
         })
     }
 
+    fn build_turn_steer_params(
+        thread_id: &str,
+        expected_turn_id: &str,
+        input: &[CodexInputItem],
+    ) -> Value {
+        json!({
+            "threadId": thread_id,
+            "input": Self::normalize_input(input),
+            "expectedTurnId": expected_turn_id,
+        })
+    }
+
     fn parse_binding(result: &Value) -> Result<CodexThreadBinding> {
         let thread = result
             .get("thread")
@@ -1269,6 +1281,27 @@ impl CodexRunner {
         Ok(())
     }
 
+    pub async fn steer_turn(
+        &self,
+        workspace: &CodexWorkspace,
+        thread_id: &str,
+        expected_turn_id: &str,
+        input: Vec<CodexInputItem>,
+    ) -> Result<String> {
+        let mut client = AppServerClient::start(workspace).await?;
+        let result = client
+            .request_simple(
+                "turn/steer",
+                Self::build_turn_steer_params(thread_id, expected_turn_id, &input),
+            )
+            .await?;
+        result
+            .get("turnId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .context("turn/steer result missing turnId")
+    }
+
     pub async fn read_thread_run_state(
         &self,
         workspace: &CodexWorkspace,
@@ -1462,17 +1495,18 @@ impl CodexRunner {
                 }
                 RpcMessage::Request { id, method, params } => match method.as_str() {
                     "item/commandExecution/requestApproval" => {
-                        let params: CommandExecutionRequestApprovalParams =
-                            serde_json::from_value(params.unwrap_or(Value::Null)).with_context(
-                                || "invalid item/commandExecution/requestApproval params".to_owned(),
-                            )?;
-                        if let Some(response) = on_server_request(
-                            CodexServerRequest::CommandExecutionRequestApproval {
+                        let params: CommandExecutionRequestApprovalParams = serde_json::from_value(
+                            params.unwrap_or(Value::Null),
+                        )
+                        .with_context(|| {
+                            "invalid item/commandExecution/requestApproval params".to_owned()
+                        })?;
+                        if let Some(response) =
+                            on_server_request(CodexServerRequest::CommandExecutionRequestApproval {
                                 request_id: id,
                                 params,
-                            },
-                        )
-                        .await?
+                            })
+                            .await?
                         {
                             client.send_server_request_response(id, &response).await?;
                         } else {
@@ -1644,30 +1678,30 @@ where
             RpcMessage::Request { id, method, params } => {
                 let params = params.unwrap_or(Value::Null);
                 let request = match method.as_str() {
-                    "item/commandExecution/requestApproval" => Some(
-                        CodexServerRequest::CommandExecutionRequestApproval {
+                    "item/commandExecution/requestApproval" => {
+                        Some(CodexServerRequest::CommandExecutionRequestApproval {
                             request_id: id,
                             params: serde_json::from_value(params).with_context(|| {
                                 "invalid item/commandExecution/requestApproval params".to_owned()
                             })?,
-                        },
-                    ),
-                    "item/fileChange/requestApproval" => Some(
-                        CodexServerRequest::FileChangeRequestApproval {
+                        })
+                    }
+                    "item/fileChange/requestApproval" => {
+                        Some(CodexServerRequest::FileChangeRequestApproval {
                             request_id: id,
                             params: serde_json::from_value(params).with_context(|| {
                                 "invalid item/fileChange/requestApproval params".to_owned()
                             })?,
-                        },
-                    ),
-                    "item/permissions/requestApproval" => Some(
-                        CodexServerRequest::PermissionsRequestApproval {
+                        })
+                    }
+                    "item/permissions/requestApproval" => {
+                        Some(CodexServerRequest::PermissionsRequestApproval {
                             request_id: id,
                             params: serde_json::from_value(params).with_context(|| {
                                 "invalid item/permissions/requestApproval params".to_owned()
                             })?,
-                        },
-                    ),
+                        })
+                    }
                     "item/tool/requestUserInput" => Some(CodexServerRequest::RequestUserInput {
                         request_id: id,
                         params: serde_json::from_value(params).with_context(|| {
@@ -1962,6 +1996,21 @@ mod tests {
         let params = CodexRunner::build_turn_interrupt_params("thr_123", "turn_456");
         assert_eq!(params["threadId"], "thr_123");
         assert_eq!(params["turnId"], "turn_456");
+    }
+
+    #[test]
+    fn turn_steer_params_include_thread_expected_turn_and_input() {
+        let params = CodexRunner::build_turn_steer_params(
+            "thr_123",
+            "turn_456",
+            &[CodexInputItem::Text {
+                text: "extra context".to_owned(),
+            }],
+        );
+        assert_eq!(params["threadId"], "thr_123");
+        assert_eq!(params["expectedTurnId"], "turn_456");
+        assert_eq!(params["input"][0]["type"], "text");
+        assert_eq!(params["input"][0]["text"], "extra context");
     }
 
     #[test]
