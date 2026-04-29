@@ -281,6 +281,10 @@
 - [optional-agents-injection.md](runtime-control/optional-agents-injection.md)
   - doc kind: `plan`
   - appendix 注入可選化草稿
+- [runtime-support-installer-refactor.md](runtime-control/runtime-support-installer-refactor.md)
+  - doc kind: `plan`
+  - runtime support seed、workspace installer、legacy migration 邊界重整草稿
+  - 目標是把 runtime artifact layout 變更限制在 manifest / installer，而不是牽動 owner、control、management 與 adapter 層
 - [runtime-transport-abstraction.md](runtime-control/runtime-transport-abstraction.md)
   - doc kind: `plan`
   - core runtime / adapter 抽象化草稿
