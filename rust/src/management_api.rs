@@ -33,7 +33,8 @@ use crate::approval::{
 use crate::config::{RuntimeConfig, load_optional_telegram_config_from_path};
 use crate::launch_at_login::{self, LaunchAtLoginView};
 use crate::local_control::{
-    TelegramControlBridgeHandle, ensure_archived_thread, resolve_workspace_argument,
+    ResetThreadTitlesReport, TelegramControlBridgeHandle, ensure_archived_thread,
+    resolve_workspace_argument,
 };
 use crate::repository::{ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry};
 use crate::runtime_control::{
@@ -206,6 +207,10 @@ impl ManagementApiHandle {
 
     pub async fn purge_all_archived_threads(&self) -> Result<usize> {
         self.state.purge_all_archived_threads().await
+    }
+
+    pub async fn reset_workspace_thread_titles(&self) -> Result<ResetThreadTitlesReport> {
+        self.state.reset_workspace_thread_titles().await
     }
 }
 
@@ -2147,6 +2152,13 @@ impl ManagementApiState {
 
     async fn purge_all_archived_threads(&self) -> Result<usize> {
         self.repository.purge_all_archived_threads().await
+    }
+
+    async fn reset_workspace_thread_titles(&self) -> Result<ResetThreadTitlesReport> {
+        self.telegram_bridge()
+            .await?
+            .reset_workspace_thread_titles()
+            .await
     }
 
     #[allow(dead_code)]

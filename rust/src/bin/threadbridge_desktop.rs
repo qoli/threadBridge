@@ -96,6 +96,7 @@ mod macos_app {
         OpenSettings,
         OpenAddWorkspace,
         PurgeArchivedThreads,
+        ResetThreadTitles,
         RebuildRuntimeSupport,
         Quit,
         LaunchNew { thread_key: String },
@@ -605,6 +606,8 @@ mod macos_app {
             purge_archived.id().clone(),
             TrayAction::PurgeArchivedThreads,
         );
+        let reset_titles = MenuItem::new("Reset Thread Titles", true, None);
+        actions.insert(reset_titles.id().clone(), TrayAction::ResetThreadTitles);
         if supports_runtime_support_rebuild {
             let rebuild_support = MenuItem::new("Rebuild Runtime Support", true, None);
             actions.insert(
@@ -617,7 +620,13 @@ mod macos_app {
         actions.insert(settings.id().clone(), TrayAction::OpenSettings);
         let quit = MenuItem::new("Quit", true, None);
         actions.insert(quit.id().clone(), TrayAction::Quit);
-        menu.append_items(&[&add_workspace, &purge_archived, &settings, &quit])?;
+        menu.append_items(&[
+            &add_workspace,
+            &purge_archived,
+            &reset_titles,
+            &settings,
+            &quit,
+        ])?;
         Ok(MenuModel { menu, actions })
     }
 
@@ -734,6 +743,27 @@ mod macos_app {
                             "threadBridge",
                             &format!(
                                 "Purge archived threads failed: {}",
+                                short_error_message(&error)
+                            ),
+                        );
+                    }
+                    let _ = proxy.send_event(UserEvent::Refresh);
+                });
+            }
+            TrayAction::ResetThreadTitles => {
+                let runtime = app.runtime.clone();
+                let management_api = app.management_api.clone();
+                let proxy = proxy.clone();
+                runtime.spawn(async move {
+                    if let Err(error) = reset_thread_titles_via_tray(&management_api).await {
+                        warn!(
+                            event = "desktop_runtime.reset_thread_titles.failed",
+                            error = %error
+                        );
+                        let _ = show_desktop_notification(
+                            "threadBridge",
+                            &format!(
+                                "Reset thread titles failed: {}",
                                 short_error_message(&error)
                             ),
                         );
@@ -879,6 +909,30 @@ mod macos_app {
         Ok(())
     }
 
+    async fn reset_thread_titles_via_tray(management_api: &ManagementApiHandle) -> Result<()> {
+        let confirmed = tokio::task::spawn_blocking(confirm_reset_thread_titles).await??;
+        if !confirmed {
+            info!(event = "desktop_runtime.reset_thread_titles.cancelled");
+            return Ok(());
+        }
+        let report = management_api.reset_workspace_thread_titles().await?;
+        let mut body = format!(
+            "Reset {} thread title(s) to workspace folder names.",
+            report.reset
+        );
+        if report.skipped_unbound > 0 {
+            body.push_str(&format!(" Skipped {} unbound.", report.skipped_unbound));
+        }
+        if report.refresh_failed > 0 {
+            body.push_str(&format!(
+                " {} Telegram refresh(es) failed; metadata was updated.",
+                report.refresh_failed
+            ));
+        }
+        show_desktop_notification("threadBridge", &body)?;
+        Ok(())
+    }
+
     async fn rebuild_runtime_support_via_tray(runtime: &RuntimeConfig) -> Result<()> {
         let confirmed = tokio::task::spawn_blocking(confirm_rebuild_runtime_support).await??;
         if !confirmed {
@@ -978,6 +1032,25 @@ mod macos_app {
         }
         Err(anyhow!(
             "purge confirmation failed: {}",
+            stderr.trim().if_empty("unknown osascript error")
+        ))
+    }
+
+    fn confirm_reset_thread_titles() -> Result<bool> {
+        let script = r#"button returned of (display dialog "Reset all active threadBridge Telegram topic titles to their workspace folder names?" buttons {"Cancel", "Reset"} default button "Cancel" cancel button "Cancel" with icon caution)"#;
+        let output = Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .output()?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).contains("Reset"));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if apple_script_user_cancelled(output.status.code(), &stderr) {
+            return Ok(false);
+        }
+        Err(anyhow!(
+            "thread-title reset confirmation failed: {}",
             stderr.trim().if_empty("unknown osascript error")
         ))
     }

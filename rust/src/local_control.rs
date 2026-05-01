@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use teloxide::prelude::*;
 use teloxide::types::{MessageId, ThreadId};
+use tracing::warn;
 
-use crate::repository::{ThreadRecord, ThreadRepository, ThreadStatus};
+use crate::repository::{SessionBinding, ThreadRecord, ThreadRepository, ThreadStatus};
+use crate::runtime_control::workspace_thread_title;
 use crate::telegram_runtime::{send_scoped_message, thread_id_to_i32, title_sync};
 
 #[derive(Clone)]
@@ -18,6 +20,13 @@ pub struct CreatedTelegramThread {
     pub chat_id: i64,
     pub message_thread_id: i32,
     pub title: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResetThreadTitlesReport {
+    pub reset: usize,
+    pub skipped_unbound: usize,
+    pub refresh_failed: usize,
 }
 
 impl TelegramControlBridgeHandle {
@@ -112,6 +121,49 @@ impl TelegramControlBridgeHandle {
         Ok(())
     }
 
+    pub async fn reset_workspace_thread_titles(&self) -> Result<ResetThreadTitlesReport> {
+        let mut report = ResetThreadTitlesReport::default();
+        for record in self.repository.list_active_threads().await? {
+            let Some(title) = workspace_title_from_binding(
+                self.repository
+                    .read_session_binding(&record)
+                    .await?
+                    .as_ref(),
+            ) else {
+                report.skipped_unbound += 1;
+                continue;
+            };
+            let updated = self
+                .repository
+                .update_metadata(ThreadRecord {
+                    metadata: crate::repository::ThreadMetadata {
+                        title: Some(title),
+                        ..record.metadata.clone()
+                    },
+                    ..record
+                })
+                .await?;
+            report.reset += 1;
+            if let Err(error) = title_sync::refresh_thread_topic_title(
+                &self.bot,
+                &self.repository,
+                &updated,
+                "reset_workspace_thread_titles",
+            )
+            .await
+            {
+                report.refresh_failed += 1;
+                warn!(
+                    event = "telegram.reset_workspace_thread_titles.refresh_failed",
+                    thread_key = %updated.metadata.thread_key,
+                    error = %error,
+                    "failed to refresh Telegram topic title after metadata reset"
+                );
+            }
+        }
+        Ok(report)
+    }
+
     pub async fn delete_thread_topic(&self, record: &ThreadRecord) -> Result<()> {
         let Some(thread_id) = record.metadata.message_thread_id else {
             return Ok(());
@@ -188,6 +240,13 @@ impl TelegramControlBridgeHandle {
     }
 }
 
+fn workspace_title_from_binding(binding: Option<&SessionBinding>) -> Option<String> {
+    binding
+        .and_then(|binding| binding.workspace_cwd.as_deref())
+        .map(Path::new)
+        .map(workspace_thread_title)
+}
+
 pub async fn resolve_workspace_argument(raw: &str) -> Result<PathBuf> {
     let input = PathBuf::from(raw.trim());
     if !input.is_absolute() {
@@ -222,6 +281,7 @@ pub fn ensure_archived_thread(record: ThreadRecord) -> Result<ThreadRecord> {
 mod tests {
     use std::path::Path;
 
+    use crate::repository::SessionBinding;
     use crate::runtime_control::workspace_thread_title;
 
     #[test]
@@ -234,5 +294,32 @@ mod tests {
     fn workspace_thread_title_falls_back_to_full_path() {
         let title = workspace_thread_title(Path::new("/"));
         assert_eq!(title, "/");
+    }
+
+    #[test]
+    fn workspace_title_from_binding_uses_workspace_folder_name() {
+        let binding: SessionBinding = serde_json::from_value(serde_json::json!({
+            "schema_version": 4,
+            "current_codex_thread_id": "thr_123",
+            "workspace_cwd": "/tmp/threadBridge/workspaces/Trackly",
+            "bound_at": null,
+            "initialized_at": null,
+            "last_verified_at": null,
+            "session_broken": false,
+            "session_broken_at": null,
+            "session_broken_reason": null,
+            "updated_at": "2026-05-01T00:00:00.000Z"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            super::workspace_title_from_binding(Some(&binding)),
+            Some("Trackly".to_owned())
+        );
+    }
+
+    #[test]
+    fn workspace_title_from_binding_skips_unbound_thread() {
+        assert_eq!(super::workspace_title_from_binding(None), None);
     }
 }
