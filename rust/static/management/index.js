@@ -723,7 +723,7 @@ function renderRecentLedgerRow(item) {
   `
 }
 
-function renderWorkspaceSummaryRow(item, { showOpenAction = false, emphasizeProblem = false } = {}) {
+function renderWorkspaceSummaryRow(item, { showOpenAction = false, showArchiveAction = false, emphasizeProblem = false } = {}) {
   const dominant = workspaceStatusDescriptor(item)
   const aux = workspaceAuxDescriptor(item)
   const support = workspaceSupportText(item)
@@ -747,6 +747,7 @@ function renderWorkspaceSummaryRow(item, { showOpenAction = false, emphasizeProb
       </div>
       <div class="action-slot">
         <a class="button button-secondary" href="#/workspaces/${encodeURIComponent(item.thread_key || '')}">View Detail</a>
+        ${showArchiveAction ? `<button class="button button-danger" ${dataAttrs({ action: 'archive-thread', threadKey: item.thread_key, label: workspacePrimaryLabel(item) })}>Archive</button>` : ''}
         ${showOpenAction ? `<button class="button button-secondary" ${dataAttrs({ action: 'open-workspace', threadKey: item.thread_key })}>Open Workspace</button>` : ''}
       </div>
     </article>
@@ -1344,8 +1345,8 @@ function renderWorkspacesPage() {
   const active = visible.filter(item => item.run_status === 'running' || item.binding_status === 'active')
   const other = visible.filter(item => !active.includes(item))
   const sections = [
-    renderWorkspaceSection('Active And Ready', active),
-    renderWorkspaceSection('Other Managed Workspaces', other),
+    renderWorkspaceSection('Active And Ready', active, { showArchiveAction: true }),
+    renderWorkspaceSection('Other Managed Workspaces', other, { showArchiveAction: true }),
   ].filter(Boolean).join('')
   let pageContent = sections
   if (!appState.workspaces.length) {
