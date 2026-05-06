@@ -774,9 +774,12 @@ mod macos_app {
             TrayAction::RebuildRuntimeSupport => {
                 let runtime = app.runtime.clone();
                 let runtime_config = app.runtime_config.clone();
+                let management_api = app.management_api.clone();
                 let proxy = proxy.clone();
                 runtime.spawn(async move {
-                    if let Err(error) = rebuild_runtime_support_via_tray(&runtime_config).await {
+                    if let Err(error) =
+                        rebuild_runtime_support_via_tray(&runtime_config, &management_api).await
+                    {
                         warn!(
                             event = "desktop_runtime.rebuild_runtime_support.failed",
                             error = %error
@@ -933,17 +936,48 @@ mod macos_app {
         Ok(())
     }
 
-    async fn rebuild_runtime_support_via_tray(runtime: &RuntimeConfig) -> Result<()> {
+    async fn rebuild_runtime_support_via_tray(
+        runtime: &RuntimeConfig,
+        management_api: &ManagementApiHandle,
+    ) -> Result<()> {
         let confirmed = tokio::task::spawn_blocking(confirm_rebuild_runtime_support).await??;
         if !confirmed {
             info!(event = "desktop_runtime.rebuild_runtime_support.cancelled");
             return Ok(());
         }
         rebuild_runtime_support(runtime).await?;
-        show_desktop_notification(
-            "threadBridge",
-            "Rebuilt runtime support from the bundled app resources.",
-        )?;
+        let cleanup_report = management_api
+            .cleanup_legacy_runtime_agents_appendices()
+            .await?;
+        info!(
+            event = "desktop_runtime.rebuild_runtime_support.cleaned_legacy_agents",
+            scanned_workspaces = cleanup_report.scanned_workspaces,
+            cleaned = cleanup_report.cleaned,
+            unchanged = cleanup_report.unchanged,
+            skipped_unbound = cleanup_report.skipped_unbound,
+            failed = cleanup_report.failed,
+            "legacy AGENTS.md runtime appendix cleanup completed"
+        );
+        let mut body = format!(
+            "Rebuilt runtime support. Cleaned legacy AGENTS.md blocks in {} workspace(s).",
+            cleanup_report.cleaned
+        );
+        if cleanup_report.scanned_workspaces > cleanup_report.cleaned {
+            body.push_str(&format!(
+                " Checked {} workspace(s).",
+                cleanup_report.scanned_workspaces
+            ));
+        }
+        if cleanup_report.skipped_unbound > 0 {
+            body.push_str(&format!(
+                " Skipped {} unbound thread(s).",
+                cleanup_report.skipped_unbound
+            ));
+        }
+        if cleanup_report.failed > 0 {
+            body.push_str(&format!(" {} cleanup(s) failed.", cleanup_report.failed));
+        }
+        show_desktop_notification("threadBridge", &body)?;
         Ok(())
     }
 
@@ -1056,7 +1090,7 @@ mod macos_app {
     }
 
     fn confirm_rebuild_runtime_support() -> Result<bool> {
-        let script = r#"button returned of (display dialog "Delete installed runtime support and rebuild it from the bundled app resources? Your data and config will be kept." buttons {"Cancel", "Rebuild"} default button "Cancel" cancel button "Cancel" with icon caution)"#;
+        let script = r#"button returned of (display dialog "Delete installed runtime support and rebuild it from the bundled app resources? This also removes legacy threadBridge managed blocks from bound workspace AGENTS.md files. Your data and config will be kept." buttons {"Cancel", "Rebuild"} default button "Cancel" cancel button "Cancel" with icon caution)"#;
         let output = Command::new("/usr/bin/osascript")
             .arg("-e")
             .arg(script)

@@ -271,6 +271,51 @@ async fn write_text_file_if_changed(path: &Path, contents: &str) -> Result<bool>
     Ok(true)
 }
 
+fn remove_legacy_runtime_agents_appendix(content: &str) -> Result<Option<String>> {
+    let Some(start) = content.find(THREADBRIDGE_RUNTIME_START) else {
+        return Ok(None);
+    };
+    let Some(relative_end) = content[start..].find(THREADBRIDGE_RUNTIME_END) else {
+        return Err(anyhow!(
+            "legacy threadBridge runtime AGENTS.md block is missing end marker"
+        ));
+    };
+    let marker_end = start + relative_end + THREADBRIDGE_RUNTIME_END.len();
+    let block_start = content[..start]
+        .rfind('\n')
+        .map_or(0, |line_break| line_break + 1);
+    let block_end = content[marker_end..]
+        .find('\n')
+        .map_or(content.len(), |line_break| marker_end + line_break + 1);
+
+    let prefix = &content[..block_start];
+    let suffix = &content[block_end..];
+    let prefix = prefix.trim_end();
+    let suffix = suffix.trim_start();
+    let updated = match (prefix.is_empty(), suffix.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => suffix.to_owned(),
+        (false, true) => format!("{prefix}\n"),
+        (false, false) => format!("{prefix}\n\n{suffix}"),
+    };
+    Ok(Some(updated))
+}
+
+pub async fn cleanup_legacy_runtime_agents_appendix(workspace_path: &Path) -> Result<bool> {
+    let agents_path = workspace_path.join("AGENTS.md");
+    let content = match fs::read_to_string(&agents_path).await {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", agents_path.display()));
+        }
+    };
+    let Some(updated) = remove_legacy_runtime_agents_appendix(&content)? else {
+        return Ok(false);
+    };
+    write_text_file_if_changed(&agents_path, &updated).await
+}
+
 async fn sync_workspace_runtime_skill(
     skill_template_path: &Path,
     runtime_root: &Path,
@@ -575,7 +620,8 @@ pub fn validate_seed_template(runtime_skill_template_path: &Path) -> Result<Path
 mod tests {
     use super::{
         THREADBRIDGE_RUNTIME_DIR, THREADBRIDGE_RUNTIME_SKILL_DIR, WorkspaceRuntimeEnsureMode,
-        ensure_workspace_runtime, ensure_workspace_runtime_with_mode,
+        cleanup_legacy_runtime_agents_appendix, ensure_workspace_runtime,
+        ensure_workspace_runtime_with_mode,
     };
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -899,6 +945,81 @@ mod tests {
         .await
         .unwrap();
         assert!(content.contains("runtime appendix"));
+    }
+
+    #[tokio::test]
+    async fn legacy_runtime_agents_cleanup_removes_only_managed_block() {
+        let root = temp_path();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).await.unwrap();
+        fs::write(
+            workspace.join("AGENTS.md"),
+            "# Project AGENTS\n\nKeep local rules.\n\n<!-- threadbridge:runtime:start -->\nmanaged runtime appendix\n<!-- threadbridge:runtime:end -->\n",
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            cleanup_legacy_runtime_agents_appendix(&workspace)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join("AGENTS.md"))
+                .await
+                .unwrap(),
+            "# Project AGENTS\n\nKeep local rules.\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_runtime_agents_cleanup_preserves_files_without_marker() {
+        let root = temp_path();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).await.unwrap();
+        fs::write(workspace.join("AGENTS.md"), "# Project AGENTS\n")
+            .await
+            .unwrap();
+
+        assert!(
+            !cleanup_legacy_runtime_agents_appendix(&workspace)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join("AGENTS.md"))
+                .await
+                .unwrap(),
+            "# Project AGENTS\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_runtime_agents_cleanup_rejects_partial_marker() {
+        let root = temp_path();
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).await.unwrap();
+        fs::write(
+            workspace.join("AGENTS.md"),
+            "# Project AGENTS\n\n<!-- threadbridge:runtime:start -->\nmanaged runtime appendix\n",
+        )
+        .await
+        .unwrap();
+
+        let error = cleanup_legacy_runtime_agents_appendix(&workspace)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("legacy threadBridge runtime AGENTS.md block is missing end marker")
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join("AGENTS.md"))
+                .await
+                .unwrap(),
+            "# Project AGENTS\n\n<!-- threadbridge:runtime:start -->\nmanaged runtime appendix\n"
+        );
     }
 
     #[tokio::test]

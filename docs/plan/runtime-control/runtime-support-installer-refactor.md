@@ -4,7 +4,7 @@
 
 Draft.
 
-This document captures the architecture debt exposed by the workspace runtime skill migration. It is not implemented yet.
+This document captures the architecture debt exposed by the workspace runtime skill migration. The explicit legacy `AGENTS.md` cleanup path has landed through the bundled desktop `Rebuild Runtime Support` action, but the broader installer-manifest refactor is not implemented yet.
 
 ## Problem
 
@@ -151,6 +151,8 @@ Callers should ask for validated runtime support, not for one specific template 
 
 Add a migration operation for old managed `AGENTS.md` blocks.
 
+Current landed slice: bundled desktop `Rebuild Runtime Support` rebuilds installed runtime support and then runs a bounded cleanup over active bound workspaces.
+
 Rules:
 
 - never run during ordinary reconcile
@@ -177,12 +179,12 @@ This should reduce unrelated failures such as tests that panic with `workspace r
 - Do not redesign the app-server protocol in this refactor.
 - Do not introduce MCP as part of this installer refactor.
 - Do not change Telegram command semantics.
-- Do not make runtime support rebuild scan and mutate all workspaces until a separate migration UX exists.
+- Runtime support rebuild may scan active bound workspaces only as the explicit migration UX, and it must remove only the managed `AGENTS.md` marker range.
 
 ## Success Criteria
 
 - Moving runtime documentation from one artifact type to another changes a manifest or one installer module, not owner/control/management layers.
 - Ordinary workspace ensure never edits project `AGENTS.md`.
-- Runtime support rebuild and workspace legacy migration are separate operations.
+- Runtime support rebuild and workspace legacy migration stay separate operations in code ownership; the bundled tray action may orchestrate both after user confirmation.
 - Tests that need workspace runtime state use a fixture instead of relying on implicit setup.
 - `workspace.rs` becomes orchestration over focused installer helpers rather than one large mixed-responsibility function.

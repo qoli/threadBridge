@@ -26,6 +26,8 @@ Runtime ensure does not create or update project `AGENTS.md`.
 
 Normal workspace ensure, resume, passive reconcile, and managed Codex preference sync must not opportunistically edit project `AGENTS.md`.
 
+The bundled desktop `Rebuild Runtime Support` maintenance action is an explicit migration entrypoint. After rebuilding installed runtime support from the bundled seed, it scans active bound workspaces and removes only legacy managed `AGENTS.md` blocks.
+
 Legacy cleanup of prior managed `AGENTS.md` blocks belongs behind explicit runtime support rebuild/migration entrypoints. The cleanup scope must be limited to the managed marker range:
 
 - `<!-- threadbridge:runtime:start -->`

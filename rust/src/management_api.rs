@@ -59,8 +59,8 @@ use crate::telemetry::{
     RuntimeTelemetrySnapshot,
 };
 use crate::workspace::{
-    WorkspaceRuntimeEnsureMode, ensure_workspace_runtime_with_mode_and_telemetry,
-    validate_seed_template,
+    WorkspaceRuntimeEnsureMode, cleanup_legacy_runtime_agents_appendix,
+    ensure_workspace_runtime_with_mode_and_telemetry, validate_seed_template,
 };
 
 const MANAGED_CODEX_SOURCE_FILE: &str = ".threadbridge/codex/source.txt";
@@ -212,6 +212,12 @@ impl ManagementApiHandle {
     pub async fn reset_workspace_thread_titles(&self) -> Result<ResetThreadTitlesReport> {
         self.state.reset_workspace_thread_titles().await
     }
+
+    pub async fn cleanup_legacy_runtime_agents_appendices(
+        &self,
+    ) -> Result<LegacyAgentsAppendixCleanupReport> {
+        self.state.cleanup_legacy_runtime_agents_appendices().await
+    }
 }
 
 #[derive(Clone)]
@@ -280,6 +286,22 @@ struct ArchiveThreadResponse {
 #[derive(Debug, Serialize)]
 struct PurgeArchivedThreadsResponse {
     purged: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LegacyAgentsAppendixCleanupReport {
+    pub scanned_workspaces: usize,
+    pub cleaned: usize,
+    pub unchanged: usize,
+    pub skipped_unbound: usize,
+    pub failed: usize,
+    pub failures: Vec<LegacyAgentsAppendixCleanupFailure>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LegacyAgentsAppendixCleanupFailure {
+    pub workspace_cwd: String,
+    pub error: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2152,6 +2174,40 @@ impl ManagementApiState {
 
     async fn purge_all_archived_threads(&self) -> Result<usize> {
         self.repository.purge_all_archived_threads().await
+    }
+
+    async fn cleanup_legacy_runtime_agents_appendices(
+        &self,
+    ) -> Result<LegacyAgentsAppendixCleanupReport> {
+        let mut report = LegacyAgentsAppendixCleanupReport::default();
+        let mut seen = BTreeMap::new();
+        for record in self.repository.list_active_threads().await? {
+            let Some(binding) = self.repository.read_session_binding(&record).await? else {
+                report.skipped_unbound += 1;
+                continue;
+            };
+            let Some(workspace_cwd) = binding.workspace_cwd else {
+                report.skipped_unbound += 1;
+                continue;
+            };
+            if seen.contains_key(&workspace_cwd) {
+                continue;
+            }
+            seen.insert(workspace_cwd.clone(), true);
+            report.scanned_workspaces += 1;
+            match cleanup_legacy_runtime_agents_appendix(Path::new(&workspace_cwd)).await {
+                Ok(true) => report.cleaned += 1,
+                Ok(false) => report.unchanged += 1,
+                Err(error) => {
+                    report.failed += 1;
+                    report.failures.push(LegacyAgentsAppendixCleanupFailure {
+                        workspace_cwd,
+                        error: error.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(report)
     }
 
     async fn reset_workspace_thread_titles(&self) -> Result<ResetThreadTitlesReport> {
