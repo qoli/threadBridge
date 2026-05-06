@@ -608,6 +608,8 @@ mod macos_app {
         );
         let reset_titles = MenuItem::new("Reset Thread Titles", true, None);
         actions.insert(reset_titles.id().clone(), TrayAction::ResetThreadTitles);
+        menu.append(&add_workspace)?;
+        menu.append(&purge_archived)?;
         if supports_runtime_support_rebuild {
             let rebuild_support = MenuItem::new("Rebuild Runtime Support", true, None);
             actions.insert(
@@ -616,17 +618,15 @@ mod macos_app {
             );
             menu.append(&rebuild_support)?;
         }
+        menu.append(&reset_titles)?;
+        menu.append(&PredefinedMenuItem::separator())?;
         let settings = MenuItem::new("Settings", true, None);
         actions.insert(settings.id().clone(), TrayAction::OpenSettings);
+        menu.append(&settings)?;
+        menu.append(&PredefinedMenuItem::separator())?;
         let quit = MenuItem::new("Quit", true, None);
         actions.insert(quit.id().clone(), TrayAction::Quit);
-        menu.append_items(&[
-            &add_workspace,
-            &purge_archived,
-            &reset_titles,
-            &settings,
-            &quit,
-        ])?;
+        menu.append(&quit)?;
         Ok(MenuModel { menu, actions })
     }
 
