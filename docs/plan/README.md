@@ -140,11 +140,11 @@
   - `DATA_ROOT` / `DEBUG_LOG_PATH` override 與 `BOT_DATA_PATH` compatibility 已被保留；README、helper script 與 maintainer guide 也已改成 mode-aware 語義
 - [workspace-runtime-surface.md](runtime-control/workspace-runtime-surface.md)
   - doc kind: `plan`
-  - `.threadbridge/`、workspace-local runtime skill、`hcodex`、tool request/result lane 已形成實際 workspace runtime surface
+  - `.threadbridge/`、workspace-local runtime skill source、`.codex/skills/threadbridge-runtime` discovery symlink、`hcodex`、tool request/result lane 已形成實際 workspace runtime surface
   - 但按 project type / workspace profile 選擇啟用 tools 的模型仍未收斂
 - [workspace-runtime-skill.md](runtime-control/workspace-runtime-skill.md)
   - doc kind: `plan`
-  - baseline 已落地：runtime capability documentation 由 `.threadbridge/skills/threadbridge-runtime/` 承載，普通 workspace ensure 不再注入 project `AGENTS.md`
+  - baseline 已落地：runtime capability documentation 由 `.threadbridge/skills/threadbridge-runtime/` 承載，並透過 `.codex/skills/threadbridge-runtime` symlink 讓 Codex 發現；普通 workspace ensure 不再注入 project `AGENTS.md`
 - [post-cli-runtime-cleanup.md](runtime-control/post-cli-runtime-cleanup.md)
   - doc kind: `plan`
   - CLI 時代的大部分 launch / vocabulary cleanup 已開始落地

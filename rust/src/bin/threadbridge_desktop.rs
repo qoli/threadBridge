@@ -946,21 +946,25 @@ mod macos_app {
             return Ok(());
         }
         rebuild_runtime_support(runtime).await?;
+        let synced_workspaces = management_api
+            .sync_active_workspace_runtime_surfaces()
+            .await?;
         let cleanup_report = management_api
             .cleanup_legacy_runtime_agents_appendices()
             .await?;
         info!(
             event = "desktop_runtime.rebuild_runtime_support.cleaned_legacy_agents",
+            synced_workspaces = synced_workspaces,
             scanned_workspaces = cleanup_report.scanned_workspaces,
             cleaned = cleanup_report.cleaned,
             unchanged = cleanup_report.unchanged,
             skipped_unbound = cleanup_report.skipped_unbound,
             failed = cleanup_report.failed,
-            "legacy AGENTS.md runtime appendix cleanup completed"
+            "runtime support rebuild workspace migration completed"
         );
         let mut body = format!(
-            "Rebuilt runtime support. Cleaned legacy AGENTS.md blocks in {} workspace(s).",
-            cleanup_report.cleaned
+            "Rebuilt runtime support. Synced {} workspace(s); cleaned legacy AGENTS.md blocks in {}.",
+            synced_workspaces, cleanup_report.cleaned
         );
         if cleanup_report.scanned_workspaces > cleanup_report.cleaned {
             body.push_str(&format!(

@@ -7,6 +7,8 @@ description: Use when working with threadBridge-managed workspace runtime, .thre
 
 This skill describes workspace-local threadBridge capabilities. Project instructions from the workspace remain authoritative for project work; use this skill only for threadBridge runtime operations.
 
+threadBridge owns this skill under `.threadbridge/skills/threadbridge-runtime/` and exposes it to Codex through `.codex/skills/threadbridge-runtime`.
+
 ## Runtime Surface
 
 Workspace-local runtime files live under `.threadbridge/`.
@@ -63,6 +65,7 @@ threadBridge-owned runtime surface inside this workspace:
 - `.threadbridge/bin/`
 - `.threadbridge/state/`
 - `.threadbridge/skills/threadbridge-runtime/`
+- `.codex/skills/threadbridge-runtime`
 - `.threadbridge/tool_requests/`
 - `.threadbridge/tool_results/`
 

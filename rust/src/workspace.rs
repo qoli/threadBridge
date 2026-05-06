@@ -12,6 +12,8 @@ pub const THREADBRIDGE_RUNTIME_DIR: &str = ".threadbridge";
 pub const THREADBRIDGE_RUNTIME_START: &str = "<!-- threadbridge:runtime:start -->";
 pub const THREADBRIDGE_RUNTIME_END: &str = "<!-- threadbridge:runtime:end -->";
 pub const THREADBRIDGE_RUNTIME_SKILL_DIR: &str = "skills/threadbridge-runtime";
+const CODEX_REPO_RUNTIME_SKILL_DIR: &str = ".codex/skills/threadbridge-runtime";
+const CODEX_REPO_RUNTIME_SKILL_TARGET: &str = "../../.threadbridge/skills/threadbridge-runtime";
 const MANAGED_CODEX_CACHE_BINARY: &str = ".threadbridge/codex/codex";
 const MANAGED_CODEX_SOURCE_FILE: &str = ".threadbridge/codex/source.txt";
 const THREADBRIDGE_RUNTIME_SKILL_FILE: &str = "SKILL.md";
@@ -392,6 +394,109 @@ async fn sync_workspace_runtime_skill(
     Ok(())
 }
 
+fn symlink_points_to_runtime_skill(
+    link_path: &Path,
+    current_target: &Path,
+    runtime_skill_dir: &Path,
+) -> bool {
+    if current_target == Path::new(CODEX_REPO_RUNTIME_SKILL_TARGET) {
+        return true;
+    }
+
+    let resolved_target = if current_target.is_absolute() {
+        current_target.to_path_buf()
+    } else {
+        link_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(current_target)
+    };
+    match (
+        resolved_target.canonicalize(),
+        runtime_skill_dir.canonicalize(),
+    ) {
+        (Ok(resolved), Ok(expected)) => resolved == expected,
+        _ => false,
+    }
+}
+
+fn create_dir_symlink(target: &Path, link_path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link_path)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(target, link_path)
+    }
+}
+
+async fn ensure_codex_repo_runtime_skill_link(
+    workspace_path: &Path,
+    runtime_root: &Path,
+    stats: &mut WorkspaceEnsureStats,
+) -> Result<()> {
+    let runtime_skill_dir = runtime_root.join(THREADBRIDGE_RUNTIME_SKILL_DIR);
+    let link_path = workspace_path.join(CODEX_REPO_RUNTIME_SKILL_DIR);
+    let link_parent = link_path
+        .parent()
+        .context("Codex runtime skill link path has no parent")?;
+    fs::create_dir_all(link_parent).await.with_context(|| {
+        format!(
+            "failed to create Codex workspace skills directory: {}",
+            link_parent.display()
+        )
+    })?;
+
+    match fs::symlink_metadata(&link_path).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let current_target = fs::read_link(&link_path).await.with_context(|| {
+                format!(
+                    "failed to read Codex workspace runtime skill symlink: {}",
+                    link_path.display()
+                )
+            })?;
+            if symlink_points_to_runtime_skill(&link_path, &current_target, &runtime_skill_dir) {
+                stats.record_write(false);
+                return Ok(());
+            }
+            fs::remove_file(&link_path).await.with_context(|| {
+                format!(
+                    "failed to remove stale Codex workspace runtime skill symlink: {}",
+                    link_path.display()
+                )
+            })?;
+        }
+        Ok(_) => {
+            return Err(anyhow!(
+                "Codex workspace runtime skill path already exists and is not a threadBridge symlink: {}",
+                link_path.display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect Codex workspace runtime skill link: {}",
+                    link_path.display()
+                )
+            });
+        }
+    }
+
+    create_dir_symlink(Path::new(CODEX_REPO_RUNTIME_SKILL_TARGET), &link_path).with_context(
+        || {
+            format!(
+                "failed to create Codex workspace runtime skill symlink: {} -> {}",
+                link_path.display(),
+                CODEX_REPO_RUNTIME_SKILL_TARGET
+            )
+        },
+    )?;
+    stats.record_write(true);
+    Ok(())
+}
+
 async fn set_mode_if_changed(path: &Path, mode: u32) -> Result<bool> {
     #[cfg(unix)]
     {
@@ -485,6 +590,7 @@ pub async fn ensure_workspace_runtime_with_mode_and_telemetry(
         );
         sync_workspace_runtime_skill(runtime_skill_template_path, &runtime_root, &mut stats)
             .await?;
+        ensure_codex_repo_runtime_skill_link(workspace_path, &runtime_root, &mut stats).await?;
         ensure_workspace_status_surface(workspace_path).await?;
         ensure_workspace_execution_config(workspace_path).await?;
 
@@ -620,7 +726,7 @@ pub fn validate_seed_template(runtime_skill_template_path: &Path) -> Result<Path
 mod tests {
     use super::{
         THREADBRIDGE_RUNTIME_DIR, THREADBRIDGE_RUNTIME_SKILL_DIR, WorkspaceRuntimeEnsureMode,
-        cleanup_legacy_runtime_agents_appendix, ensure_workspace_runtime,
+        cleanup_legacy_runtime_agents_appendix, create_dir_symlink, ensure_workspace_runtime,
         ensure_workspace_runtime_with_mode,
     };
     use std::path::{Path, PathBuf};
@@ -732,6 +838,18 @@ mod tests {
             .unwrap()
         );
         assert!(
+            fs::try_exists(workspace.join(".codex/skills/threadbridge-runtime/SKILL.md"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            fs::symlink_metadata(workspace.join(".codex/skills/threadbridge-runtime"))
+                .await
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
             fs::try_exists(workspace.join(".threadbridge/state/runtime-observer/current.json"))
                 .await
                 .unwrap()
@@ -814,6 +932,73 @@ mod tests {
                 .await
                 .unwrap(),
             "tools\n"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join(".codex/skills/threadbridge-runtime/SKILL.md"))
+                .await
+                .unwrap(),
+            "runtime skill\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_runtime_repairs_stale_codex_runtime_skill_symlink() {
+        let root = temp_path();
+        let runtime_support_root = root.join("runtime_support");
+        let data_root = root.join("data");
+        let workspace = root.join("workspace");
+        let template = root.join("template.md");
+        fs::create_dir_all(&runtime_support_root).await.unwrap();
+        fs::create_dir_all(workspace.join(".codex/skills"))
+            .await
+            .unwrap();
+        fs::write(&template, "runtime skill\n").await.unwrap();
+        create_dir_symlink(
+            Path::new("../stale-threadbridge-runtime"),
+            &workspace.join(".codex/skills/threadbridge-runtime"),
+        )
+        .unwrap();
+
+        ensure_workspace_runtime(&runtime_support_root, &data_root, &template, &workspace)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_link(workspace.join(".codex/skills/threadbridge-runtime"))
+                .await
+                .unwrap(),
+            PathBuf::from("../../.threadbridge/skills/threadbridge-runtime")
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join(".codex/skills/threadbridge-runtime/SKILL.md"))
+                .await
+                .unwrap(),
+            "runtime skill\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_runtime_rejects_existing_codex_runtime_skill_directory() {
+        let root = temp_path();
+        let runtime_support_root = root.join("runtime_support");
+        let data_root = root.join("data");
+        let workspace = root.join("workspace");
+        let template = root.join("template.md");
+        fs::create_dir_all(&runtime_support_root).await.unwrap();
+        fs::create_dir_all(workspace.join(".codex/skills/threadbridge-runtime"))
+            .await
+            .unwrap();
+        fs::write(&template, "runtime skill\n").await.unwrap();
+
+        let error =
+            ensure_workspace_runtime(&runtime_support_root, &data_root, &template, &workspace)
+                .await
+                .unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "Codex workspace runtime skill path already exists and is not a threadBridge symlink"
+            ),
+            "{error:#}"
         );
     }
 

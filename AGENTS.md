@@ -3,7 +3,7 @@
 ## Purpose
 This root `AGENTS.md` is the maintainer guide for `threadBridge`. It documents the repo layout, runtime boundaries, workspace lifecycle, and contributor conventions for the Telegram bot and its Codex app-server integration.
 
-It is not the runtime skill used inside a bound project workspace. That skill lives in [runtime_support/templates/threadbridge-runtime-skill/SKILL.md](/Volumes/Data/Github/threadBridge/runtime_support/templates/threadbridge-runtime-skill/SKILL.md) and is installed under `.threadbridge/skills/threadbridge-runtime/` by the runtime bootstrap.
+It is not the runtime skill used inside a bound project workspace. That skill lives in [runtime_support/templates/threadbridge-runtime-skill/SKILL.md](/Volumes/Data/Github/threadBridge/runtime_support/templates/threadbridge-runtime-skill/SKILL.md), is installed under `.threadbridge/skills/threadbridge-runtime/` by the runtime bootstrap, and is exposed to Codex through `.codex/skills/threadbridge-runtime`.
 
 ## Project Structure & Runtime Architecture
 The runtime is organized in four layers:
@@ -23,11 +23,11 @@ Important repo areas:
 - `rust/src/app_server_observer.rs`: app-server observer that projects preview/final/process events and emits adapter-neutral interaction events.
 - `rust/src/runtime_interaction.rs`: shared interaction event types for `request_user_input`, resolved requests, and turn completion follow-up.
 - `rust/src/process_transcript.rs`: normalized final/process transcript mapping shared by management UI and Telegram preview surfaces.
-- `rust/src/workspace.rs`: workspace bootstrap logic that installs `.threadbridge/`, workspace-local runtime skills, wrappers, and runtime state surfaces.
+- `rust/src/workspace.rs`: workspace bootstrap logic that installs `.threadbridge/`, the Codex repo-skill symlink, workspace-local runtime skills, wrappers, and runtime state surfaces.
 - `rust/src/repository.rs`: persistent bot-local thread state for metadata, transcripts, session bindings, and image-state artifacts.
 - `rust/src/thread_state.rs`: canonical thread state resolver for `lifecycle_status`, `binding_status`, and `run_status`.
 - `rust/src/telegram_runtime/`: Telegram command handling, message flows, image handling, preview rendering, and adapter-owned interaction bridging.
-- `runtime_support/templates/threadbridge-runtime-skill/`: workspace-local runtime skill template and references installed into `.threadbridge/skills/threadbridge-runtime/`.
+- `runtime_support/templates/threadbridge-runtime-skill/`: workspace-local runtime skill template and references installed into `.threadbridge/skills/threadbridge-runtime/` and exposed through `.codex/skills/threadbridge-runtime`.
 - `runtime_support/tools/`: Python executors invoked from `.threadbridge/bin/*`.
 - bot-local runtime data root: debug builds default to `data/`; bundled release builds default to the platform local app-data directory under `threadBridge/data`. In debug mode, `data/main-thread/` stores the control console state and each thread maps to `data/<thread-key>/`.
 
@@ -37,7 +37,7 @@ Treat `target/` and most bot-local runtime state as generated output.
 There is one project `AGENTS.md` role and one threadBridge runtime skill role:
 
 - Root `AGENTS.md`: this maintainer guide.
-- `runtime_support/templates/threadbridge-runtime-skill/SKILL.md`: workspace-local threadBridge runtime skill installed under `.threadbridge/skills/threadbridge-runtime/`.
+- `runtime_support/templates/threadbridge-runtime-skill/SKILL.md`: workspace-local threadBridge runtime skill installed under `.threadbridge/skills/threadbridge-runtime/` and exposed through `.codex/skills/threadbridge-runtime`.
 
 There is no thread-local runtime-root `<thread-key>/AGENTS.md` surface anymore.
 
@@ -75,6 +75,7 @@ Maintain these ownership boundaries:
 - Workspace bootstrap owns:
   - `.threadbridge/bin/`
   - `.threadbridge/skills/threadbridge-runtime/`
+  - `.codex/skills/threadbridge-runtime`
   - `.threadbridge/state/workspace-config.json`
   - `.threadbridge/codex/source.txt`
   - `.threadbridge/codex/build-config.json`

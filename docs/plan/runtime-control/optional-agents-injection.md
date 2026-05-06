@@ -2,12 +2,12 @@
 
 ## 目前進度
 
-這份文檔記錄已被取代的設計方向。Baseline 已改為不在普通 workspace ensure 中注入 project `AGENTS.md`，runtime capability documentation 改由 `.threadbridge/skills/threadbridge-runtime/` 承載。
+這份文檔記錄已被取代的設計方向。Baseline 已改為不在普通 workspace ensure 中注入 project `AGENTS.md`，runtime capability documentation 由 `.threadbridge/skills/threadbridge-runtime/` 承載，並透過 `.codex/skills/threadbridge-runtime` symlink 讓 Codex 發現。
 
 目前實際行為是：
 
 - `/add_workspace` / 等價 create-bind flow 會安裝 `.threadbridge/`
-- `/add_workspace` / 等價 create-bind flow 會安裝 workspace-local `threadbridge-runtime` skill
+- `/add_workspace` / 等價 create-bind flow 會安裝 workspace-local `threadbridge-runtime` skill，並建立 `.codex/skills/threadbridge-runtime` symlink
 - 普通 ensure / resume / reconcile 不應更新 workspace `AGENTS.md`
 
 Legacy managed appendix cleanup 應由明確的 runtime support rebuild / migration 入口負責，不由普通 reconcile 順手修改 repo。

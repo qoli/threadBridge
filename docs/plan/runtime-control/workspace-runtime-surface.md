@@ -7,7 +7,7 @@
 目前代碼裡已經存在的能力：
 
 - threadBridge 會在真實 workspace 下建立 `./.threadbridge/`
-- threadBridge 會在 `./.threadbridge/skills/threadbridge-runtime/` 安裝 workspace-local runtime skill，而不是在普通 ensure 中改寫 project `AGENTS.md`
+- threadBridge 會在 `./.threadbridge/skills/threadbridge-runtime/` 安裝 threadBridge-owned runtime skill，並透過 `./.codex/skills/threadbridge-runtime` symlink 讓 Codex 以 repo skill 發現它，而不是在普通 ensure 中改寫 project `AGENTS.md`
 - 目前已固定安裝的 wrapper / runtime surface 包括：
   - `./.threadbridge/bin/build_prompt_config`
   - `./.threadbridge/bin/generate_image`
@@ -15,6 +15,7 @@
   - `./.threadbridge/bin/send_telegram_media`
   - `./.threadbridge/skills/threadbridge-runtime/SKILL.md`
   - `./.threadbridge/skills/threadbridge-runtime/references/*`
+  - `./.codex/skills/threadbridge-runtime`
   - `./.threadbridge/state/workspace-config.json`
   - `./.threadbridge/state/app-server/*`
   - `./.threadbridge/state/runtime-observer/*`

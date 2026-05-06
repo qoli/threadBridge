@@ -213,6 +213,10 @@ impl ManagementApiHandle {
         self.state.reset_workspace_thread_titles().await
     }
 
+    pub async fn sync_active_workspace_runtime_surfaces(&self) -> Result<usize> {
+        self.state.sync_active_workspace_runtime_surfaces().await
+    }
+
     pub async fn cleanup_legacy_runtime_agents_appendices(
         &self,
     ) -> Result<LegacyAgentsAppendixCleanupReport> {
@@ -2174,6 +2178,36 @@ impl ManagementApiState {
 
     async fn purge_all_archived_threads(&self) -> Result<usize> {
         self.repository.purge_all_archived_threads().await
+    }
+
+    async fn sync_active_workspace_runtime_surfaces(&self) -> Result<usize> {
+        let seed_template_path =
+            validate_seed_template(&self.runtime.runtime_skill_template_path())?;
+        let mut synced_workspaces = 0usize;
+        let mut seen = BTreeMap::new();
+        for record in self.repository.list_active_threads().await? {
+            let Some(binding) = self.repository.read_session_binding(&record).await? else {
+                continue;
+            };
+            let Some(workspace_cwd) = binding.workspace_cwd else {
+                continue;
+            };
+            if seen.contains_key(&workspace_cwd) {
+                continue;
+            }
+            ensure_workspace_runtime_with_mode_and_telemetry(
+                &self.runtime.runtime_support_root_path,
+                &self.runtime.data_root_path,
+                &seed_template_path,
+                Path::new(&workspace_cwd),
+                WorkspaceRuntimeEnsureMode::ExplicitSync,
+                Some(&self.runtime_telemetry),
+            )
+            .await?;
+            seen.insert(workspace_cwd, true);
+            synced_workspaces += 1;
+        }
+        Ok(synced_workspaces)
     }
 
     async fn cleanup_legacy_runtime_agents_appendices(

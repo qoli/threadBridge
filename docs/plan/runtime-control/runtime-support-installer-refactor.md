@@ -8,7 +8,7 @@ This document captures the architecture debt exposed by the workspace runtime sk
 
 ## Problem
 
-Changing the workspace runtime documentation surface from an injected `AGENTS.md` appendix to `.threadbridge/skills/threadbridge-runtime/SKILL.md` required edits across configuration, runtime support validation, workspace bootstrap, owner reconcile, runtime control, management API tests, Telegram status tests, maintainer docs, and plan docs.
+Changing the workspace runtime documentation surface from an injected `AGENTS.md` appendix to `.threadbridge/skills/threadbridge-runtime/SKILL.md` exposed through `.codex/skills/threadbridge-runtime` required edits across configuration, runtime support validation, workspace bootstrap, owner reconcile, runtime control, management API tests, Telegram status tests, maintainer docs, and plan docs.
 
 That blast radius is too large for a runtime artifact shape change.
 
@@ -61,6 +61,7 @@ enum InstallMode {
 The manifest should express facts such as:
 
 - copy `templates/threadbridge-runtime-skill/` to `.threadbridge/skills/threadbridge-runtime/`
+- repair `.codex/skills/threadbridge-runtime` symlink to the threadBridge-owned skill directory
 - generate `.threadbridge/bin/hcodex`
 - generate `.threadbridge/bin/build_prompt_config`
 - create `.threadbridge/tool_requests/`
@@ -151,7 +152,7 @@ Callers should ask for validated runtime support, not for one specific template 
 
 Add a migration operation for old managed `AGENTS.md` blocks.
 
-Current landed slice: bundled desktop `Rebuild Runtime Support` rebuilds installed runtime support and then runs a bounded cleanup over active bound workspaces.
+Current landed slice: bundled desktop `Rebuild Runtime Support` rebuilds installed runtime support, re-syncs active bound workspace runtime surfaces, repairs the Codex repo-skill symlink, and then runs a bounded cleanup over active bound workspaces.
 
 Rules:
 

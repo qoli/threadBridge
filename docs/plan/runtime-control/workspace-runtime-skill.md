@@ -2,13 +2,13 @@
 
 ## Status
 
-Implemented baseline: workspace runtime support installs a threadBridge skill under `.threadbridge/skills/threadbridge-runtime/` and no longer injects the runtime contract into project `AGENTS.md` during ordinary workspace ensure.
+Implemented baseline: workspace runtime support installs a threadBridge-owned skill under `.threadbridge/skills/threadbridge-runtime/`, exposes it to Codex through `.codex/skills/threadbridge-runtime`, and no longer injects the runtime contract into project `AGENTS.md` during ordinary workspace ensure.
 
 ## Decision
 
 threadBridge runtime behavior is represented as a workspace-local Codex skill instead of a managed `AGENTS.md` appendix.
 
-The project repository remains authoritative for project instructions. threadBridge runtime capability documentation lives in generated runtime state under `.threadbridge/`, alongside the wrapper commands and request/result lanes that it describes.
+The project repository remains authoritative for project instructions. threadBridge runtime capability documentation lives in generated runtime state under `.threadbridge/`, alongside the wrapper commands and request/result lanes that it describes. Codex discovers that skill through a repo-scoped `.codex/skills/threadbridge-runtime` symlink.
 
 ## Runtime Surface
 
@@ -18,6 +18,7 @@ Runtime ensure writes:
 - `.threadbridge/skills/threadbridge-runtime/references/runtime-tools.md`
 - `.threadbridge/skills/threadbridge-runtime/references/build_prompt_config.request.schema.json`
 - `.threadbridge/skills/threadbridge-runtime/references/send_telegram_media.request.schema.json`
+- `.codex/skills/threadbridge-runtime` symlink pointing to `.threadbridge/skills/threadbridge-runtime/`
 - existing wrapper, state, request, and result directories under `.threadbridge/`
 
 Runtime ensure does not create or update project `AGENTS.md`.
@@ -26,7 +27,7 @@ Runtime ensure does not create or update project `AGENTS.md`.
 
 Normal workspace ensure, resume, passive reconcile, and managed Codex preference sync must not opportunistically edit project `AGENTS.md`.
 
-The bundled desktop `Rebuild Runtime Support` maintenance action is an explicit migration entrypoint. After rebuilding installed runtime support from the bundled seed, it scans active bound workspaces and removes only legacy managed `AGENTS.md` blocks.
+The bundled desktop `Rebuild Runtime Support` maintenance action is an explicit migration entrypoint. After rebuilding installed runtime support from the bundled seed, it re-syncs active bound workspace runtime surfaces, repairs the `.codex/skills/threadbridge-runtime` symlink, and removes only legacy managed `AGENTS.md` blocks.
 
 Legacy cleanup of prior managed `AGENTS.md` blocks belongs behind explicit runtime support rebuild/migration entrypoints. The cleanup scope must be limited to the managed marker range:
 
