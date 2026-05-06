@@ -49,7 +49,7 @@ pub enum RunningInputPolicy {
 
 impl Default for RunningInputPolicy {
     fn default() -> Self {
-        Self::Reject
+        Self::Steer
     }
 }
 
@@ -1651,7 +1651,7 @@ mod tests {
         );
         assert_eq!(
             record.metadata.running_input_policy,
-            RunningInputPolicy::Reject
+            RunningInputPolicy::Steer
         );
     }
 

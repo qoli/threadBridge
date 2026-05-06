@@ -120,10 +120,10 @@
   - doc kind: `plan`
   - depends_on: [runtime-state-machine.md](runtime-control/runtime-state-machine.md)
   - v1 忙碌閘控已落地
-  - Telegram 文字 turn / 圖片分析已改成 background 執行，後續輸入現在會命中 reject
+  - Telegram 文字 turn / 圖片分析已改成 background 執行，後續普通文字依 `running_input_policy` 走 `reject | queue | steer`
   - `/stop` 已作為第一個正式 busy control action 落地，並開始使用 session turn id 走 app-server interrupt
   - bot 啟動時的 stale busy reconciliation 已開始落地
-  - 已新增 Telegram running input policy 設計：`reject | queue | steer`，預設建議 `reject`；`steer` 對應 app-server `turn/steer`，`queue` 需 one-slot pending input 與取消/覆蓋語義
+  - 已新增 Telegram running input policy 設計：`reject | queue | steer`，預設為 `steer`；`steer` 對應 app-server `turn/steer`，`queue` 需 one-slot pending input 與取消/覆蓋語義
   - 已新增記錄一個明確 bug：斜線命令 `STOP` / `/stop` 後，thread 目前可能卡到需要重啟 bot 才恢復響應
   - 但 queue 模型、更完整的狀態語義、`STOP 並插入發言` / `序列發言` 這類 follow-up 控制面、更乾淨的 ingress / dispatcher 邊界，以及更完整的 stale busy owner 模型仍未收斂
 - [codex-execution-modes.md](runtime-control/codex-execution-modes.md)
