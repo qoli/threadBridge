@@ -2282,11 +2282,12 @@ async fn steer_running_turn_from_text(
             None,
         )
         .await?;
-    send_scoped_message(
+    send_scoped_system_message_with_intent(
         bot,
         chat_id,
         Some(thread_id),
-        format!("Added this message to the running turn `{accepted_turn_id}`."),
+        TelegramSystemIntent::Info,
+        "Added.",
     )
     .await?;
     Ok(())
