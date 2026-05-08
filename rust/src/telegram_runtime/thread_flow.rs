@@ -85,6 +85,34 @@ fn format_error_chain(error: &anyhow::Error) -> String {
     }
 }
 
+fn is_stale_telegram_topic_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .to_string()
+            .contains("Bad Request: message thread not found")
+    })
+}
+
+fn recovered_topic_metadata(
+    record: &ThreadRecord,
+    new_message_thread_id: i32,
+    title: String,
+) -> crate::repository::ThreadMetadata {
+    let mut previous = record.metadata.previous_message_thread_ids.clone();
+    if let Some(current) = record.metadata.message_thread_id
+        && current != new_message_thread_id
+        && !previous.contains(&current)
+    {
+        previous.push(current);
+    }
+    crate::repository::ThreadMetadata {
+        message_thread_id: Some(new_message_thread_id),
+        previous_message_thread_ids: previous,
+        title: Some(title),
+        ..record.metadata.clone()
+    }
+}
+
 async fn verify_session_binding_now(
     state: &AppState,
     codex_workspace: &crate::codex::CodexWorkspace,
@@ -1961,7 +1989,15 @@ pub(crate) async fn run_command(
                 .repository
                 .get_thread(msg.chat.id.0, thread_id_to_i32(thread_id))
                 .await?;
-            let _ = bot.delete_forum_topic(msg.chat.id, thread_id).await;
+            bot.delete_forum_topic(msg.chat.id, thread_id)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to delete Telegram topic {} before archiving workspace {}",
+                        thread_id_to_i32(thread_id),
+                        record.metadata.thread_key
+                    )
+                })?;
             let record = state.repository.archive_thread(record).await?;
             state
                 .repository
@@ -2461,6 +2497,7 @@ async fn execute_text_turn(
     text: &str,
     collaboration_mode: CollaborationMode,
 ) -> Result<()> {
+    let mut thread_id = thread_id;
     let typing = TypingHeartbeat::start(bot.clone(), chat_id, Some(thread_id));
     let codex_workspace = state
         .control
@@ -2796,25 +2833,129 @@ async fn execute_text_turn(
                             )
                             .await
                         {
-                            let _ = state
-                                .control
-                                .delivery_bus
-                                .fail_delivery(
-                                    DeliveryAttempt {
-                                        thread_key: record.metadata.thread_key.clone(),
-                                        session_id: existing_thread_id.to_owned(),
-                                        turn_id: final_turn_id.clone(),
-                                        provisional_key: final_provisional_key.clone(),
-                                        channel: DeliveryChannel::Telegram,
-                                        kind: DeliveryKind::AssistantFinal,
-                                        executor: "telegram_thread_flow".to_owned(),
-                                        transport_ref: None,
-                                        report_json: serde_json::json!({ "targets": [] }),
-                                    },
-                                    error.to_string(),
+                            if is_stale_telegram_topic_error(&error) {
+                                let old_message_thread_id = thread_id_to_i32(thread_id);
+                                let (recovered_record, recovered_thread_id) =
+                                    match recover_stale_telegram_topic(
+                                        bot,
+                                        state,
+                                        record.clone(),
+                                        &workspace_path,
+                                    )
+                                    .await
+                                    {
+                                        Ok(recovered) => recovered,
+                                        Err(recovery_error) => {
+                                            let recovery_error_text =
+                                                format_error_chain(&recovery_error);
+                                            let _ = state
+                                                .control
+                                                .delivery_bus
+                                                .fail_delivery(
+                                                    DeliveryAttempt {
+                                                        thread_key: record
+                                                            .metadata
+                                                            .thread_key
+                                                            .clone(),
+                                                        session_id: existing_thread_id.to_owned(),
+                                                        turn_id: final_turn_id.clone(),
+                                                        provisional_key: final_provisional_key
+                                                            .clone(),
+                                                        channel: DeliveryChannel::Telegram,
+                                                        kind: DeliveryKind::AssistantFinal,
+                                                        executor: "telegram_thread_flow".to_owned(),
+                                                        transport_ref: None,
+                                                        report_json: serde_json::json!({
+                                                            "targets": []
+                                                        }),
+                                                    },
+                                                    format!(
+                                                        "{} | recovery failed: {recovery_error_text}",
+                                                        error
+                                                    ),
+                                                )
+                                                .await;
+                                            let _ = send_scoped_warning_message(
+                                                bot,
+                                                chat_id,
+                                                None,
+                                                format!(
+                                                    "Telegram topic recovery failed for workspace `{}`: {recovery_error_text}",
+                                                    record
+                                                        .metadata
+                                                        .title
+                                                        .as_deref()
+                                                        .unwrap_or(&record.metadata.thread_key)
+                                                ),
+                                            )
+                                            .await;
+                                            return Err(recovery_error.context(format!(
+                                                "failed to recover stale Telegram topic {old_message_thread_id}"
+                                            )));
+                                        }
+                                    };
+                                record = recovered_record;
+                                thread_id = recovered_thread_id;
+                                if let Err(retry_error) = send_final_assistant_reply(
+                                    bot,
+                                    &record,
+                                    Some(thread_id),
+                                    final_text,
+                                )
+                                .await
+                                {
+                                    let _ = state
+                                        .control
+                                        .delivery_bus
+                                        .fail_delivery(
+                                            DeliveryAttempt {
+                                                thread_key: record.metadata.thread_key.clone(),
+                                                session_id: existing_thread_id.to_owned(),
+                                                turn_id: final_turn_id.clone(),
+                                                provisional_key: final_provisional_key.clone(),
+                                                channel: DeliveryChannel::Telegram,
+                                                kind: DeliveryKind::AssistantFinal,
+                                                executor: "telegram_thread_flow".to_owned(),
+                                                transport_ref: None,
+                                                report_json: serde_json::json!({ "targets": [] }),
+                                            },
+                                            retry_error.to_string(),
+                                        )
+                                        .await;
+                                    return Err(retry_error.context(format!(
+                                        "failed to resend final reply after recovering Telegram topic {old_message_thread_id}"
+                                    )));
+                                }
+                                let _ = send_scoped_message(
+                                    bot,
+                                    chat_id,
+                                    Some(thread_id),
+                                    format!(
+                                        "Recovered this workspace into a new Telegram topic after the previous topic `{old_message_thread_id}` became unavailable."
+                                    ),
                                 )
                                 .await;
-                            return Err(error.into());
+                            } else {
+                                let _ = state
+                                    .control
+                                    .delivery_bus
+                                    .fail_delivery(
+                                        DeliveryAttempt {
+                                            thread_key: record.metadata.thread_key.clone(),
+                                            session_id: existing_thread_id.to_owned(),
+                                            turn_id: final_turn_id.clone(),
+                                            provisional_key: final_provisional_key.clone(),
+                                            channel: DeliveryChannel::Telegram,
+                                            kind: DeliveryKind::AssistantFinal,
+                                            executor: "telegram_thread_flow".to_owned(),
+                                            transport_ref: None,
+                                            report_json: serde_json::json!({ "targets": [] }),
+                                        },
+                                        error.to_string(),
+                                    )
+                                    .await;
+                                return Err(error.into());
+                            }
                         }
                         let _ = state
                             .control
@@ -3040,6 +3181,51 @@ async fn execute_text_turn(
     .await?;
 
     Ok(())
+}
+
+async fn recover_stale_telegram_topic(
+    bot: &Bot,
+    state: &AppState,
+    record: ThreadRecord,
+    workspace_path: &Path,
+) -> Result<(ThreadRecord, ThreadId)> {
+    let old_message_thread_id = record
+        .metadata
+        .message_thread_id
+        .context("cannot recover Telegram topic without saved message_thread_id")?;
+    let title = title_sync::render_topic_title(&record, Some(workspace_path), false);
+    let topic = bot
+        .create_forum_topic(ChatId(record.metadata.chat_id), title)
+        .await
+        .context("failed to create replacement Telegram topic")?;
+    let new_message_thread_id = thread_id_to_i32(topic.thread_id);
+    let updated = state
+        .repository
+        .update_metadata(ThreadRecord {
+            metadata: recovered_topic_metadata(&record, new_message_thread_id, topic.name.clone()),
+            ..record
+        })
+        .await?;
+    state
+        .repository
+        .append_log(
+            &updated,
+            LogDirection::System,
+            format!(
+                "Recovered stale Telegram topic binding: old message_thread_id {old_message_thread_id}, new message_thread_id {new_message_thread_id}."
+            ),
+            None,
+        )
+        .await?;
+    info!(
+        event = "telegram.topic.recovered",
+        thread_key = %updated.metadata.thread_key,
+        chat_id = updated.metadata.chat_id,
+        old_message_thread_id,
+        new_message_thread_id,
+        "created replacement Telegram topic after stale thread id"
+    );
+    Ok((updated, topic.thread_id))
 }
 
 async fn launch_pending_running_input_if_ready(
@@ -3285,7 +3471,8 @@ mod tests {
     use crate::execution_mode::{ExecutionMode, SessionExecutionSnapshot};
     use crate::hcodex_ingress::HcodexIngressManager;
     use crate::repository::{
-        ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorOrigin, TranscriptMirrorPhase,
+        RunningInputPolicy, ThreadMetadata, ThreadRecord, ThreadRepository, ThreadScope,
+        ThreadStatus, TranscriptMirrorDelivery, TranscriptMirrorOrigin, TranscriptMirrorPhase,
         TranscriptMirrorRole,
     };
     use crate::runtime_control::{
@@ -3304,6 +3491,34 @@ mod tests {
         std::env::temp_dir().join(format!("threadbridge-thread-flow-test-{}", Uuid::new_v4()))
     }
 
+    fn record_with_topic(message_thread_id: i32, previous: Vec<i32>) -> ThreadRecord {
+        let root = temp_path();
+        ThreadRecord {
+            conversation_key: "thread:test".to_owned(),
+            folder_name: "thread-test".to_owned(),
+            folder_path: root.clone(),
+            log_path: root.join("conversations.jsonl"),
+            metadata_path: root.join("metadata.json"),
+            metadata: ThreadMetadata {
+                archived_at: None,
+                chat_id: 731788051,
+                created_at: "2026-05-08T00:00:00.000Z".to_owned(),
+                last_codex_turn_at: None,
+                message_thread_id: Some(message_thread_id),
+                previous_message_thread_ids: previous,
+                running_input_policy: RunningInputPolicy::Steer,
+                scope: ThreadScope::Thread,
+                session_broken: false,
+                session_broken_at: None,
+                session_broken_reason: None,
+                status: ThreadStatus::Active,
+                title: Some("workspace".to_owned()),
+                updated_at: "2026-05-08T00:00:00.000Z".to_owned(),
+                thread_key: "thread-key".to_owned(),
+            },
+        }
+    }
+
     #[test]
     fn thread_flow_module_compiles_without_attach_helpers() {}
 
@@ -3314,6 +3529,34 @@ mod tests {
             format_error_chain(&error),
             "turn failed | worker websocket closed unexpectedly"
         );
+    }
+
+    #[test]
+    fn stale_telegram_topic_error_matches_private_thread_not_found() {
+        let error = anyhow::anyhow!(
+            "A Telegram's error: Unknown error: \"Bad Request: message thread not found\""
+        );
+
+        assert!(super::is_stale_telegram_topic_error(&error));
+    }
+
+    #[test]
+    fn recovered_topic_metadata_moves_current_topic_to_previous_ids() {
+        let record = record_with_topic(408644, vec![405526]);
+        let metadata = super::recovered_topic_metadata(&record, 420001, "macOSAgentBot".to_owned());
+
+        assert_eq!(metadata.message_thread_id, Some(420001));
+        assert_eq!(metadata.previous_message_thread_ids, vec![405526, 408644]);
+        assert_eq!(metadata.title.as_deref(), Some("macOSAgentBot"));
+        assert_eq!(metadata.thread_key, "thread-key");
+    }
+
+    #[test]
+    fn recovered_topic_metadata_does_not_duplicate_previous_topic_ids() {
+        let record = record_with_topic(408644, vec![405526, 408644]);
+        let metadata = super::recovered_topic_metadata(&record, 420001, "macOSAgentBot".to_owned());
+
+        assert_eq!(metadata.previous_message_thread_ids, vec![405526, 408644]);
     }
 
     #[test]

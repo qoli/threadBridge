@@ -712,6 +712,15 @@ pub(crate) async fn send_scoped_role_message(
     text: impl Into<String>,
 ) -> ResponseResult<Message> {
     let text = format_role_text(role, &text.into());
+    send_scoped_formatted_message(bot, chat_id, thread_id, text).await
+}
+
+async fn send_scoped_formatted_message(
+    bot: &Bot,
+    chat_id: ChatId,
+    thread_id: Option<ThreadId>,
+    text: String,
+) -> ResponseResult<Message> {
     let request = bot
         .send_message(chat_id, text)
         .link_preview_options(disabled_link_preview_options());
@@ -729,13 +738,7 @@ pub(crate) async fn send_scoped_system_message_with_intent(
     text: impl Into<String>,
 ) -> ResponseResult<Message> {
     let text = format_system_text(intent, &text.into());
-    let request = bot
-        .send_message(chat_id, text)
-        .link_preview_options(disabled_link_preview_options());
-    match thread_id {
-        Some(thread_id) => request.message_thread_id(thread_id).await,
-        None => request.await,
-    }
+    send_scoped_formatted_message(bot, chat_id, thread_id, text).await
 }
 
 pub(crate) async fn send_scoped_message(

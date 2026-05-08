@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use teloxide::payloads::setters::*;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ThreadId};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::{Bot, ChatId, Requester, TelegramSystemIntent, ThreadRecord, format_system_text};
 use crate::repository::ThreadRepository;
@@ -139,6 +139,18 @@ async fn apply_thread_topic_title(
     {
         Ok(_) => Ok(()),
         Err(error) => {
+            if is_telegram_topic_management_unavailable_error_text(&error.to_string()) {
+                debug!(
+                    event = "telegram.topic_title.refresh_skipped",
+                    source = source,
+                    thread_key = %record.metadata.thread_key,
+                    chat_id = record.metadata.chat_id,
+                    message_thread_id,
+                    error = %error,
+                    "Telegram topic management is unavailable for this chat; skipping title refresh"
+                );
+                return Ok(());
+            }
             let workspace = workspace_path
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "unbound".to_owned());
@@ -157,5 +169,36 @@ async fn apply_thread_topic_title(
             );
             Err(error.into())
         }
+    }
+}
+
+fn is_telegram_topic_management_unavailable_error_text(error_text: &str) -> bool {
+    error_text.contains("Bad Request: BOT_FORUM_CREATE_FORBIDDEN")
+        || error_text.contains("Bad Request: message thread not found")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_telegram_topic_management_unavailable_error_text;
+
+    #[test]
+    fn topic_management_unavailable_matches_threaded_mode_create_forbidden() {
+        assert!(is_telegram_topic_management_unavailable_error_text(
+            "A Telegram's error: Unknown error: \"Bad Request: BOT_FORUM_CREATE_FORBIDDEN\""
+        ));
+    }
+
+    #[test]
+    fn topic_management_unavailable_matches_stale_topic() {
+        assert!(is_telegram_topic_management_unavailable_error_text(
+            "A Telegram's error: Unknown error: \"Bad Request: message thread not found\""
+        ));
+    }
+
+    #[test]
+    fn topic_management_unavailable_rejects_unrelated_error() {
+        assert!(!is_telegram_topic_management_unavailable_error_text(
+            "A Telegram's error: Unknown error: \"Too Many Requests\""
+        ));
     }
 }

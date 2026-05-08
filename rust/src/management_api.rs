@@ -33,10 +33,12 @@ use crate::approval::{
 use crate::config::{RuntimeConfig, load_optional_telegram_config_from_path};
 use crate::launch_at_login::{self, LaunchAtLoginView};
 use crate::local_control::{
-    ResetThreadTitlesReport, TelegramControlBridgeHandle, ensure_archived_thread,
-    resolve_workspace_argument,
+    InvalidTopicCleanupReport, ResetThreadTitlesReport, TelegramControlBridgeHandle,
+    ensure_archived_thread, resolve_workspace_argument,
 };
-use crate::repository::{ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry};
+use crate::repository::{
+    LogDirection, ThreadRepository, TranscriptMirrorDelivery, TranscriptMirrorEntry,
+};
 use crate::runtime_control::{
     HcodexLaunchConfigView, SharedControlHandle, WorkspaceExecutionModeView,
     preflight_workspace_add, reset_workspace_runtime_surface, workspace_thread_title,
@@ -211,6 +213,10 @@ impl ManagementApiHandle {
 
     pub async fn reset_workspace_thread_titles(&self) -> Result<ResetThreadTitlesReport> {
         self.state.reset_workspace_thread_titles().await
+    }
+
+    pub async fn cleanup_invalid_thread_topics(&self) -> Result<InvalidTopicCleanupReport> {
+        self.state.cleanup_invalid_thread_topics().await
     }
 
     pub async fn sync_active_workspace_runtime_surfaces(&self) -> Result<usize> {
@@ -2251,6 +2257,13 @@ impl ManagementApiState {
             .await
     }
 
+    async fn cleanup_invalid_thread_topics(&self) -> Result<InvalidTopicCleanupReport> {
+        self.telegram_bridge()
+            .await?
+            .cleanup_invalid_thread_topics()
+            .await
+    }
+
     #[allow(dead_code)]
     async fn rollback_failed_workspace_add(
         &self,
@@ -2419,7 +2432,36 @@ impl ManagementApiState {
             .archive_thread(thread_key, "local management UI")
             .await?;
         if let Some(bridge) = self.telegram_bridge.read().await.clone() {
-            let _ = bridge.delete_thread_topic(&archived).await;
+            if let Err(error) = bridge.delete_thread_topic(&archived).await {
+                let restored = self
+                    .repository
+                    .restore_thread(
+                        archived.clone(),
+                        archived
+                            .metadata
+                            .message_thread_id
+                            .context("archived thread is missing message_thread_id")?,
+                        archived
+                            .metadata
+                            .title
+                            .clone()
+                            .unwrap_or_else(|| archived.metadata.thread_key.clone()),
+                    )
+                    .await?;
+                self.repository
+                    .append_log(
+                        &restored,
+                        LogDirection::System,
+                        format!(
+                            "Archive rolled back because Telegram topic deletion failed: {error}"
+                        ),
+                        None,
+                    )
+                    .await?;
+                return Err(error.context(
+                    "Telegram topic deletion failed; local archive state was rolled back",
+                ));
+            }
         }
         Ok(ArchiveThreadResponse {
             archived: true,

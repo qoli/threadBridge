@@ -29,6 +29,24 @@ pub struct ResetThreadTitlesReport {
     pub refresh_failed: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct InvalidTopicCleanupReport {
+    pub scanned_threads: usize,
+    pub candidate_topics: usize,
+    pub deleted_topics: usize,
+    pub already_missing_topics: usize,
+    pub failed_topics: usize,
+    pub metadata_updated: usize,
+    pub failures: Vec<InvalidTopicCleanupFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct InvalidTopicCleanupFailure {
+    pub thread_key: String,
+    pub message_thread_id: i32,
+    pub error: String,
+}
+
 impl TelegramControlBridgeHandle {
     pub fn new(bot: Bot, repository: ThreadRepository) -> Self {
         Self { bot, repository }
@@ -168,14 +186,103 @@ impl TelegramControlBridgeHandle {
         let Some(thread_id) = record.metadata.message_thread_id else {
             return Ok(());
         };
-        let _ = self
-            .bot
+        self.bot
             .delete_forum_topic(
                 ChatId(record.metadata.chat_id),
                 ThreadId(MessageId(thread_id)),
             )
-            .await;
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to delete Telegram topic {} for thread {}",
+                    thread_id, record.metadata.thread_key
+                )
+            })?;
         Ok(())
+    }
+
+    pub async fn cleanup_invalid_thread_topics(&self) -> Result<InvalidTopicCleanupReport> {
+        let mut report = InvalidTopicCleanupReport::default();
+        for record in self.repository.list_active_threads().await? {
+            report.scanned_threads += 1;
+            let Some(current_thread_id) = record.metadata.message_thread_id else {
+                continue;
+            };
+            let mut previous = record.metadata.previous_message_thread_ids.clone();
+            if previous.is_empty() {
+                continue;
+            }
+            previous.sort_unstable();
+            previous.dedup();
+
+            let mut retained = Vec::new();
+            let mut changed = previous.len() != record.metadata.previous_message_thread_ids.len();
+            let mut thread_deleted = 0usize;
+            let mut thread_missing = 0usize;
+            let mut thread_failed = 0usize;
+            for previous_thread_id in previous {
+                if previous_thread_id == current_thread_id {
+                    changed = true;
+                    continue;
+                }
+                report.candidate_topics += 1;
+                match self
+                    .bot
+                    .delete_forum_topic(
+                        ChatId(record.metadata.chat_id),
+                        ThreadId(MessageId(previous_thread_id)),
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        report.deleted_topics += 1;
+                        thread_deleted += 1;
+                        changed = true;
+                    }
+                    Err(error) if is_missing_telegram_topic_error(&error.to_string()) => {
+                        report.already_missing_topics += 1;
+                        thread_missing += 1;
+                        changed = true;
+                    }
+                    Err(error) => {
+                        report.failed_topics += 1;
+                        thread_failed += 1;
+                        retained.push(previous_thread_id);
+                        report.failures.push(InvalidTopicCleanupFailure {
+                            thread_key: record.metadata.thread_key.clone(),
+                            message_thread_id: previous_thread_id,
+                            error: error.to_string(),
+                        });
+                    }
+                }
+            }
+
+            if changed {
+                let updated = self
+                    .repository
+                    .update_metadata(ThreadRecord {
+                        metadata: crate::repository::ThreadMetadata {
+                            previous_message_thread_ids: retained,
+                            ..record.metadata.clone()
+                        },
+                        ..record.clone()
+                    })
+                    .await?;
+                self.repository
+                    .append_log(
+                        &updated,
+                        crate::repository::LogDirection::System,
+                        format!(
+                            "Cleaned invalid Telegram topic references: deleted {}, already missing {}, failed {}.",
+                            thread_deleted, thread_missing, thread_failed
+                        ),
+                        None,
+                    )
+                    .await?;
+                report.metadata_updated += 1;
+            }
+        }
+        Ok(report)
     }
 
     pub async fn create_restored_thread(
@@ -238,6 +345,10 @@ impl TelegramControlBridgeHandle {
             .metadata
             .chat_id)
     }
+}
+
+fn is_missing_telegram_topic_error(error_text: &str) -> bool {
+    error_text.contains("Bad Request: message thread not found")
 }
 
 fn workspace_title_from_binding(binding: Option<&SessionBinding>) -> Option<String> {

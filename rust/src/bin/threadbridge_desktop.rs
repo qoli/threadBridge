@@ -96,6 +96,7 @@ mod macos_app {
         OpenSettings,
         OpenAddWorkspace,
         PurgeArchivedThreads,
+        CleanInvalidTopics,
         ResetThreadTitles,
         RebuildRuntimeSupport,
         Quit,
@@ -606,10 +607,16 @@ mod macos_app {
             purge_archived.id().clone(),
             TrayAction::PurgeArchivedThreads,
         );
+        let clean_invalid_topics = MenuItem::new("Clean Invalid Topics", true, None);
+        actions.insert(
+            clean_invalid_topics.id().clone(),
+            TrayAction::CleanInvalidTopics,
+        );
         let reset_titles = MenuItem::new("Reset Thread Titles", true, None);
         actions.insert(reset_titles.id().clone(), TrayAction::ResetThreadTitles);
         menu.append(&add_workspace)?;
         menu.append(&purge_archived)?;
+        menu.append(&clean_invalid_topics)?;
         if supports_runtime_support_rebuild {
             let rebuild_support = MenuItem::new("Rebuild Runtime Support", true, None);
             actions.insert(
@@ -743,6 +750,27 @@ mod macos_app {
                             "threadBridge",
                             &format!(
                                 "Purge archived threads failed: {}",
+                                short_error_message(&error)
+                            ),
+                        );
+                    }
+                    let _ = proxy.send_event(UserEvent::Refresh);
+                });
+            }
+            TrayAction::CleanInvalidTopics => {
+                let runtime = app.runtime.clone();
+                let management_api = app.management_api.clone();
+                let proxy = proxy.clone();
+                runtime.spawn(async move {
+                    if let Err(error) = clean_invalid_topics_via_tray(&management_api).await {
+                        warn!(
+                            event = "desktop_runtime.clean_invalid_topics.failed",
+                            error = %error
+                        );
+                        let _ = show_desktop_notification(
+                            "threadBridge",
+                            &format!(
+                                "Clean invalid topics failed: {}",
                                 short_error_message(&error)
                             ),
                         );
@@ -912,6 +940,41 @@ mod macos_app {
         Ok(())
     }
 
+    async fn clean_invalid_topics_via_tray(management_api: &ManagementApiHandle) -> Result<()> {
+        let confirmed = tokio::task::spawn_blocking(confirm_clean_invalid_topics).await??;
+        if !confirmed {
+            info!(event = "desktop_runtime.clean_invalid_topics.cancelled");
+            return Ok(());
+        }
+        let report = management_api.cleanup_invalid_thread_topics().await?;
+        info!(
+            event = "desktop_runtime.clean_invalid_topics.completed",
+            scanned_threads = report.scanned_threads,
+            candidate_topics = report.candidate_topics,
+            deleted_topics = report.deleted_topics,
+            already_missing_topics = report.already_missing_topics,
+            failed_topics = report.failed_topics,
+            metadata_updated = report.metadata_updated,
+            "invalid Telegram topic cleanup completed"
+        );
+        let cleaned = report.deleted_topics + report.already_missing_topics;
+        let mut body = format!(
+            "Cleaned {cleaned} invalid topic reference(s) from {} candidate(s).",
+            report.candidate_topics
+        );
+        if report.metadata_updated > 0 {
+            body.push_str(&format!(
+                " Updated {} thread record(s).",
+                report.metadata_updated
+            ));
+        }
+        if report.failed_topics > 0 {
+            body.push_str(&format!(" {} deletion(s) failed.", report.failed_topics));
+        }
+        show_desktop_notification("threadBridge", &body)?;
+        Ok(())
+    }
+
     async fn reset_thread_titles_via_tray(management_api: &ManagementApiHandle) -> Result<()> {
         let confirmed = tokio::task::spawn_blocking(confirm_reset_thread_titles).await??;
         if !confirmed {
@@ -1070,6 +1133,25 @@ mod macos_app {
         }
         Err(anyhow!(
             "purge confirmation failed: {}",
+            stderr.trim().if_empty("unknown osascript error")
+        ))
+    }
+
+    fn confirm_clean_invalid_topics() -> Result<bool> {
+        let script = r#"button returned of (display dialog "Delete old Telegram topics recorded as previous thread IDs for active workspaces? Current active topics will be kept. This cannot be undone in Telegram." buttons {"Cancel", "Clean"} default button "Cancel" cancel button "Cancel" with icon caution)"#;
+        let output = Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .output()?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).contains("Clean"));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if apple_script_user_cancelled(output.status.code(), &stderr) {
+            return Ok(false);
+        }
+        Err(anyhow!(
+            "invalid-topic cleanup confirmation failed: {}",
             stderr.trim().if_empty("unknown osascript error")
         ))
     }
