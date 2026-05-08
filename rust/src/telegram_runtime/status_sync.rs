@@ -226,6 +226,14 @@ pub async fn spawn_workspace_status_watcher(bot: Bot, state: AppState) {
                 )
                 .await,
             );
+            let home_mirrors_started_at = Instant::now();
+            record_status_sync_stage(
+                &state,
+                "status_sync.sync_codex_home_session_mirrors",
+                home_mirrors_started_at,
+                active_threads.len(),
+                sync_codex_home_session_mirrors_once(&bot, &state, &active_threads).await,
+            );
             let adoption_started_at = Instant::now();
             record_status_sync_stage(
                 &state,
@@ -305,6 +313,24 @@ fn active_thread_metrics(active_threads: &[ActiveThreadSnapshot]) -> RuntimeTele
         tui_adoption_pending_threads,
     );
     metrics
+}
+
+async fn sync_codex_home_session_mirrors_once(
+    bot: &Bot,
+    state: &AppState,
+    active_threads: &[ActiveThreadSnapshot],
+) -> Result<()> {
+    let targets = active_threads
+        .iter()
+        .filter_map(|snapshot| {
+            snapshot
+                .binding
+                .as_ref()
+                .map(|binding| (snapshot.record.clone(), binding.clone()))
+        })
+        .collect::<Vec<_>>();
+    super::codex_home_session_mirror::sync_codex_home_session_mirrors_once(bot, state, &targets)
+        .await
 }
 
 fn record_status_sync_stage(

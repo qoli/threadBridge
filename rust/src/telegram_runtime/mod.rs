@@ -48,6 +48,7 @@ pub(crate) use crate::workspace_status::{
 };
 
 pub(crate) mod busy_copy;
+mod codex_home_session_mirror;
 pub mod final_reply;
 mod interaction_bridge;
 mod media;

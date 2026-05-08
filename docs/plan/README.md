@@ -261,6 +261,11 @@
   - Telegram Web App 觀測面草稿
   - 本地 session-first observability API 與 workspace-card Sessions pane 已落地，但 Telegram Web App 本身仍未開始
   - 由於 Telegram Web App 依賴 HTTPS，近期已降為遠期可選載體，不再是本地 observability 的主路徑
+- [codex-home-dir-session-mirror.md](telegram-adapter/codex-home-dir-session-mirror.md)
+  - doc kind: `plan`
+  - Telegram adapter 的第二條 Codex mirror 線路草稿
+  - 從 user home 的 Codex session log 讀取外部 Codex Desktop / Codex TUI 對話，只投影回 Telegram，不回放給 app-server
+  - 固定只使用 `current_codex_thread_id`，不使用 `tui_active_codex_thread_id`
 - [multi-bot-token-support.md](telegram-adapter/multi-bot-token-support.md)
   - doc kind: `plan`
   - Telegram adapter 多 bot token 能力草稿
