@@ -694,7 +694,7 @@ pub(crate) fn format_role_text(role: TelegramTextRole, text: &str) -> String {
 
 pub(crate) fn telegram_system_marker(intent: TelegramSystemIntent) -> &'static str {
     match intent {
-        TelegramSystemIntent::Info => "▪",
+        TelegramSystemIntent::Info => "·",
         TelegramSystemIntent::Question => "Question:",
         TelegramSystemIntent::Warning => "Warning:",
     }
@@ -1704,7 +1704,7 @@ mod tests {
     fn system_formatter_uses_intent_specific_headers() {
         assert_eq!(
             format_system_text(TelegramSystemIntent::Info, "ready"),
-            "▪ ready"
+            "· ready"
         );
         assert_eq!(
             format_system_text(TelegramSystemIntent::Question, "continue?"),

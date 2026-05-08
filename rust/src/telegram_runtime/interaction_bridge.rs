@@ -20,8 +20,8 @@ use crate::runtime_interaction::{
 };
 
 use super::{
-    TelegramSystemIntent, approval_markup, format_system_text, render_request_user_input_prompt,
-    render_pending_approval_prompt, request_user_input_markup, send_plan_implementation_prompt,
+    TelegramSystemIntent, approval_markup, format_system_text, render_pending_approval_prompt,
+    render_request_user_input_prompt, request_user_input_markup, send_plan_implementation_prompt,
 };
 
 pub(crate) fn spawn_telegram_interaction_bridge(
@@ -35,16 +35,15 @@ pub(crate) fn spawn_telegram_interaction_bridge(
     let bot = Bot::new(bot_token);
     tokio::spawn(async move {
         while let Some(event) = receiver.recv().await {
-            if let Err(error) =
-                handle_runtime_interaction(
-                    &bot,
-                    &repository,
-                    &delivery_bus,
-                    &registry,
-                    &approval_registry,
-                    event,
-                )
-                .await
+            if let Err(error) = handle_runtime_interaction(
+                &bot,
+                &repository,
+                &delivery_bus,
+                &registry,
+                &approval_registry,
+                event,
+            )
+            .await
             {
                 warn!(event = "telegram.interaction_bridge.failed", error = %error);
             }
