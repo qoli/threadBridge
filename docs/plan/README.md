@@ -283,6 +283,10 @@
 - [desktop-runtime-tool-bridge.md](desktop-runtime-owner/desktop-runtime-tool-bridge.md)
   - doc kind: `plan`
   - desktop runtime 作為跨沙盒 capability host / tool bridge / 自定義 webview service 草稿
+- [local-app-pairing-bridge.md](desktop-runtime-owner/local-app-pairing-bridge.md)
+  - doc kind: `plan`
+  - 受 VSCode Codex VSIX app-server host / ChatGPT macOS app pairing 模式啟發的本機 session discovery / runtime sync 草稿
+  - 聚焦 owner-published session index、registration file、Unix socket、typed capability、event subscription，以及禁止把 pairing bridge 變成 app-server replay path
 - [optional-agents-injection.md](runtime-control/optional-agents-injection.md)
   - doc kind: `plan`
   - appendix 注入可選化草稿

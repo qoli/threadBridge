@@ -305,6 +305,9 @@ observer 消費 backend，但不是 backend owner。
 - [runtime-protocol.md](../runtime-control/runtime-protocol.md)
   - 處理 shared runtime views / actions / events naming
   - 本文不把 backend plane 直接等同於 transport-neutral runtime protocol
+- [local-app-pairing-bridge.md](local-app-pairing-bridge.md)
+  - 處理 Codex Desktop / 本機 app 如何快速發現 threadBridge-started session，並訂閱 owner-published runtime truth
+  - 本文只界定 app-server execution substrate；不把 discoverability / app pairing / event subscription 混進 backend worker authority
 
 ## 開放問題
 
